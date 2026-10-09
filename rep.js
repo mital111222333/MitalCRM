@@ -37,7 +37,7 @@ const REP = {
         for (const x of [a, t]) { x.sold += r.sold; x.paid += r.paid; x.ret += r.ret; x.okb++; if (r.b1 < 0) x.debt -= r.b1; if (act(r)) x.akb++; }
         if (act(r)) active.add(r.client);
       }
-      return { from: u.period_from, to: u.period_to, taken: u.taken_at, label: REP.month(u.period_from), agents, total: t, active };
+      return { from: u.period_from, to: u.period_to, taken: u.taken_at, label: PLAN.label(u.period_from), agents, total: t, active };
     });
     return { clients: out, months, since: first, uploads: ups.length };
   },
@@ -84,7 +84,7 @@ REP.teamText = d => {
   lines.push(`Собрано: <b>${f(T.paid)}</b>${T.pool ? ` из ${f(T.pool)} (${UI.pct(T.paid, T.pool)}%)` : ''}${T.d_paid ? ` · за день +${f(T.d_paid)}` : ''}`);
   lines.push(`Долг клиентов: <b>${f(T.debt)}</b> · должников ${T.debtors}`);
   lines.push(`АКБ: ${T.akb} из ${T.okb} (${UI.pct(T.akb, T.okb) ?? 0}%)`);
-  if (fc.projectable) lines.push(`Прошло ${Math.round(fc.elapsed / fc.month_days * 100)}% месяца, осталось ${fc.days_left} дн.`);
+  if (fc.projectable) lines.push(`Период плана ${UI.dateRu(d.upload.period_from)}–${UI.dateRu(fc.period_end)}: прошло ${Math.round(fc.elapsed / fc.month_days * 100)}%, осталось ${fc.days_left} дн.`);
   lines.push('', '<b>По агентам</b> (продажи / сбор):');
   for (const a of d.agents) lines.push(`${a.plan && a.sold >= a.plan ? '🟢' : a.plan && fc.projectable && a.sold / a.plan < fc.elapsed / fc.month_days * 0.8 ? '🔴' : '🟡'} ${esc(a.agent)}: ${f(a.sold)}${a.plan ? ` (${UI.pct(a.sold, a.plan)}%)` : ''} / ${f(a.paid)}${a.pool ? ` (${UI.pct(a.paid, a.pool)}%)` : ''}`);
   return lines.join('\n');
@@ -120,7 +120,7 @@ EXT_PAGES.rday = async el => {
     ${UI.tile('Собрано денег', '$' + f(T.paid), { sub: T.pool ? `пул ${f(T.pool)} · ${UI.pct(T.paid, T.pool)}%` : 'пул не задан', delta: UI.delta(T.d_paid, { title: 'За день (к прошлой загрузке)' }) })}
     ${UI.tile('Долг клиентов', '$' + f(T.debt), { sub: `должников ${T.debtors}`, delta: UI.delta(T.d_debt, { inverse: true }), tone: 'warn' })}
     ${UI.tile('АКБ / ОКБ', `${T.akb} / ${T.okb}`, { sub: `активны ${UI.pct(T.akb, T.okb) ?? 0}%` })}
-    ${fc.projectable ? UI.tile('Месяц', `${Math.round(pace * 100)}%`, { sub: `прошло ${fc.elapsed} из ${fc.month_days} дн. · осталось ${fc.days_left}` }) : ''}
+    ${fc.projectable ? UI.tile('Период плана', `${Math.round(pace * 100)}%`, { sub: `${UI.dm(d.upload.period_from)}–${UI.dm(fc.period_end)} · прошло ${fc.elapsed} из ${fc.month_days} дн., осталось ${fc.days_left}` }) : ''}
     ${T.proj_sold ? UI.tile('Прогноз продаж', '≈ $' + f(T.proj_sold), { sub: T.plan ? `${UI.pct(T.proj_sold, T.plan)}% плана при текущем темпе` : '', tone: T.plan && T.proj_sold < T.plan * 0.9 ? 'warn' : 'good' }) : ''}
   </div>
   <div class="grid">
@@ -129,7 +129,7 @@ EXT_PAGES.rday = async el => {
       const myOd = od.filter(t => t.agent === a.agent).length, myOpen = open.filter(t => t.agent === a.agent).length;
       return `<tr><td><i class="dot" style="background:${col(a.agent)};margin:0 8px 0 0"></i>${esc(a.agent)}</td><td class="n">${f(a.sold)}</td><td class="n">${ps === null ? '—' : UI.pill(tone(ps), ps + '%')}</td><td class="n">${a.need_sell_day !== undefined ? f(a.need_sell_day) : '—'}</td><td class="n">${f(a.paid)}</td><td class="n">${pp === null ? '—' : UI.pill(tone(pp), pp + '%')}</td><td class="n">${a.need_collect_day !== undefined ? f(a.need_collect_day) : '—'}</td><td class="n">${f(a.debt)}<br><small>${a.debtors} кл.</small></td><td class="n">${a.d_sold === null ? '—' : '+' + f(a.d_sold)}<br><small>сбор ${a.d_paid === null ? '—' : '+' + f(a.d_paid)}</small></td><td class="n">${myOd ? UI.pill('crit', myOd + ' просроч.') : ''}${myOpen ? ' ' + UI.pill('info', myOpen + ' в работе') : ''}${!myOd && !myOpen ? '<span class="mut">—</span>' : ''}</td></tr>`;
     }).join('')}</tbody><tfoot><tr><td><b>Итого</b></td><td class="n"><b>${f(T.sold)}</b></td><td class="n"><b>${UI.pct(T.sold, T.plan) ?? '—'}${T.plan ? '%' : ''}</b></td><td></td><td class="n"><b>${f(T.paid)}</b></td><td class="n"><b>${UI.pct(T.paid, T.pool) ?? '—'}${T.pool ? '%' : ''}</b></td><td></td><td class="n"><b>${f(T.debt)}</b></td><td class="n">${T.d_sold !== undefined ? '+' + f(T.d_sold) : ''}</td><td></td></tr></tfoot></table></div>
-      ${pace !== null ? `<p class="mut" style="margin:10px 0 0">Цвет процента: зелёный — план выполнен, синий — идёт по графику (прошло ${Math.round(pace * 100)}% месяца), жёлтый — отстаёт, красный — сильно отстаёт. «За день» — изменение с прошлой загрузки${d.prev ? ` (${UI.dateRu(d.prev.taken_at)})` : ''}.</p>` : ''}`, { cls: 'w12' })}
+      ${pace !== null ? `<p class="mut" style="margin:10px 0 0">Цвет процента: зелёный — план выполнен, синий — идёт по графику (прошло ${Math.round(pace * 100)}% периода плана), жёлтый — отстаёт, красный — сильно отстаёт. «За день» — изменение с прошлой загрузки${d.prev ? ` (${UI.dateRu(d.prev.taken_at)})` : ''}.</p>` : ''}`, { cls: 'w12' })}
     ${UI.panel('Что важно сегодня', `<ul class="insights">${agInsights(d).map(([k, i, t]) => `<li class="${k}"><span aria-hidden="true">${i}</span><span>${t}</span></li>`).join('')}${lowN ? `<li class="warn"><span aria-hidden="true">📦</span><span>На складе <b>${lowN}</b> товаров закончились или на исходе — <a href="#/whlow">посмотреть</a>.</span></li>` : ''}</ul>`, { cls: 'w5' })}
     ${UI.panel('Кому звонить сегодня', call.length ? `<div class="scroll"><table><thead><tr><th>Клиент</th><th>Агент</th><th class="n">Долг</th><th class="n">Последняя оплата</th></tr></thead><tbody>${call.map(c => `<tr><td>${esc(c.name)}${c.phone ? `<br><small><a href="tel:${esc(c.phone)}">${esc(c.phone)}</a></small>` : ''}</td><td>${esc(c.agent)}</td><td class="n">${f(c.debt)}</td><td class="n">${REP.pay(c)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Должников нет</div>', { cls: 'w7', sub: 'Крупный долг и давно не платили — в начале списка' })}
   </div>`;
@@ -182,7 +182,7 @@ EXT_PAGES.rsleep = async el => {
   const byAgent = d.agents.map(a => ({ a: a.agent, s: sleeping.filter(c => c.agent === a.agent).length, l: lost.filter(c => c.agent === a.agent).length, n: never.filter(c => c.agent === a.agent).length, okb: a.okb, akb: a.akb }));
   body.innerHTML = `<div class="kpis">
     ${UI.tile(`Не покупали больше ${S.days} дн.`, f(sleeping.length), { sub: `из ${d.clients.length} клиентов`, tone: sleeping.length ? 'warn' : '' })}
-    ${UI.tile('Выпали из АКБ', f(lost.length), { sub: d.prevMonth ? `были активны в ${d.prevMonth.label.toLowerCase()}, сейчас нет` : 'появится, когда будет выгрузка прошлого месяца', tone: lost.length ? 'bad' : '' })}
+    ${UI.tile('Выпали из АКБ', f(lost.length), { sub: d.prevMonth ? `были активны в прошлом периоде (${d.prevMonth.label}), сейчас нет` : 'появится, когда будет выгрузка прошлого месяца', tone: lost.length ? 'bad' : '' })}
     ${UI.tile('Ни одной покупки', f(never.length), { sub: d.hist.since ? `с ${UI.dateRu(d.hist.since)}` : '' })}
     ${UI.tile('АКБ', `${agTotals(d).akb} / ${agTotals(d).okb}`, { sub: 'активные / все клиенты' })}
   </div>
@@ -224,19 +224,19 @@ EXT_PAGES.rdyn = async el => {
     return;
   }
   const cur = pick(M.at(-1)), prev = pick(M.at(-2)), dp = (a, b) => (b ? Math.round((a - b) / b * 100) : null);
-  const chip = (a, b, inv) => { const p = dp(a, b); return p === null ? '' : UI.delta(p, { unit: '%', inverse: inv, title: `К ${M.at(-2).label.toLowerCase()}` }); };
+  const chip = (a, b, inv) => { const p = dp(a, b); return p === null ? '' : UI.delta(p, { unit: '%', inverse: inv, title: `К периоду ${M.at(-2).label}` }); };
   const agents = [...new Set(M.flatMap(m => Object.keys(m.agents)))].sort((a, b) => a.localeCompare(b));
-  const partial = !M.at(-1).to.endsWith(String(new Date(+M.at(-1).to.slice(0, 4), +M.at(-1).to.slice(5, 7), 0).getDate()));
-  body.innerHTML = `<div class="bar">${`<select id="repAg" aria-label="Агент"><option value="">Вся команда</option>${agents.map(n => `<option ${n === S.agent ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`}${partial ? `<span class="mut">${M.at(-1).label} ещё не закончился (данные по ${UI.dateRu(M.at(-1).to)}) — сравнивайте с осторожностью.</span>` : ''}</div>
+  const partial = M.at(-1).to < PLAN.end(M.at(-1).from);
+  body.innerHTML = `<div class="bar">${`<select id="repAg" aria-label="Агент"><option value="">Вся команда</option>${agents.map(n => `<option ${n === S.agent ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`}${partial ? `<span class="mut">Период ${M.at(-1).label} ещё не закончился (данные по ${UI.dateRu(M.at(-1).to)}) — сравнивайте с осторожностью.</span>` : ''}</div>
   <div class="kpis">
-    ${UI.tile('Продано · ' + M.at(-1).label.toLowerCase(), '$' + f(cur.sold), { sub: `${M.at(-2).label.toLowerCase()}: $${f(prev.sold)}`, delta: chip(cur.sold, prev.sold) })}
+    ${UI.tile('Продано · ' + M.at(-1).label, '$' + f(cur.sold), { sub: `${M.at(-2).label}: $${f(prev.sold)}`, delta: chip(cur.sold, prev.sold) })}
     ${UI.tile('Собрано', '$' + f(cur.paid), { sub: `было $${f(prev.paid)}`, delta: chip(cur.paid, prev.paid) })}
     ${UI.tile('Долг на конец', '$' + f(cur.debt), { sub: `было $${f(prev.debt)}`, delta: chip(cur.debt, prev.debt, true) })}
     ${UI.tile('АКБ', `${cur.akb}`, { sub: `было ${prev.akb} · ОКБ ${cur.okb}`, delta: chip(cur.akb, prev.akb) })}
   </div>
   <div class="grid">
-    ${UI.panel('Продажи и сбор по месяцам', CH.columns(M.map(m => ({ label: m.label.slice(0, 3) + ' ' + m.from.slice(2, 4), values: [pick(m).sold, pick(m).paid] })), [{ name: 'Продано', color: 'var(--c1)' }, { name: 'Собрано', color: 'var(--c3)' }], { fmt: UI.fmt0 }), { cls: 'w7' })}
-    ${UI.panel('Долг клиентов на конец месяца', CH.columns(M.map(m => ({ label: m.label.slice(0, 3) + ' ' + m.from.slice(2, 4), values: [pick(m).debt] })), [{ name: 'Долг', color: 'var(--c2)' }], { fmt: UI.fmt0 }), { cls: 'w5' })}
+    ${UI.panel('Продажи и сбор по месяцам', CH.columns(M.map(m => ({ label: m.from.endsWith('-01') ? m.label.slice(0, 3) + ' ' + m.from.slice(2, 4) : UI.dm(m.from), values: [pick(m).sold, pick(m).paid] })), [{ name: 'Продано', color: 'var(--c1)' }, { name: 'Собрано', color: 'var(--c3)' }], { fmt: UI.fmt0 }), { cls: 'w7' })}
+    ${UI.panel('Долг клиентов на конец месяца', CH.columns(M.map(m => ({ label: m.from.endsWith('-01') ? m.label.slice(0, 3) + ' ' + m.from.slice(2, 4) : UI.dm(m.from), values: [pick(m).debt] })), [{ name: 'Долг', color: 'var(--c2)' }], { fmt: UI.fmt0 }), { cls: 'w5' })}
     ${UI.panel('Продажи агентов по месяцам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th>${M.map(m => `<th class="n">${m.label}</th>`).join('')}<th class="n">Изменение</th></tr></thead><tbody>${agents.map(a => { const v = M.map(m => m.agents[a]?.sold || 0); return `<tr><td>${esc(a)}</td>${v.map(x => `<td class="n">${f(x)}</td>`).join('')}<td class="n">${UI.delta(dp(v.at(-1), v.at(-2)), { unit: '%' }) || '—'}</td></tr>`; }).join('')}</tbody></table></div>`, { cls: 'w12', sub: 'Продано за месяц (по последней загрузке каждого месяца)' })}
     ${UI.panel('Сбор денег агентов по месяцам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th>${M.map(m => `<th class="n">${m.label}</th>`).join('')}<th class="n">Изменение</th></tr></thead><tbody>${agents.map(a => { const v = M.map(m => m.agents[a]?.paid || 0); return `<tr><td>${esc(a)}</td>${v.map(x => `<td class="n">${f(x)}</td>`).join('')}<td class="n">${UI.delta(dp(v.at(-1), v.at(-2)), { unit: '%' }) || '—'}</td></tr>`; }).join('')}</tbody></table></div>`, { cls: 'w12' })}
   </div>`;

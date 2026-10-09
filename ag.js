@@ -21,7 +21,7 @@ function agUploadDialog(onDone, files = []) {
   return UI.uploadDialog({
     title: 'Загрузка выгрузки клиентов',
     intro: 'Выгрузка «Баланс клиентов» из LINKO (.xlsx или .csv) — или ваша Google-таблица «Аналитика Митал» целиком: тогда подтянутся клиенты, агенты, План, Пул, Заметки и Задания. «Период» — за какие даты построена выгрузка в LINKO.',
-    fields: [{ key: 'date', label: 'Выгрузка на дату', type: 'date', value: agFileDate }, { key: 'from', label: 'Период с', type: 'date', value: f => agFileDate(f).slice(0, 8) + '01' }, { key: 'to', label: 'по', type: 'date', value: agFileDate }],
+    fields: [{ key: 'date', label: 'Выгрузка на дату', type: 'date', value: agFileDate }, { key: 'from', label: 'Период с', type: 'date', value: f => PLAN.from(agFileDate(f)) }, { key: 'to', label: 'по', type: 'date', value: agFileDate }],
     batch: [{ key: 'mode', label: 'План, Пул и Заметки', options: [['', 'Автоматически (рекомендуется)'], ['overwrite', 'Взять из файла (перезаписать)'], ['keep', 'Не менять']] }],
     url: (f, v) => `/api/ag/upload?file=${agEnc(f.name)}&date=${v.date}&from=${v.from}&to=${v.to}${v.mode ? '&mode=' + v.mode : ''}`,
     summarize: d => `${d.clients} клиентов${d.created ? ` · новых ${d.created}` : ''}${d.agent_changes ? ` · сменился агент у ${d.agent_changes}` : ''}${d.plan_updates ? ` · План/Пул обновлены у ${d.plan_updates}` : ''}${d.tasks_imported ? ` · заданий ${d.tasks_imported}` : ''}${d.replaced ? ' · заменена загрузка за этот период' : ''}`,

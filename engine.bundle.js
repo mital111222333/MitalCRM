@@ -17,7 +17,7 @@ const norm = s => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim()
   .replace(/a/g, 'а').replace(/c/g, 'с').replace(/e/g, 'е').replace(/o/g, 'о').replace(/p/g, 'р').replace(/x/g, 'х').replace(/y/g, 'у').replace(/k/g, 'к').replace(/m/g, 'м').replace(/t/g, 'т');
 
 const isDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }; // local date (Tashkent), not UTC
 const addDays = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 864e5);
 
@@ -455,7 +455,7 @@ module.exports = { stock, movement, low, history };
 //   src.rows(id)   -> rows of an upload joined with the client master, agent already resolved (row agent, else master agent, else "Без агента")
 //   src.tasks()    -> raw tasks, newest first
 //   src.akb()      -> АКБ rule name ("paid" | "sold" | "any")
-const { today, daysBetween } = require('./util');
+const { today, daysBetween, addDays: addDaysF } = require('./util');
 const { KINDS, AKB_RULES } = require('./parse');
 
 function aggregate(rows, active) {
@@ -470,10 +470,18 @@ function aggregate(rows, active) {
   return m;
 }
 
+// Plan cycle = from the first day of the period to the day before the same date next month
+// (01.10 → 31.10; a company month 16.09 → 15.10). Projection works while the upload is inside one cycle.
+// Plan period: from its first day to the day before the same date next month (01.10–31.10 or 16.09–15.10).
+function periodEnd(pf) {
+  const y = +pf.slice(0, 4), m = +pf.slice(5, 7), d = +pf.slice(8, 10), dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const next = new Date(Date.UTC(y, m, Math.min(d, dim))); next.setUTCDate(next.getUTCDate() - 1);
+  return next.toISOString().slice(0, 10);
+}
 function forecast(up) {
-  const [pf, pt] = [up.period_from, up.period_to], sameMonth = pf.slice(0, 7) === pt.slice(0, 7), y = +pt.slice(0, 4), mo = +pt.slice(5, 7);
-  const monthDays = new Date(y, mo, 0).getDate(), elapsed = daysBetween(pf, pt) + 1, dayOfMonth = +pt.slice(8, 10);
-  return { projectable: sameMonth && pf.endsWith('-01'), elapsed, month_days: monthDays, days_left: sameMonth ? Math.max(0, monthDays - dayOfMonth) : 0 };
+  const pf = up.period_from, pt = up.period_to, end = periodEnd(pf);
+  const projectable = pt <= end, monthDays = daysBetween(pf, end) + 1, elapsed = daysBetween(pf, pt) + 1;
+  return { projectable, elapsed, month_days: monthDays, days_left: projectable ? Math.max(0, daysBetween(pt, end)) : 0, period_end: end };
 }
 
 // Task progress is computed from the current snapshot: fact = (client's paid/sold now) - (value when the task was created).
