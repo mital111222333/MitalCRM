@@ -537,7 +537,7 @@ module.exports = { aggregate, forecast, tasksFor, dashboard };
 //
 //   const engine = createEngine({ state, onChange });
 //   const { status, json } = await engine.request('POST', '/api/wh/upload?warehouse=...&date=...&file=...', { raw: Uint8Array });
-const { isDate, today, addDays } = require('../lib/util');
+const { isDate, today, addDays, findHeader, N, norm } = require('../lib/util');
 const { parseStock, parseBalance, parseTasks, AKB_RULES, NO_AGENT } = require('../lib/parse');
 const { readTableAsync } = require('../lib/xlsx');
 const whCalc = require('../lib/wh-calc'), agCalc = require('../lib/ag-calc');
@@ -673,10 +673,10 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
   // ---------- agents data source (shape expected by lib/ag-calc.js) ----------
   const agUploadsDesc = () => S.ag.uploads.slice().sort((a, b) => byBinary(b.taken_at, a.taken_at) || b.id - a.id);
   const agRows = id => {
-    const up = S.ag.uploads.find(u => u.id === id);
+    const up = S.ag.uploads.find(u => u.id === id), PP = S.ext?.clientPlans?.[up.period_from] || null; // plans uploaded for this plan period
     return up.rows.map(r => {
-      const c = S.ag.clients[r.client] || {};
-      return { ...r, num: c.num ?? null, type: c.type ?? null, landmark: c.landmark ?? null, phone: c.phone ?? null, zone: c.zone ?? null, plan: c.plan ?? null, pool: c.pool ?? null, note: c.note ?? null, magent: c.agent, agent: r.agent || c.agent || NO_AGENT };
+      const c = S.ag.clients[r.client] || {}, pp = PP ? PP[r.client] || { plan: 0, pool: 0 } : null;
+      return { ...r, num: c.num ?? null, type: c.type ?? null, landmark: c.landmark ?? null, phone: c.phone ?? null, zone: c.zone ?? null, plan: pp ? pp.plan : c.plan ?? null, pool: pp ? pp.pool : c.pool ?? null, note: c.note ?? null, magent: c.agent, agent: r.agent || c.agent || NO_AGENT };
     });
   };
   const agSrc = { uploads: () => agUploadsDesc().map(strip), rows: agRows, tasks: () => S.ag.tasks.slice().sort((a, b) => b.id - a.id), akb: () => S.ag.akb };
@@ -724,6 +724,38 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
     return ok({ ok: true, id, clients: rows.length, created, agent_changes: agentChanges, plan_updates: planUpdates, tasks_imported: tasksImported, replaced, source: parsed.workbook ? 'workbook' : 'export', overwrite, date, period: { from, to } });
   }
 
+  // plan file for a plan period: №, Клиент, (Агент), План, Пул — matched to clients by № first, then by name
+  async function agPlanUpload(q, raw) {
+    const period = q.period;
+    if (!isDate(period)) return err('Укажите начало периода плана');
+    if (!raw || !raw.length) return err('Файл пустой');
+    let sheets; try { sheets = await readTableAsync(raw, q.file || ''); } catch (e) { return err(e.message, e.status || 400); }
+    const SPEC = { num: ['№', 'номер клиента'], name: ['клиент'], agent: ['агент (справка)', 'агент'], plan: ['план', 'план продаж'], pool: ['пул', 'план сбора', 'план оплат'] };
+    let h = null, sheet = null;
+    for (const sh of sheets) { const x = findHeader(sh.rows, SPEC, m => m.name !== undefined && (m.plan !== undefined || m.pool !== undefined)); if (!x.error) { h = x; sheet = sh; break; } }
+    if (!h) return err('Это не файл плана: нужны колонки «Клиент» и «План» и/или «Пул»');
+    const byNum = new Map(), byName = new Map();
+    for (const c of Object.values(S.ag.clients)) { if (c.num !== null && c.num !== undefined) byNum.set(Number(c.num), c.name); byName.set(norm(c.name), c.name); }
+    const out = {}, missing = []; let rows = 0, plan = 0, pool = 0;
+    for (const r of sheet.rows.slice(h.row + 1)) {
+      const name = String(r?.[h.map.name] ?? '').trim(); if (!name || /^итого/i.test(name)) continue;
+      const num = h.map.num !== undefined && Number.isFinite(Number(r[h.map.num])) && r[h.map.num] !== null && r[h.map.num] !== '' ? Number(r[h.map.num]) : null;
+      const p = h.map.plan !== undefined ? Math.max(0, N(r[h.map.plan])) : 0, l = h.map.pool !== undefined ? Math.max(0, N(r[h.map.pool])) : 0;
+      rows++;
+      const key = (num !== null && byNum.get(num)) || byName.get(norm(name));
+      if (!key) { if (p || l) missing.push(name); continue; }
+      const e = (out[key] ||= { plan: 0, pool: 0 }); e.plan += p; e.pool += l; plan += p; pool += l;
+    }
+    S.ext.clientPlans = S.ext.clientPlans || {};
+    const replaced = !!S.ext.clientPlans[period];
+    S.ext.clientPlans[period] = out;
+    // the per-agent plans typed by hand for this period would hide the uploaded ones
+    const hadAgentPlans = !!(S.ext.agentPlans && S.ext.agentPlans[period] && Object.keys(S.ext.agentPlans[period]).length);
+    if (hadAgentPlans) delete S.ext.agentPlans[period];
+    const withPlan = Object.values(out).filter(e => e.plan > 0).length, withPool = Object.values(out).filter(e => e.pool > 0).length;
+    return ok({ ok: true, period, rows, matched: Object.keys(out).length, with_plan: withPlan, with_pool: withPool, plan, pool, missing: missing.slice(0, 50), missing_count: missing.length, replaced, cleared_agent_plans: hadAgentPlans });
+  }
+
   function agRoute(method, sub, q, body, raw) {
     const post = method === 'POST';
     if (sub === 'upload' && post) return agUpload(q, raw);
@@ -739,12 +771,16 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
       S.ag.uploads = S.ag.uploads.filter(u => u.id !== +ud[1]);
       return ok();
     }
+    if (sub === 'plan' && post) return agPlanUpload(q, raw);
     if (sub === 'client' && post) {
       const c = S.ag.clients[String(body.name || '')];
       if (!c) return err('Клиент не найден', 404);
       const num = v => (Number(v) >= 0 ? Number(v) : null);
       if (body.plan !== undefined) { if (num(body.plan) === null) return err('План — число не меньше 0'); c.plan = num(body.plan); }
       if (body.pool !== undefined) { if (num(body.pool) === null) return err('Пул — число не меньше 0'); c.pool = num(body.pool); }
+      // a plan file was uploaded for the current period: the edit goes there too, otherwise it would not show
+      const last = agUploadsDesc()[0], PP = last && S.ext?.clientPlans?.[last.period_from];
+      if (PP && (body.plan !== undefined || body.pool !== undefined)) { const e = (PP[c.name] ||= { plan: 0, pool: 0 }); if (body.plan !== undefined) e.plan = c.plan; if (body.pool !== undefined) e.pool = c.pool; }
       if (body.note !== undefined) c.note = String(body.note).slice(0, 500);
       if (body.agent !== undefined) c.agent = String(body.agent).trim().slice(0, 80);
       return ok();
