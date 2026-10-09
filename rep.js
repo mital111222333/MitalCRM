@@ -4,7 +4,7 @@
 window.EXT_PAGES = window.EXT_PAGES || {};
 
 const REP = {
-  TABS: [['rday', 'Отчёт дня'], ['rdebt', 'Дебиторка'], ['rsleep', 'Спящие клиенты'], ['rdyn', 'Динамика по месяцам'], ['tg', 'Telegram агентам']],
+  TABS: [['rday', 'Отчёт дня'], ['rdebt', 'Дебиторка'], ['rsleep', 'Спящие клиенты'], ['rdays', 'По дням и неделям'], ['rdyn', 'Динамика по периодам'], ['tg', 'Telegram агентам']],
   BUCKETS: [['b7', 'до 7 дней', 'var(--c3)'], ['b30', '8–30 дней', 'var(--c4)'], ['b60', '31–60 дней', 'var(--c2)'], ['b99', 'больше 60 дней', 'var(--c8)']],
   MONTHS: ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'],
   today: () => UI.localDate(Date.now()),
@@ -255,4 +255,53 @@ EXT_PAGES.rdyn = async el => {
     ${UI.panel('Сбор денег агентов по месяцам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th>${M.map(m => `<th class="n">${m.label}</th>`).join('')}<th class="n">Изменение</th></tr></thead><tbody>${agents.map(a => { const v = M.map(m => m.agents[a]?.paid || 0); return `<tr><td>${esc(a)}</td>${v.map(x => `<td class="n">${f(x)}</td>`).join('')}<td class="n">${UI.delta(dp(v.at(-1), v.at(-2)), { unit: '%' }) || '—'}</td></tr>`; }).join('')}</tbody></table></div>`, { cls: 'w12' })}
   </div>`;
   $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdyn(el); };
+};
+
+// ---------- По дням / неделям / месяцам: what was sold and collected each day (the difference between daily uploads) ----------
+REP.daily = S => {
+  const ups = S.ag.uploads.slice().sort((a, b) => (a.taken_at < b.taken_at ? -1 : a.taken_at > b.taken_at ? 1 : a.id - b.id));
+  const last = new Map(); for (const u of ups) last.set(u.period_from + '|' + u.taken_at, u); // one (the latest) upload per day and period
+  const byPer = new Map(); for (const u of last.values()) (byPer.get(u.period_from) || byPer.set(u.period_from, []).get(u.period_from)).push(u);
+  const days = new Map();
+  for (const list of byPer.values()) {
+    list.sort((a, b) => (a.taken_at < b.taken_at ? -1 : 1));
+    let prev = null;
+    for (const u of list) {
+      const was = new Map(prev ? prev.rows.map(r => [r.client, r]) : []), day = (days.get(u.taken_at) || days.set(u.taken_at, { date: u.taken_at, sold: 0, paid: 0, ret: 0, agents: {}, first: !prev }).get(u.taken_at));
+      for (const r of u.rows) {
+        const p = was.get(r.client) || { sold: 0, paid: 0, ret: 0 }, agent = r.agent || S.ag.clients[r.client]?.agent || 'Без агента';
+        const ds = r.sold - p.sold, dp = r.paid - p.paid, dr = r.ret - p.ret, a = (day.agents[agent] ||= { sold: 0, paid: 0, ret: 0 });
+        day.sold += ds; day.paid += dp; day.ret += dr; a.sold += ds; a.paid += dp; a.ret += dr;
+      }
+      if (!prev) day.from = u.period_from;
+      prev = u;
+    }
+  }
+  return [...days.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+};
+REP.weekStart = d => { const x = new Date(d + 'T12:00:00'), wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd); return UI.localDate(x.getTime()); };
+let repDays = { by: 'day', agent: '' };
+EXT_PAGES.rdays = async el => {
+  const d = await REP.load(), body = REP.shell(el, 'rdays', d, '<button class="btn gray" id="rCsv">⬇ Excel (CSV)</button>');
+  if (d.empty) return REP.empty(body);
+  const S = repDays, f = UI.fmt0, days = REP.daily(CRMLocal.engine.getState());
+  const agents = [...new Set(days.flatMap(x => Object.keys(x.agents)))].sort((a, b) => a.localeCompare(b));
+  const val = (x, k) => (S.agent ? x.agents[S.agent]?.[k] || 0 : x[k]);
+  const key = x => (S.by === 'day' ? x.date : S.by === 'week' ? REP.weekStart(x.date) : x.date.slice(0, 7));
+  const label = k => (S.by === 'day' ? UI.dateRu(k) : S.by === 'week' ? `${UI.dm(k)}–${UI.dm(UI.localDate(Date.parse(k + 'T12:00:00') + 6 * 864e5))}` : REP.month(k + '-01'));
+  const groups = new Map();
+  for (const x of days) { const k = key(x), g = groups.get(k) || groups.set(k, { k, sold: 0, paid: 0, ret: 0, n: 0, first: false, agents: {} }).get(k); g.sold += val(x, 'sold'); g.paid += val(x, 'paid'); g.ret += val(x, 'ret'); g.n++; if (x.first) g.first = true; for (const [a, v] of Object.entries(x.agents)) { const t = (g.agents[a] ||= { sold: 0, paid: 0 }); t.sold += v.sold; t.paid += v.paid; } }
+  const G = [...groups.values()];
+  const firstNote = days.length && days[0].first ? `Первая загрузка (${UI.dateRu(days[0].date)}) содержит всё, что было с ${UI.dateRu(days[0].from)} — поэтому этот день большой. Дальше каждый день — только прирост.` : '';
+  body.innerHTML = `<div class="bar"><select id="dBy" aria-label="Шаг"><option value="day" ${S.by === 'day' ? 'selected' : ''}>По дням</option><option value="week" ${S.by === 'week' ? 'selected' : ''}>По неделям (пн–вс)</option><option value="month" ${S.by === 'month' ? 'selected' : ''}>По календарным месяцам</option></select>
+      <select id="repAg" aria-label="Агент"><option value="">Вся команда</option>${agents.map(n => `<option ${n === S.agent ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+      <span class="mut">Загружено дней: ${days.length}${days.length ? ` · с ${UI.dateRu(days[0].date)} по ${UI.dateRu(days.at(-1).date)}` : ''}</span></div>
+    ${days.length < 2 ? `<p class="mut">Пока загружен ${days.length} день. Загружайте баланс каждый день (можно несколько раз — сохранится последний за день), и здесь появится, сколько продано и собрано в каждый день, неделю и месяц.</p>` : ''}
+    <div class="grid">
+      ${UI.panel(`Продано и собрано ${S.by === 'day' ? 'по дням' : S.by === 'week' ? 'по неделям' : 'по месяцам'}`, CH.columns(G.slice(-31).map(g => ({ label: S.by === 'day' ? UI.dm(g.k) : S.by === 'week' ? UI.dm(g.k) : REP.MONTHS[+g.k.slice(5, 7) - 1].slice(0, 3), values: [Math.max(0, g.sold), Math.max(0, g.paid)] })), [{ name: 'Продано', color: 'var(--c1)' }, { name: 'Собрано', color: 'var(--c3)' }], { fmt: UI.fmt0 }), { cls: 'w12', sub: firstNote })}
+      ${UI.panel('Таблица', `<div class="scroll"><table><thead><tr><th>${S.by === 'day' ? 'День' : S.by === 'week' ? 'Неделя' : 'Месяц'}</th><th class="n">Продано</th><th class="n">Возвраты</th><th class="n">Собрано денег</th>${S.agent ? '' : agents.map(a => `<th class="n">${esc(a.split(' ')[0])}<br><small>прод. / сбор</small></th>`).join('')}</tr></thead><tbody>${G.slice().reverse().map(g => `<tr><td>${label(g.k)}${g.first ? ' <small class="mut">(с начала периода)</small>' : ''}${S.by !== 'day' ? `<br><small class="mut">загрузок за дни: ${g.n}</small>` : ''}</td><td class="n"><b>${f(g.sold)}</b></td><td class="n">${f(g.ret)}</td><td class="n"><b>${f(g.paid)}</b></td>${S.agent ? '' : agents.map(a => `<td class="n">${f(g.agents[a]?.sold || 0)}<br><small>${f(g.agents[a]?.paid || 0)}</small></td>`).join('')}</tr>`).join('')}</tbody><tfoot><tr><td><b>Всего</b></td><td class="n"><b>${f(G.reduce((a, g) => a + g.sold, 0))}</b></td><td class="n">${f(G.reduce((a, g) => a + g.ret, 0))}</td><td class="n"><b>${f(G.reduce((a, g) => a + g.paid, 0))}</b></td>${S.agent ? '' : agents.map(() => '<td></td>').join('')}</tr></tfoot></table></div>`, { cls: 'w12', sub: 'Сколько продано и собрано именно за этот день / неделю / месяц — разница между ежедневными загрузками' })}
+    </div>`;
+  $('#dBy', body).onchange = e => { S.by = e.target.value; EXT_PAGES.rdays(el); };
+  $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdays(el); };
+  $('#rCsv', el).onclick = () => UI.csv(`продажи-и-сбор-${S.by}.csv`, [['Период', 'Продано', 'Возвраты', 'Собрано', ...agents.flatMap(a => [a + ' продано', a + ' собрано'])], ...G.map(g => [label(g.k), Math.round(g.sold), Math.round(g.ret), Math.round(g.paid), ...agents.flatMap(a => [Math.round(g.agents[a]?.sold || 0), Math.round(g.agents[a]?.paid || 0)])])]);
 };

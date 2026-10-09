@@ -314,3 +314,7 @@ table.plan2 th.grp { text-align: center; border-bottom: 1px solid var(--line-2);
 #planSum .pl > b:first-child { min-width: 120px; color: var(--text); }
 #planSum .pl .tot { color: var(--text); }
 .xltable .pp { display: flex; gap: 3px; align-items: center; justify-content: flex-end; margin: 2px 0; } .xltable .pp .arr { color: var(--muted); font-size: 11px; }
+table.psum { margin-top: 8px; box-shadow: none; border: 1px solid var(--line); border-radius: 8px; width: auto; min-width: min(100%, 900px); }
+table.psum th, table.psum td { padding: 6px 12px; } table.psum td:first-child { white-space: nowrap; }
+.xltable td.xexp { background: #f1f8f1; white-space: nowrap; }
+.grid .w12 svg.chart { max-height: 340px; }
