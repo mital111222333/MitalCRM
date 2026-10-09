@@ -20,25 +20,45 @@ const AI = {
     const flash = models.filter(n => /flash/.test(n) && !/thinking/.test(n));
     return (flash.length ? flash : models).slice().sort((a, b) => score(b) - score(a))[0] || 'gemini-2.5-flash';
   },
-  async model() {
+  // models to try, best first: the chosen (or auto-picked) one, then other Flash models as a fallback
+  async candidates() {
     const x = CRMLocal.ext().ai || {};
-    if (x.model) return x.model;
-    if (!AI._auto) { try { AI._auto = AI.pick(await AI.models()); } catch { AI._auto = 'gemini-2.5-flash'; } }
-    return AI._auto;
+    if (!AI._list) { try { AI._list = await AI.models(); } catch { AI._list = []; } }
+    const ver = n => Number((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+    const flash = AI._list.filter(n => /flash/.test(n) && !/thinking/.test(n)).sort((a, b) => (/preview|exp/.test(a) - /preview|exp/.test(b)) || ver(b) - ver(a) || (/lite/.test(a) - /lite/.test(b)));
+    const first = x.model || AI.pick(AI._list);
+    return [...new Set([first, ...flash, 'gemini-2.5-flash', 'gemini-2.5-flash-lite'])].filter(Boolean).slice(0, 5);
   },
-  async ask(history, system, { json = false } = {}) {
-    if (!AI.key()) throw new Error('Добавьте ключ Gemini в «Данные → Синхронизация и настройки»');
-    const model = await AI.model();
-    const body = { systemInstruction: { parts: [{ text: system }] }, contents: history.map(m => ({ role: m.role === 'ai' ? 'model' : 'user', parts: [{ text: m.text }] })), generationConfig: { temperature: 0.4, ...(json ? { responseMimeType: 'application/json' } : {}) } };
+  async model() { return (await AI.candidates())[0]; },
+  // one request; returns {text} or {retry: true, error} when the model is overloaded and another one should be tried
+  async call(model, body) {
     let r;
     try { r = await fetch(`${AI.BASE}/models/${model}:generateContent?key=${encodeURIComponent(AI.key())}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
     catch { throw new Error('Нет связи с Google Gemini'); }
     const d = await r.json().catch(() => ({}));
-    if (r.status === 429) throw new Error('Бесплатный лимит Gemini на эту минуту исчерпан — подождите минуту и повторите');
-    if (!r.ok) throw new Error(d.error?.message || 'Ошибка Gemini ' + r.status);
+    const msg = d.error?.message || 'Ошибка Gemini ' + r.status;
+    if (r.status === 503 || r.status === 500 || r.status === 504 || r.status === 404 || (r.status === 429 && !/per day|PerDay/i.test(msg))) return { retry: true, status: r.status, error: msg };
+    if (r.status === 429) throw new Error('Дневной бесплатный лимит Gemini исчерпан — завтра снова заработает');
+    if (!r.ok) throw new Error(msg);
     const text = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
     if (!text) throw new Error('Gemini не ответил (возможно, сработал фильтр). Переформулируйте вопрос.');
-    return text;
+    return { text };
+  },
+  async ask(history, system, { json = false } = {}) {
+    if (!AI.key()) throw new Error('Добавьте ключ Gemini в «Данные → Синхронизация и настройки»');
+    const body = { systemInstruction: { parts: [{ text: system }] }, contents: history.map(m => ({ role: m.role === 'ai' ? 'model' : 'user', parts: [{ text: m.text }] })), generationConfig: { temperature: 0.4, ...(json ? { responseMimeType: 'application/json' } : {}) } };
+    const sleep = ms => new Promise(res => setTimeout(res, ms));
+    let last = null;
+    // Google often answers "high demand" for a few seconds: try the next model, then go round once more after a pause
+    for (let round = 0; round < 2; round++) {
+      for (const m of await AI.candidates()) {
+        const r = await AI.call(m, body);
+        if (r.text) { AI.used = m; return r.text; }
+        last = r;
+      }
+      await sleep(4000);
+    }
+    throw new Error(last?.status === 429 ? 'Слишком много запросов к Gemini за минуту — подождите минуту и повторите' : 'Серверы Gemini сейчас перегружены. Повторите через минуту.');
   },
 
   // the data the model sees (plain text, numbers rounded)

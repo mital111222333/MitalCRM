@@ -251,7 +251,7 @@ EXT_PAGES.cloud = async el => {
     if (!key) { msg.textContent = 'Ключ удалён'; return; }
     msg.className = 'mut'; msg.textContent = 'Проверяю ключ…';
     try {
-      const models = await AI.models(key), sel = $('#gModel', el), cur = x.ai.model;
+      const models = await AI.models(key), sel = $("#gModel", el), cur = x.ai.model; AI._list = models;
       sel.innerHTML = `<option value="">Автоматически (${esc(AI.pick(models))})</option>` + models.map(m => `<option ${m === cur ? 'selected' : ''}>${esc(m)}</option>`).join('');
       msg.className = 'pos'; msg.textContent = `✓ Ключ работает, моделей: ${models.length}`;
     } catch (e) { msg.className = 'neg'; msg.textContent = e.message; }
