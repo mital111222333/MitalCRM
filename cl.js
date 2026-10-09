@@ -4,18 +4,18 @@
 window.EXT_PAGES = window.EXT_PAGES || {};
 
 let clState = { q: '', agent: '', status: '', sort: 'b1', dir: 1 };
-const CL_EDIT = ['plan', 'pool', 'note']; // editable columns, left to right
+const CL_EDIT = ['plan', 'pool', 'more_sale', 'more_pool', 'note']; // editable columns, left to right
 
 EXT_PAGES.aclients = async el => {
   const d = await agLoad(), body = agShell(el, 'aclients', d);
   if (d.empty) return agEmpty(body);
   const S = clState, agents = [...new Set(d.clients.map(c => c.agent))].sort((a, b) => a.localeCompare(b));
   const per = d.upload.period_from, perEnd = d.forecast.period_end || d.upload.period_to;
-  const STAT = { '': 'Все клиенты', plan: 'С планом или пулом', noplan: 'Без плана и пула', active: 'АКБ (активные)', idle: 'Неактивные', debt: 'Должники', idledebt: 'Должники без покупок', noagent: 'Без агента' };
+  const STAT = { '': 'Все клиенты', plan: 'С планом или пулом', noplan: 'Без плана и пула', left: 'Не добирают пул', active: 'АКБ (активные)', idle: 'Неактивные', debt: 'Должники', idledebt: 'Должники без покупок', noagent: 'Без агента' };
   body.innerHTML = `<div class="bar"><input type="search" id="q" placeholder="Поиск клиента" style="flex:1;min-width:200px" value="${esc(S.q)}"><select id="ag"><option value="">Все агенты</option>${agents.map(a => `<option ${a === S.agent ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select>
     <select id="st">${Object.entries(STAT).map(([k, v]) => `<option value="${k}" ${k === S.status ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
     <div class="planbar">
-      <div><b>План на период ${UI.dm(per)}–${UI.dm(perEnd)}</b><div class="mut" id="planSum"></div></div>
+      <div style="flex:1;min-width:280px"><b>План на период ${UI.dm(per)}–${UI.dm(perEnd)}</b>${d.forecast.projectable ? ` <span class="mut">· осталось ${d.forecast.days_left} дн.</span>` : ''}<div id="planSum"></div></div>
       <span class="spacer"></span>
       <button class="btn needs-edit" id="plUp">⬆ Загрузить план из Excel</button><input type="file" id="plFile" accept=".xlsx,.csv" hidden>
       <button class="btn gray" id="plTpl">⬇ Шаблон / выгрузить в Excel</button>
@@ -23,35 +23,38 @@ EXT_PAGES.aclients = async el => {
     <div class="bar needs-edit" id="bulk" hidden><b id="bcnt"></b><select id="bag">${agents.filter(a => a !== 'Без агента').map(a => `<option>${esc(a)}</option>`).join('')}</select><button class="btn sm" id="bgo">Назначить агента выбранным</button></div>
     <p class="mut" id="sum" style="margin:0 2px 10px"></p>
     <div class="scroll xl"><table id="ct" class="xltable"></table></div>
-    <p class="mut" style="margin:10px 2px">Ввод как в Excel: <b>Enter</b> или <b>↓</b> — ячейка ниже, <b>↑</b> — выше, <b>Tab</b> — вправо, <b>Esc</b> — отменить. Можно скопировать столбец или блок из Excel и вставить (<b>Ctrl+V</b>) — значения разойдутся по строкам. <b>Ctrl+D</b> — скопировать значение из ячейки выше. Всё сохраняется сразу. План и Пул — на текущий период плана, в долларах.</p>`;
+    <p class="mut" style="margin:10px 2px">Ввод как в Excel: <b>Enter</b> или <b>↓</b> — ячейка ниже, <b>↑</b> — выше, <b>Tab</b> — вправо, <b>Esc</b> — отменить. Можно скопировать столбец или блок из Excel и вставить (<b>Ctrl+V</b>) — значения разойдутся по строкам. <b>Ctrl+D</b> — скопировать значение из ячейки выше. Всё сохраняется сразу. План и Пул — на текущий период плана, в долларах. «Ещё продаст» и «Ещё соберёт» — сколько вы ожидаете от клиента до ${UI.dateRu(perEnd)} сверх уже сделанного (как «Яна сотув» и «Яна пул» в таблице).</p>`;
 
   let list = [];
   const selected = new Set();
-  const COLS = [['name', 'Клиент', 'l'], ['agent', 'Агент', 'l'], ['b0', 'Начало'], ['sold', 'Продано'], ['ret', 'Возврат'], ['paid', 'Оплачено'], ['b1', 'Баланс'], ['plan', 'План, $'], ['pool', 'Пул, $'], ['done', 'Выполнение'], ['note', 'Заметки', 'l']];
+  const COLS = [['name', 'Клиент', 'l'], ['agent', 'Агент', 'l'], ['b0', 'Начало'], ['sold', 'Продано'], ['ret', 'Возврат'], ['paid', 'Оплачено'], ['b1', 'Баланс'], ['plan', 'План, $'], ['pool', 'Пул, $'], ['more_sale', 'Ещё продаст, $'], ['more_pool', 'Ещё соберёт, $'], ['done', 'Итого к ' + UI.dm(perEnd)], ['note', 'Заметки', 'l']];
   const pctTxt = (a, b) => (b > 0 ? Math.round(a / b * 100) + '%' : '');
   const tone = (a, b) => (b > 0 ? (a / b >= 1 ? 'good' : agPace(d) !== null && a / b < agPace(d) * 0.6 ? 'crit' : a / b < (agPace(d) ?? 0.6) * 0.9 ? 'warn' : 'info') : '');
-  const doneCell = c => `${c.plan > 0 ? `<span class="pill ${tone(c.sold, c.plan)}" title="Продано от плана">П ${pctTxt(c.sold, c.plan)}</span>` : ''} ${c.pool > 0 ? `<span class="pill ${tone(c.paid, c.pool)}" title="Оплачено от пула">С ${pctTxt(c.paid, c.pool)}</span>` : ''}`;
+  // now → with the expected extra by the end of the period
+  const pairTxt = (now, more, plan, label) => plan > 0 || more > 0 ? `<div class="pp"><span class="pill ${tone(now, plan)}" title="${label}: сейчас">${label[0]} ${plan > 0 ? pctTxt(now, plan) : '$' + UI.fmt0(now)}</span>${more > 0 ? `<span class="arr">→</span><span class="pill ${plan > 0 && (now + more) / plan >= 1 ? 'good' : 'info'}" title="${label}: с учётом «ещё» к концу периода — $${UI.fmt0(now + more)}">${plan > 0 ? pctTxt(now + more, plan) : '$' + UI.fmt0(now + more)}</span>` : ''}</div>` : '';
+  const doneCell = c => pairTxt(c.sold, c.more_sale || 0, c.plan, 'Продажи') + pairTxt(c.paid, c.more_pool || 0, c.pool, 'Сбор денег');
 
   const sums = () => {
-    const sp = list.reduce((a, c) => a + (c.plan || 0), 0), sl = list.reduce((a, c) => a + (c.pool || 0), 0);
-    const sold = list.filter(c => c.plan > 0).reduce((a, c) => a + c.sold, 0), paid = list.filter(c => c.pool > 0).reduce((a, c) => a + c.paid, 0);
-    $('#planSum', body).innerHTML = `Продажи: <b>$${UI.fmt0(sp)}</b> у ${list.filter(c => c.plan > 0).length} кл.${sp ? ` · выполнено ${pctTxt(sold, sp)}` : ''} &nbsp;·&nbsp; Сбор денег: <b>$${UI.fmt0(sl)}</b> у ${list.filter(c => c.pool > 0).length} кл.${sl ? ` · собрано ${pctTxt(paid, sl)}` : ''}${S.agent || S.q || S.status ? ' <span class="mut">(по показанным клиентам)</span>' : ''}`;
+    const sum = k => list.reduce((a, c) => a + (c[k] || 0), 0);
+    const sp = sum('plan'), sl = sum('pool'), sold = sum('sold'), paid = sum('paid'), ms = sum('more_sale'), mp = sum('more_pool');
+    const line = (title, plan, now, more, nowWord, moreWord) => `<div class="pl"><b>${title}</b><span>план <b>$${UI.fmt0(plan)}</b></span><span>${nowWord} <b>$${UI.fmt0(now)}</b>${plan ? ` (${pctTxt(now, plan)})` : ''}</span><span>${moreWord} <b>$${UI.fmt0(more)}</b></span><span class="tot">итого к ${UI.dm(perEnd)}: <b>$${UI.fmt0(now + more)}</b>${plan ? ` · <b>${pctTxt(now + more, plan)}</b> плана` : ''}</span>${plan ? `<span class="mut">не хватает до плана: $${UI.fmt0(Math.max(0, plan - now - more))}</span>` : ''}</div>`;
+    $('#planSum', body).innerHTML = line('🛒 Продажи', sp, sold, ms, 'продано', 'ещё продаст') + line('💰 Сбор денег', sl, paid, mp, 'собрано', 'ещё соберёт') + (S.agent || S.q || S.status ? '<div class="mut">по показанным клиентам</div>' : '');
     const f = $('#ct tfoot', body);
-    if (f) f.innerHTML = `<tr><td class="needs-edit"></td><td><b>Итого (${list.length})</b></td><td></td><td class="n">${UI.fmt0(list.reduce((a, c) => a + c.b0, 0))}</td><td class="n"><b>${UI.fmt0(list.reduce((a, c) => a + c.sold, 0))}</b></td><td class="n">${UI.fmt0(list.reduce((a, c) => a + c.ret, 0))}</td><td class="n"><b>${UI.fmt0(list.reduce((a, c) => a + c.paid, 0))}</b></td><td class="n">${UI.fmt0(list.reduce((a, c) => a + c.b1, 0))}</td><td class="n"><b>${UI.fmt0(sp)}</b></td><td class="n"><b>${UI.fmt0(sl)}</b></td><td></td><td></td><td></td></tr>`;
+    if (f) f.innerHTML = `<tr><td class="needs-edit"></td><td><b>Итого (${list.length})</b></td><td></td><td class="n">${UI.fmt0(list.reduce((a, c) => a + c.b0, 0))}</td><td class="n"><b>${UI.fmt0(list.reduce((a, c) => a + c.sold, 0))}</b></td><td class="n">${UI.fmt0(list.reduce((a, c) => a + c.ret, 0))}</td><td class="n"><b>${UI.fmt0(list.reduce((a, c) => a + c.paid, 0))}</b></td><td class="n">${UI.fmt0(list.reduce((a, c) => a + c.b1, 0))}</td><td class="n"><b>${UI.fmt0(sp)}</b></td><td class="n"><b>${UI.fmt0(sl)}</b></td><td class="n"><b>${UI.fmt0(ms)}</b></td><td class="n"><b>${UI.fmt0(mp)}</b></td><td class="n">${sl ? `<small>сбор ${pctTxt(paid + mp, sl)}</small>` : ''}</td><td></td><td></td></tr>`;
   };
 
   const draw = () => {
     S.q = $('#q', body).value; S.agent = $('#ag', body).value; S.status = $('#st', body).value;
     const q = S.q.toLowerCase();
-    list = d.clients.filter(c => (!q || c.name.toLowerCase().includes(q) || (c.phone || '').includes(q)) && (!S.agent || c.agent === S.agent) && (!S.status || (S.status === 'active' ? c.active : S.status === 'idle' ? !c.active : S.status === 'debt' ? c.b1 < 0 : S.status === 'idledebt' ? c.b1 < 0 && c.sold <= 0 : S.status === 'noagent' ? c.agent === 'Без агента' : S.status === 'noplan' ? !(c.plan > 0) && !(c.pool > 0) : c.plan > 0 || c.pool > 0)));
+    list = d.clients.filter(c => (!q || c.name.toLowerCase().includes(q) || (c.phone || '').includes(q)) && (!S.agent || c.agent === S.agent) && (!S.status || (S.status === 'active' ? c.active : S.status === 'idle' ? !c.active : S.status === 'debt' ? c.b1 < 0 : S.status === 'idledebt' ? c.b1 < 0 && c.sold <= 0 : S.status === 'noagent' ? c.agent === 'Без агента' : S.status === 'noplan' ? !(c.plan > 0) && !(c.pool > 0) : S.status === 'left' ? c.pool > c.paid + (c.more_pool || 0) : c.plan > 0 || c.pool > 0)));
     const key = S.sort === 'done' ? (c => (c.plan > 0 ? c.sold / c.plan : -1)) : (c => c[S.sort]);
     list.sort((a, b) => { const x = key(a), y = key(b); return (typeof x === 'string' ? x.localeCompare(y) : (x || 0) - (y || 0)) * S.dir; });
     $('#sum', body).innerHTML = `Показано <b>${list.length}</b> из ${d.clients.length} · долг: <b class="neg">$${UI.fmt0(list.reduce((s, c) => s + (c.b1 < 0 ? -c.b1 : 0), 0))}</b> · продано: <b>$${UI.fmt0(list.reduce((s, c) => s + c.sold, 0))}</b> · оплачено: <b>$${UI.fmt0(list.reduce((s, c) => s + c.paid, 0))}</b>`;
     const cell = (c, i, f) => f === 'note'
       ? `<td class="xc"><input class="xi txt" data-f="note" data-i="${i}" value="${esc(c.note || '')}" aria-label="Заметка: ${esc(c.name)}"></td>`
-      : `<td class="xc n"><input class="xi" inputmode="decimal" data-f="${f}" data-i="${i}" value="${c[f] ? Math.round(c[f] * 100) / 100 : ''}" aria-label="${f === 'plan' ? 'План' : 'Пул'}: ${esc(c.name)}"></td>`;
+      : `<td class="xc n"><input class="xi" inputmode="decimal" data-f="${f}" data-i="${i}" value="${c[f] ? Math.round(c[f] * 100) / 100 : ''}" aria-label="${{ plan: 'План', pool: 'Пул', more_sale: 'Ещё продаст', more_pool: 'Ещё соберёт' }[f]}: ${esc(c.name)}"></td>`;
     $('#ct', body).innerHTML = `<thead><tr><th class="needs-edit"><input type="checkbox" id="all" aria-label="Выбрать всех"></th>${COLS.map(([k, t, cl]) => `<th class="sort ${cl === 'l' ? '' : 'n'} ${CL_EDIT.includes(k) ? 'xlh' : ''}" data-s="${k}">${t}${S.sort === k ? (S.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}<th>Статус</th></tr></thead>
-      <tbody>${list.length ? list.map((c, i) => `<tr data-row="${i}"><td class="needs-edit"><input type="checkbox" data-sel="${i}" ${selected.has(c.name) ? 'checked' : ''} aria-label="Выбрать"></td><td style="min-width:200px">${esc(c.name)}${c.landmark || c.phone ? `<br><small>${esc([c.landmark, c.phone].filter(Boolean).join(' · '))}</small>` : ''}</td><td><select data-ag="${i}" style="max-width:160px" aria-label="Агент">${[...new Set([...agents, c.agent])].map(a => `<option ${a === c.agent ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></td><td class="n">${UI.fmt0(c.b0)}</td><td class="n">${UI.fmt0(c.sold)}</td><td class="n">${UI.fmt0(c.ret)}</td><td class="n">${UI.fmt0(c.paid)}${c.d_paid ? `<br><small class="pos">${UI.sign(c.d_paid)}</small>` : ''}</td><td class="n ${c.b1 < 0 ? 'neg' : ''}">${UI.fmt0(c.b1)}</td>${cell(c, i, 'plan')}${cell(c, i, 'pool')}<td class="n" data-done="${i}">${doneCell(c)}</td>${cell(c, i, 'note')}<td>${c.active ? UI.pill('good', 'АКБ', '✓') : UI.pill('muted', 'неактивен')}</td></tr>`).join('') : `<tr><td colspan="${COLS.length + 2}" class="empty">Ничего не найдено</td></tr>`}</tbody><tfoot></tfoot>`;
+      <tbody>${list.length ? list.map((c, i) => `<tr data-row="${i}"><td class="needs-edit"><input type="checkbox" data-sel="${i}" ${selected.has(c.name) ? 'checked' : ''} aria-label="Выбрать"></td><td style="min-width:200px">${esc(c.name)}${c.landmark || c.phone ? `<br><small>${esc([c.landmark, c.phone].filter(Boolean).join(' · '))}</small>` : ''}</td><td><select data-ag="${i}" style="max-width:160px" aria-label="Агент">${[...new Set([...agents, c.agent])].map(a => `<option ${a === c.agent ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></td><td class="n">${UI.fmt0(c.b0)}</td><td class="n">${UI.fmt0(c.sold)}</td><td class="n">${UI.fmt0(c.ret)}</td><td class="n">${UI.fmt0(c.paid)}${c.d_paid ? `<br><small class="pos">${UI.sign(c.d_paid)}</small>` : ''}</td><td class="n ${c.b1 < 0 ? 'neg' : ''}">${UI.fmt0(c.b1)}</td>${cell(c, i, 'plan')}${cell(c, i, 'pool')}${cell(c, i, 'more_sale')}${cell(c, i, 'more_pool')}<td class="n" data-done="${i}">${doneCell(c)}</td>${cell(c, i, 'note')}<td>${c.active ? UI.pill('good', 'АКБ', '✓') : UI.pill('muted', 'неактивен')}</td></tr>`).join('') : `<tr><td colspan="${COLS.length + 2}" class="empty">Ничего не найдено</td></tr>`}</tbody><tfoot></tfoot>`;
     sums();
     body.querySelectorAll('[data-s]').forEach(th => th.onclick = () => { const k = th.dataset.s; S.dir = S.sort === k ? -S.dir : (k === 'name' || k === 'agent' || k === 'note' ? 1 : -1); S.sort = k; draw(); });
     body.querySelectorAll('select[data-ag]').forEach(s => s.onchange = async () => { const c = list[+s.dataset.ag], r = await api('/api/ag/client', { method: 'POST', body: { name: c.name, agent: s.value } }); if (r.error) { toast(r.error); s.value = c.agent; } else { c.agent = s.value; toast('Агент изменён'); } });
@@ -130,6 +133,6 @@ EXT_PAGES.aclients = async el => {
     alert(`План загружен.\nПродажи: $${UI.fmt0(r.plan)} у ${r.with_plan} клиентов\nСбор денег: $${UI.fmt0(r.pool)} у ${r.with_pool} клиентов${r.missing_count ? `\n\nНе найдено в CRM (${r.missing_count}): ${r.missing.slice(0, 15).join(', ')}${r.missing_count > 15 ? '…' : ''}` : ''}`);
     route();
   };
-  $('#plTpl', body).onclick = () => UI.csv(`план-${per}.csv`, [['№', 'Клиент', 'Агент (справка)', 'План', 'Пул', 'Продано', 'Оплачено', 'Баланс', 'Заметки'], ...list.map(c => [c.num ?? '', c.name, c.agent, c.plan || '', c.pool || '', Math.round(c.sold), Math.round(c.paid), Math.round(c.b1), c.note || ''])]);
+  $('#plTpl', body).onclick = () => UI.csv(`план-${per}.csv`, [['№', 'Клиент', 'Агент (справка)', 'План', 'Пул', 'Яна сотув', 'Яна пул', 'Продано', 'Оплачено', 'Баланс', 'Заметки'], ...list.map(c => [c.num ?? '', c.name, c.agent, c.plan || '', c.pool || '', c.more_sale || '', c.more_pool || '', Math.round(c.sold), Math.round(c.paid), Math.round(c.b1), c.note || ''])]);
   draw();
 };

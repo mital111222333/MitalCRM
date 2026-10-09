@@ -47,7 +47,7 @@ nav.top .gear { color: #e3efef; text-decoration: none; font-size: 18px; padding:
 .branch option { color: var(--text); }
 .branchlock { color: #fff; font-size: 12px; background: #ffffff26; padding: 4px 10px; border-radius: 12px; margin-right: 12px; white-space: nowrap; }
 
-main { padding: 22px 20px 48px; max-width: 1380px; margin: 0 auto; }
+main { padding: 22px 28px 48px; max-width: 1920px; margin: 0 auto; }
 .spacer { flex: 1; }
 
 /* ============ Controls ============ */
@@ -309,3 +309,8 @@ ol.steps { margin: 0 0 10px; padding-left: 20px; } ol.steps li { margin: 4px 0; 
 .xltable input.xi.bad { background: var(--st-crit-bg); }
 .xltable tr.xrow td { background: var(--brand-50); } .xltable tr.xrow td.xc { background: #fff8d6; }
 .xltable tfoot td { background: var(--card-2); font-weight: 500; position: sticky; bottom: 0; }
+table.plan2 th.grp { text-align: center; border-bottom: 1px solid var(--line-2); background: #eef5f5; color: var(--brand); }
+#planSum .pl { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; margin-top: 4px; font-size: 13px; color: var(--text-2); }
+#planSum .pl > b:first-child { min-width: 120px; color: var(--text); }
+#planSum .pl .tot { color: var(--text); }
+.xltable .pp { display: flex; gap: 3px; align-items: center; justify-content: flex-end; margin: 2px 0; } .xltable .pp .arr { color: var(--muted); font-size: 11px; }

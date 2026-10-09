@@ -11,9 +11,8 @@ const whDays = i => (i.days_left != null && !['out', 'blocked'].includes(i.statu
 const whLatest = st => st.warehouses.map(w => w.upload?.taken_at).filter(Boolean).sort().at(-1) || null;
 
 function whShell(el, tab, sub, actions = '') {
-  el.innerHTML = `<div class="page-head"><div><h2>Склад</h2><div class="sub">${sub}</div></div><div class="actions">${actions}<button class="btn needs-edit" id="whUpBtn">⬆ Загрузить остатки</button></div></div>
+  el.innerHTML = `<div class="page-head"><div><h2>Склад</h2><div class="sub">${sub}</div></div><div class="actions">${actions}</div></div>
     <nav class="tabs" aria-label="Разделы склада">${WH_TABS.map(([r, t]) => `<a href="#/${r}" class="${r === tab ? 'on' : ''}">${t}</a>`).join('')}</nav><div id="whBody"></div>`;
-  $('#whUpBtn', el).onclick = () => whUploadDialog(() => route());
   return $('#whBody', el);
 }
 
@@ -32,8 +31,7 @@ async function whUploadDialog(onDone, warehouse = '', files = []) {
 }
 
 function whEmpty(el, st) {
-  el.innerHTML = UI.empty('Остатков пока нет', 'Загрузите выгрузку остатков из LINKO в карточку склада. Можно сразу несколько файлов за разные даты: так сразу появится анализ движения.', '<div class="dz needs-edit" id="whEmptyDz" tabindex="0" role="button"><b>Перетащите файлы сюда</b>или нажмите, чтобы выбрать</div>');
-  const dz = $('#whEmptyDz', el); if (dz) UI.bindDrop(dz, files => whUploadDialog(() => route(), '', files));
+  el.innerHTML = UI.empty('Остатков пока нет', 'Загрузите выгрузку остатков из LINKO в карточку склада. Можно сразу несколько файлов за разные даты: так сразу появится анализ движения.', '<a class="btn" href="#/up">⬆ Перейти к загрузке</a>');
 }
 
 // ---------- product details ----------
@@ -178,7 +176,7 @@ EXT_PAGES.whmove = async el => {
   if (S.days === 'custom') $('#go', body).onclick = () => { S.from = $('#f', body).value; S.to = $('#t', body).value; EXT_PAGES.whmove(el); };
   const box = $('#mvBody', body);
   if (mv.snapshots < 2 || mv.series.length < 2) {
-    box.innerHTML = UI.empty('Для анализа движения нужны минимум две загрузки', 'Движение считается как разница между соседними загрузками остатков одного склада. Загрузите выгрузки за разные даты (можно старые файлы): приход, расход, темп продаж и «хватит на сколько дней» появятся автоматически.', '<button class="btn needs-edit" id="mvUp">⬆ Загрузить остатки</button>');
+    box.innerHTML = UI.empty('Для анализа движения нужны минимум две загрузки', 'Движение считается как разница между соседними загрузками остатков одного склада. Загрузите выгрузки за разные даты (можно старые файлы): приход, расход, темп продаж и «хватит на сколько дней» появятся автоматически.', '<a class="btn" href="#/up">⬆ Перейти к загрузке</a>');
     const b = $('#mvUp', box); if (b) b.onclick = () => whUploadDialog(() => route(), S.wh);
     return;
   }
@@ -227,12 +225,10 @@ EXT_PAGES.whup = async el => {
   const body = whShell(el, 'whup', 'Склады и история загрузок');
   body.innerHTML = `<div class="bar"><h3 style="margin:0">Склады</h3><span class="spacer"></span><button class="btn gray needs-edit" id="addwh">+ Склад</button></div>
     <div class="grid">${whs.map(w => `<div class="panel w4"><div class="whcard"><div class="ph" style="margin:0"><div><h4>${esc(w.name)}</h4><div class="sub">${esc(w.note || ' ')}</div></div><button class="twin needs-edit" data-ed="${esc(w.name)}">✎</button></div>
-      ${w.latest ? `<div class="stats"><div><b>${UI.fmt0(w.latest.items)}</b><span>позиций</span></div><div><b>${UI.fmt0(w.latest.available)}</b><span>доступно, шт.</span></div><div><b>${UI.fmt0(w.latest.reserved)}</b><span>в резерве</span></div></div><small>Остаток на ${UI.dateRu(w.latest.taken_at)} · загрузок: ${w.uploads}</small>` : '<small>Загрузок ещё нет</small>'}
-      <div class="dz sm needs-edit" data-up="${esc(w.name)}" tabindex="0" role="button"><b>Загрузить остатки</b>перетащите файлы или нажмите</div></div></div>`).join('')}</div>
+      ${w.latest ? `<div class="stats"><div><b>${UI.fmt0(w.latest.items)}</b><span>позиций</span></div><div><b>${UI.fmt0(w.latest.available)}</b><span>доступно, шт.</span></div><div><b>${UI.fmt0(w.latest.reserved)}</b><span>в резерве</span></div></div><small>Остаток на ${UI.dateRu(w.latest.taken_at)} · загрузок: ${w.uploads}</small>` : '<small>Загрузок ещё нет</small>'}</div></div>`).join('')}</div>
     <h3>История загрузок</h3><div class="scroll"><table><thead><tr><th>Остаток на дату</th><th>Склад</th><th>Файл</th><th class="n">Позиций</th><th class="n">Всего, шт.</th><th class="n">Доступно</th><th class="n">Резерв</th><th>Загрузил</th><th></th></tr></thead><tbody>${ups.length ? ups.map(u => `<tr><td>${UI.dateRu(u.taken_at)}</td><td>${esc(u.warehouse)}</td><td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(u.file)}">${esc(u.file)}</td><td class="n">${u.items}</td><td class="n">${UI.fmt0(u.total)}</td><td class="n">${UI.fmt0(u.available)}</td><td class="n">${UI.fmt0(u.reserved)}</td><td>${esc(u.uploaded_by)}<br><small>${esc((u.uploaded_at || '').slice(0, 16).replace('T', ' '))}</small></td><td class="needs-edit"><button class="btn gray sm" data-del="${u.id}">Удалить</button></td></tr>`).join('') : '<tr><td colspan="9" class="empty">Загрузок пока нет</td></tr>'}</tbody></table></div>
-    <p class="mut" style="margin-top:12px">Как пользоваться: после каждой выгрузки остатков из LINKO загружайте файл в нужный склад. Если за ту же дату файл уже был, он заменится. Чем чаще загрузки, тем точнее движение и прогноз «хватит на сколько дней».</p>`;
+    <p class="mut" style="margin-top:12px">Как пользоваться: после каждой выгрузки остатков из LINKO загружайте файл на странице «⬆ Загрузить» в блок нужного склада. Если за ту же дату файл уже был, он заменится. Чем чаще загрузки, тем точнее движение и прогноз «хватит на сколько дней».</p>`;
   $('#addwh', body).onclick = () => whNameDialog(null, () => route());
   body.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => whNameDialog(whs.find(w => w.name === b.dataset.ed), () => route()));
-  body.querySelectorAll('[data-up]').forEach(z => UI.bindDrop(z, files => whUploadDialog(() => route(), z.dataset.up, files)));
   body.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (!confirm('Удалить эту загрузку? Движение склада пересчитается.')) return; const d = await api(`/api/wh/uploads/${b.dataset.del}/delete`, { method: 'POST', body: {} }); if (d.error) return toast(d.error); route(); });
 };

@@ -461,9 +461,9 @@ const { KINDS, AKB_RULES } = require('./parse');
 function aggregate(rows, active) {
   const m = new Map();
   for (const r of rows) {
-    const a = m.get(r.agent) || { agent: r.agent, okb: 0, akb: 0, plan: 0, sold: 0, ret: 0, paid: 0, pool: 0, debt: 0, debtors: 0, idle_debtors: 0, top_debt: null };
+    const a = m.get(r.agent) || { agent: r.agent, okb: 0, akb: 0, plan: 0, sold: 0, ret: 0, paid: 0, pool: 0, more_sale: 0, more_pool: 0, debt: 0, debtors: 0, idle_debtors: 0, top_debt: null };
     a.okb++; if (active(r)) a.akb++;
-    a.plan += r.plan || 0; a.sold += r.sold; a.ret += r.ret; a.paid += r.paid; a.pool += r.pool || 0;
+    a.plan += r.plan || 0; a.more_sale += r.more_sale || 0; a.more_pool += r.more_pool || 0; a.sold += r.sold; a.ret += r.ret; a.paid += r.paid; a.pool += r.pool || 0;
     if (r.b1 < 0) { a.debt -= r.b1; a.debtors++; if (r.sold <= 0) a.idle_debtors++; if (!a.top_debt || -r.b1 > a.top_debt.debt) a.top_debt = { client: r.client, debt: -r.b1 }; }
     m.set(r.agent, a);
   }
@@ -515,7 +515,7 @@ function dashboard(src, q = {}) {
   }).sort((a, b) => b.sold - a.sold);
   const clients = rows.map(r => {
     const p = prevRows?.get(r.client);
-    return { active: active(r), name: r.client, agent: r.agent, num: r.num, type: r.type, landmark: r.landmark, phone: r.phone, zone: r.zone, b0: r.b0, sold: r.sold, ret: r.ret, paid: r.paid, b1: r.b1, plan: r.plan || 0, pool: r.pool || 0, note: r.note || '',
+    return { active: active(r), name: r.client, agent: r.agent, num: r.num, type: r.type, landmark: r.landmark, phone: r.phone, zone: r.zone, b0: r.b0, sold: r.sold, ret: r.ret, paid: r.paid, b1: r.b1, plan: r.plan || 0, pool: r.pool || 0, more_sale: r.more_sale || 0, more_pool: r.more_pool || 0, note: r.note || '',
       d_sold: p ? r.sold - p.sold : null, d_paid: p ? r.paid - p.paid : null };
   });
   // trend: every upload (oldest first, last 24)
@@ -676,7 +676,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
     const up = S.ag.uploads.find(u => u.id === id), PP = S.ext?.clientPlans?.[up.period_from] || null; // plans uploaded for this plan period
     return up.rows.map(r => {
       const c = S.ag.clients[r.client] || {}, pp = PP ? PP[r.client] || { plan: 0, pool: 0 } : null;
-      return { ...r, num: c.num ?? null, type: c.type ?? null, landmark: c.landmark ?? null, phone: c.phone ?? null, zone: c.zone ?? null, plan: pp ? pp.plan : c.plan ?? null, pool: pp ? pp.pool : c.pool ?? null, note: c.note ?? null, magent: c.agent, agent: r.agent || c.agent || NO_AGENT };
+      return { ...r, num: c.num ?? null, type: c.type ?? null, landmark: c.landmark ?? null, phone: c.phone ?? null, zone: c.zone ?? null, plan: pp ? pp.plan : c.plan ?? null, pool: pp ? pp.pool : c.pool ?? null, more_sale: pp?.more_sale || 0, more_pool: pp?.more_pool || 0, note: c.note ?? null, magent: c.agent, agent: r.agent || c.agent || NO_AGENT };
     });
   };
   const agSrc = { uploads: () => agUploadsDesc().map(strip), rows: agRows, tasks: () => S.ag.tasks.slice().sort((a, b) => b.id - a.id), akb: () => S.ag.akb };
@@ -730,7 +730,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
     if (!isDate(period)) return err('Укажите начало периода плана');
     if (!raw || !raw.length) return err('Файл пустой');
     let sheets; try { sheets = await readTableAsync(raw, q.file || ''); } catch (e) { return err(e.message, e.status || 400); }
-    const SPEC = { num: ['№', 'номер клиента'], name: ['клиент'], agent: ['агент (справка)', 'агент'], plan: ['план', 'план продаж'], pool: ['пул', 'план сбора', 'план оплат'] };
+    const SPEC = { num: ['№', 'номер клиента'], name: ['клиент'], agent: ['агент (справка)', 'агент'], plan: ['план', 'план продаж'], pool: ['пул', 'план сбора', 'план оплат'], more_sale: ['яна сотув', 'ещё продаст', 'еще продаст', 'ещё продажи', 'еще продажи'], more_pool: ['яна пул', 'ещё соберёт', 'еще соберет', 'ещё соберётся', 'еще соберется'] };
     let h = null, sheet = null;
     for (const sh of sheets) { const x = findHeader(sh.rows, SPEC, m => m.name !== undefined && (m.plan !== undefined || m.pool !== undefined)); if (!x.error) { h = x; sheet = sh; break; } }
     if (!h) return err('Это не файл плана: нужны колонки «Клиент» и «План» и/или «Пул»');
@@ -745,6 +745,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
       const key = (num !== null && byNum.get(num)) || byName.get(norm(name));
       if (!key) { if (p || l) missing.push(name); continue; }
       const e = (out[key] ||= { plan: 0, pool: 0 }); e.plan += p; e.pool += l; plan += p; pool += l;
+      for (const k of ['more_sale', 'more_pool']) if (h.map[k] !== undefined) { const v = Math.max(0, N(r[h.map[k]])); if (v) e[k] = (e[k] || 0) + v; }
     }
     S.ext.clientPlans = S.ext.clientPlans || {};
     const replaced = !!S.ext.clientPlans[period];
@@ -786,6 +787,14 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
         let PP = S.ext.clientPlans[last.period_from];
         if (!PP) { PP = S.ext.clientPlans[last.period_from] = {}; for (const x of Object.values(S.ag.clients)) if (x.plan > 0 || x.pool > 0) PP[x.name] = { plan: x.plan || 0, pool: x.pool || 0 }; }
         const e = (PP[c.name] ||= { plan: 0, pool: 0 }); if (body.plan !== undefined) e.plan = c.plan; if (body.pool !== undefined) e.pool = c.pool;
+      }
+      if (body.more_sale !== undefined || body.more_pool !== undefined) {
+        const last = agUploadsDesc()[0]; if (!last) return err('Сначала загрузите баланс');
+        S.ext.clientPlans = S.ext.clientPlans || {};
+        let PP = S.ext.clientPlans[last.period_from];
+        if (!PP) { PP = S.ext.clientPlans[last.period_from] = {}; for (const x of Object.values(S.ag.clients)) if (x.plan > 0 || x.pool > 0) PP[x.name] = { plan: x.plan || 0, pool: x.pool || 0 }; }
+        const e = (PP[c.name] ||= { plan: 0, pool: 0 });
+        for (const k of ['more_sale', 'more_pool']) if (body[k] !== undefined) { const v = num(body[k]); if (v === null) return err('Сумма — число не меньше 0'); e[k] = v; }
       }
       if (body.note !== undefined) c.note = String(body.note).slice(0, 500);
       if (body.agent !== undefined) c.agent = String(body.agent).trim().slice(0, 80);
