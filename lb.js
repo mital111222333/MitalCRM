@@ -4,6 +4,7 @@
 window.EXT_PAGES = window.EXT_PAGES || {};
 
 const LB = {
+  day(v) { const n = Math.round(v || 0); return n > 0 ? `+$${UI.fmt0(n)} за день` : n < 0 ? `−$${UI.fmt0(-n)} за день` : ''; },
   MEDAL: ['🥇', '🥈', '🥉'],
   initials: n => n.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase(),
   // tone of a plan percent against the share of the period already gone
@@ -40,7 +41,7 @@ const LB = {
       <div class="lbmain">
         <div class="lbtop"><span class="lbname">${esc(r.a.agent)}${r.move > 0 ? ` <span class="delta up" title="Поднялся с прошлой загрузки">▲${r.move}</span>` : r.move < 0 ? ` <span class="delta down" title="Опустился с прошлой загрузки">▼${-r.move}</span>` : ''}</span><b class="lbval">$${UI.fmt0(r.v)}</b></div>
         ${LB.bar(r, pace)}
-        <div class="lbsub"><span>${r.p === null ? '<span class="mut">план не задан</span>' : `<b style="color:${LB.COLORS[r.tone]}">${Math.round(r.p * 100)}%</b> из $${UI.fmt0(r.plan)} · ${LB.TONE_TEXT[r.tone]}`}</span><span>${r.dv ? `+$${UI.fmt0(r.dv)} за день` : d0(r)}${r.need > 0 ? ` · нужно $${UI.fmt0(r.need)}/день` : ''}</span></div>
+        <div class="lbsub"><span>${r.p === null ? '<span class="mut">план не задан</span>' : `<b style="color:${LB.COLORS[r.tone]}">${Math.round(r.p * 100)}%</b> из $${UI.fmt0(r.plan)} · ${LB.TONE_TEXT[r.tone]}`}</span><span>${LB.day(r.dv) || d0(r)}${r.need > 0 ? ` · нужно $${UI.fmt0(r.need)}/день` : ''}</span></div>
       </div></div>`).join('');
     function d0(r) { return r.dv === null || r.dv === undefined ? '' : `<span class="mut">за день 0</span>`; }
   },
@@ -49,7 +50,7 @@ const LB = {
   async image(d) {
     try { await document.fonts.ready; } catch { /* ignore */ }
     const L = LB.build(d), n = Math.max(L.sales.length, 1), W = 1080, ROW = 104, SEC = 100 + n * ROW;
-    const H = 240 + SEC * 2 + 40 + 150;
+    const H = 240 + SEC * 2 + 40;
     const c = document.createElement('canvas'); c.width = W; c.height = H;
     const x = c.getContext('2d'), F = '"IBM Plex Sans", "Segoe UI", system-ui, sans-serif';
     const rr = (X, Y, w, h, r) => { x.beginPath(); x.moveTo(X + r, Y); x.arcTo(X + w, Y, X + w, Y + h, r); x.arcTo(X + w, Y + h, X, Y + h, r); x.arcTo(X, Y + h, X, Y, r); x.arcTo(X, Y, X + w, Y, r); x.closePath(); };
@@ -81,7 +82,7 @@ const LB = {
         if (r.p !== null && r.p > 0) { rr(bx, by, Math.max(14, bw * Math.min(r.p, 1)), 14, 7); x.fillStyle = LB.COLORS[r.tone]; x.fill(); }
         if (L.pace !== null && r.p !== null) { x.fillStyle = '#14212b'; x.fillRect(bx + bw * Math.min(L.pace, 1) - 1.5, by - 5, 3, 24); }
         text(r.p === null ? 'план не задан' : `${Math.round(r.p * 100)}% плана`, W - 72, y + 60, 24, r.p === null ? '#7b8792' : LB.COLORS[r.tone], 600, 'right');
-        const sub = [r.dv ? `+$${UI.fmt0(r.dv)} за день` : '', r.move > 0 ? `▲ ${r.move}` : r.move < 0 ? `▼ ${-r.move}` : ''].filter(Boolean).join('   ');
+        const sub = [LB.day(r.dv), r.move > 0 ? `▲ ${r.move}` : r.move < 0 ? `▼ ${-r.move}` : ''].filter(Boolean).join('   ');
         if (sub) text(sub, 146, y + 88, 20, '#7b8792');
       });
       return Y + SEC;
@@ -89,12 +90,6 @@ const LB = {
     let Y = 230;
     Y = section(Y, '🛒 Продажи', L.sales, '#2a78d6');
     Y = section(Y + 10, '💰 Собранные деньги', L.money, '#1baf7a');
-    // team totals
-    rr(40, Y + 10, W - 80, 120, 22); x.fillStyle = '#0c3b3d'; x.fill();
-    const T = L.T, cell = (cx, label, val, sub) => { text(label, cx, Y + 52, 21, '#9fd3cf', 500, 'center'); text(val, cx, Y + 92, 32, '#ffffff', 700, 'center'); if (sub) text(sub, cx, Y + 118, 18, '#cde8e6', 400, 'center'); };
-    cell(W * 0.2, 'Команда продала', '$' + UI.fmt0(T.sold), T.plan ? `${UI.pct(T.sold, T.plan)}% плана` : '');
-    cell(W * 0.5, 'Собрано денег', '$' + UI.fmt0(T.paid), T.pool ? `${UI.pct(T.paid, T.pool)}% плана` : '');
-    cell(W * 0.8, 'Долг клиентов', '$' + UI.fmt0(T.debt), `${T.debtors} должников`);
     return c;
   },
   async blob(d) { const c = await LB.image(d); return new Promise(res => c.toBlob(res, 'image/png')); },
