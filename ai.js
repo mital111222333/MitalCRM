@@ -18,7 +18,7 @@ const AI = {
     const ver = n => Number((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
     const score = n => ver(n) * 10 - (/preview|exp/.test(n) ? 3 : 0) - (/lite/.test(n) ? 2 : 0) - (/-\d{3}$|latest/.test(n) ? 0.5 : 0);
     const flash = models.filter(n => /flash/.test(n) && !/thinking/.test(n));
-    return (flash.length ? flash : models).slice().sort((a, b) => score(b) - score(a))[0] || 'gemini-2.5-flash';
+    return (flash.length ? flash : models).slice().sort((a, b) => score(b) - score(a))[0] || 'gemini-flash-latest';
   },
   // models to try, best first: the chosen (or auto-picked) one, then other Flash models as a fallback
   async candidates() {
@@ -27,7 +27,8 @@ const AI = {
     const ver = n => Number((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
     const flash = AI._list.filter(n => /flash/.test(n) && !/thinking/.test(n)).sort((a, b) => (/preview|exp/.test(a) - /preview|exp/.test(b)) || ver(b) - ver(a) || (/lite/.test(a) - /lite/.test(b)));
     const first = x.model || AI.pick(AI._list);
-    return [...new Set([first, ...flash, 'gemini-2.5-flash', 'gemini-2.5-flash-lite'])].filter(Boolean).slice(0, 5);
+    const bad = AI._bad || new Set();
+    return [...new Set([...(AI._hint ? [AI._hint] : []), first, ...flash, 'gemini-flash-latest'])].filter(m => m && !bad.has(m)).slice(0, 5);
   },
   async model() { return (await AI.candidates())[0]; },
   // one request; returns {text} or {retry: true, error} when the model is overloaded and another one should be tried
@@ -37,6 +38,15 @@ const AI = {
     catch { throw new Error('Нет связи с Google Gemini'); }
     const d = await r.json().catch(() => ({}));
     const msg = d.error?.message || 'Ошибка Gemini ' + r.status;
+    // a retired model ("no longer available ... use models/gemini-X-flash"): never try it again, follow Google's hint
+    if (!r.ok && /no longer available|not found|not supported|deprecated|is not available/i.test(msg)) {
+      (AI._bad ||= new Set()).add(model);
+      const hint = (msg.match(/models\/gemini-[\w.-]*\w/g) || []).map(x => x.slice(7)).find(x => x !== model);
+      if (hint) AI._hint = hint;
+      const x = CRMLocal.ext().ai || {};
+      if (x.model === model) { x.model = ''; CRMLocal.touch(); } // the saved choice no longer works: back to automatic
+      return { retry: true, status: r.status, error: msg };
+    }
     if (r.status === 503 || r.status === 500 || r.status === 504 || r.status === 404 || (r.status === 429 && !/per day|PerDay/i.test(msg))) return { retry: true, status: r.status, error: msg };
     if (r.status === 429) throw new Error('Дневной бесплатный лимит Gemini исчерпан — завтра снова заработает');
     if (!r.ok) throw new Error(msg);
@@ -50,13 +60,17 @@ const AI = {
     const sleep = ms => new Promise(res => setTimeout(res, ms));
     let last = null;
     // Google often answers "high demand" for a few seconds: try the next model, then go round once more after a pause
+    const tried = new Set();
     for (let round = 0; round < 2; round++) {
-      for (const m of await AI.candidates()) {
+      if (round) { tried.clear(); await sleep(4000); }
+      for (let i = 0; i < 6; i++) {
+        const m = (await AI.candidates()).find(x => !tried.has(x));
+        if (!m) break;
+        tried.add(m);
         const r = await AI.call(m, body);
         if (r.text) { AI.used = m; return r.text; }
         last = r;
       }
-      await sleep(4000);
     }
     throw new Error(last?.status === 429 ? 'Слишком много запросов к Gemini за минуту — подождите минуту и повторите' : 'Серверы Gemini сейчас перегружены. Повторите через минуту.');
   },
