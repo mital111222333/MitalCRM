@@ -298,3 +298,14 @@ ol.steps { margin: 0 0 10px; padding-left: 20px; } ol.steps li { margin: 4px 0; 
 .lbbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; }
 .lbbar b { position: absolute; top: -4px; width: 2px; height: 18px; background: var(--text); border-radius: 1px; }
 .lbsub { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }
+/* Excel-like plan grid */
+.planbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; box-shadow: var(--shadow); }
+.xltable td.xc { padding: 0 !important; border-left: 1px solid var(--line); background: #fffef6; }
+.xltable th.xlh { background: #fbf6dc; }
+.xltable input.xi { width: 100%; min-width: 92px; height: 100%; min-height: 40px; border: 0; border-radius: 0; background: transparent; font: inherit; padding: 6px 10px; text-align: right; outline: none; box-shadow: none; }
+.xltable input.xi.txt { text-align: left; min-width: 160px; }
+.xltable input.xi:focus { box-shadow: inset 0 0 0 2px var(--brand); background: #fff; }
+.xltable input.xi.ok { background: var(--st-good-bg); transition: background .2s; }
+.xltable input.xi.bad { background: var(--st-crit-bg); }
+.xltable tr.xrow td { background: var(--brand-50); } .xltable tr.xrow td.xc { background: #fff8d6; }
+.xltable tfoot td { background: var(--card-2); font-weight: 500; position: sticky; bottom: 0; }

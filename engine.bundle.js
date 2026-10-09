@@ -779,8 +779,14 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
       if (body.plan !== undefined) { if (num(body.plan) === null) return err('План — число не меньше 0'); c.plan = num(body.plan); }
       if (body.pool !== undefined) { if (num(body.pool) === null) return err('Пул — число не меньше 0'); c.pool = num(body.pool); }
       // a plan file was uploaded for the current period: the edit goes there too, otherwise it would not show
-      const last = agUploadsDesc()[0], PP = last && S.ext?.clientPlans?.[last.period_from];
-      if (PP && (body.plan !== undefined || body.pool !== undefined)) { const e = (PP[c.name] ||= { plan: 0, pool: 0 }); if (body.plan !== undefined) e.plan = c.plan; if (body.pool !== undefined) e.pool = c.pool; }
+      // plans are kept per plan period: the first edit of a period starts its plan from the clients' current values
+      const last = agUploadsDesc()[0];
+      if (last && (body.plan !== undefined || body.pool !== undefined)) {
+        S.ext.clientPlans = S.ext.clientPlans || {};
+        let PP = S.ext.clientPlans[last.period_from];
+        if (!PP) { PP = S.ext.clientPlans[last.period_from] = {}; for (const x of Object.values(S.ag.clients)) if (x.plan > 0 || x.pool > 0) PP[x.name] = { plan: x.plan || 0, pool: x.pool || 0 }; }
+        const e = (PP[c.name] ||= { plan: 0, pool: 0 }); if (body.plan !== undefined) e.plan = c.plan; if (body.pool !== undefined) e.pool = c.pool;
+      }
       if (body.note !== undefined) c.note = String(body.note).slice(0, 500);
       if (body.agent !== undefined) c.agent = String(body.agent).trim().slice(0, 80);
       return ok();
