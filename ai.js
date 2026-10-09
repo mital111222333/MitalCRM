@@ -90,6 +90,8 @@ const AI = {
     if (M.length > 1) { L.push('', 'ПО ПЕРИОДАМ ПЛАНА (период; агент; продано; собрано; долг на конец; АКБ):'); for (const m of M) for (const [a, v] of Object.entries(m.agents)) L.push([m.label, a, r(v.sold), r(v.paid), r(v.debt), v.akb].join('; ')); }
     const tasks = d.tasks.filter(t => t.status !== 'done');
     if (tasks.length) { L.push('', 'ОТКРЫТЫЕ ЗАДАНИЯ (клиент; агент; тип; что сделать; цель $; срок; сделано $; статус):'); for (const t of tasks) L.push([t.client, t.agent, t.kind, t.text, r(t.target), t.due || '-', t.fact === null ? '-' : r(t.fact), t.status === 'overdue' ? 'просрочено' : 'в работе'].join('; ')); }
+    const notes = Object.entries(CRMLocal.ext().notes || {}).flatMap(([cl, l]) => l.map(n => ({ cl, ...n }))).sort((a, b) => (b.at || '').localeCompare(a.at || '')).slice(0, 80);
+    if (notes.length) { const pr = new Map(NOTES.promises(d).map(p => [p.client + p.at, p.status])); L.push('', 'ЗАМЕТКИ СУПЕРВАЙЗЕРА ПО КЛИЕНТАМ (дата; клиент; заметка; обещал оплатить дата и сумма; статус обещания):'); for (const n of notes) L.push([(n.at || '').slice(0, 10), n.cl, (n.text || '').slice(0, 120), n.promise ? `${n.promise} $${r(n.sum || 0)}` : '-', n.promise ? { kept: 'оплатил', overdue: 'просрочено', today: 'сегодня', future: 'ожидается' }[pr.get(n.cl + n.at)] || '' : ''].join('; ')); }
     if (d.low) { const items = d.low.items.filter(i => i.status !== 'ok').slice(0, 40); if (items.length) { L.push('', 'СКЛАД — заканчивается (товар; бренд; доступно; дней хватит; статус):'); for (const i of items) L.push([i.name, i.brand || '-', r(i.available), i.days_left === null ? '-' : r(i.days_left), { out: 'закончился', blocked: 'всё в резерве', low: 'ниже минимума', soon: 'скоро закончится' }[i.status]].join('; ')); } }
     return L.join('\n');
   },
@@ -157,6 +159,7 @@ EXT_PAGES.ai = async el => {
   input.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer:coarse)').matches) { e.preventDefault(); $('#aForm', el).requestSubmit(); } };
   el.querySelectorAll('[data-q]').forEach(b => b.onclick = () => ask(AI_QUICK[+b.dataset.q][1]));
   const clr = $('#aClear', el); if (clr) clr.onclick = () => { aiChat.length = 0; EXT_PAGES.ai(el); };
+  if (window.AI_PENDING) { const q = window.AI_PENDING; window.AI_PENDING = null; ask(q); }
 
   $('#aTasks', el).onclick = async () => {
     const box = $('#aTaskBox', el), btn = $('#aTasks', el);

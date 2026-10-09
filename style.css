@@ -318,3 +318,60 @@ table.psum { margin-top: 8px; box-shadow: none; border: 1px solid var(--line); b
 table.psum th, table.psum td { padding: 6px 12px; } table.psum td:first-child { white-space: nowrap; }
 .xltable td.xexp { background: #f1f8f1; white-space: nowrap; }
 .grid .w12 svg.chart { max-height: 340px; }
+#planSum { overflow-x: auto; max-width: 100%; } .planbar > div { min-width: 0 !important; }
+@media (max-width: 640px) { table.psum { min-width: 560px; } }
+/* clients as cards on phones */
+@media (max-width: 700px) {
+  .scroll.xl { overflow: visible; max-height: none; border: 0; background: transparent; box-shadow: none; }
+  .xltable { background: transparent; box-shadow: none; border: 0; }
+  .xltable thead { display: none; }
+  .xltable tbody, .xltable tfoot { display: block; }
+  .xltable tbody tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; box-shadow: var(--shadow); }
+  .xltable tbody td { display: block; border: 0 !important; padding: 0 !important; text-align: left; background: transparent !important; min-width: 0 !important; }
+  .xltable tbody td.needs-edit, .xltable tbody td.mhide { display: none; }
+  .xltable tbody td.mname { grid-column: 1 / -1; font-size: 15px; font-weight: 500; }
+  .xltable tbody td.mag { grid-column: 1 / -1; } .xltable tbody td.mag select { max-width: 100% !important; width: 100%; }
+  .xltable tbody td[data-l]::before { content: attr(data-l); display: block; font-size: 11px; color: var(--muted); font-weight: 400; margin-bottom: 2px; }
+  .xltable tbody td.xc input.xi { border: 1px solid var(--line-2); border-radius: 8px; background: #fffef6; min-height: 38px; text-align: left; min-width: 0; }
+  .xltable tbody td .pp { justify-content: flex-start; }
+  .xltable tfoot tr { display: flex; flex-wrap: wrap; gap: 8px; } .xltable tfoot td { display: none; } .xltable tfoot td:nth-child(2) { display: block; }
+}
+/* ============ Dark theme (button 🌙 in the top bar) ============ */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e151c; --card: #16202a; --card-2: #1b2732; --text: #e4ebf1; --text-2: #b3bfca; --muted: #8592a0;
+  --line: #24313d; --line-2: #33424f; --nav: #08262a; --brand: #3eb6b0; --brand-600: #2f9893; --brand-50: #12302f; --brand-100: #1c4644;
+  --grid: #26323d; --axis: #3a4855; --axis-text: #95a2ae; --surface: #16202a; --c-other: #55606b;
+  --st-good-bg: #12301c; --st-warn-bg: #352a0e; --st-crit-bg: #3a1618; --st-serious-bg: #3a2214;
+  --st-good-text: #7fdc9e; --st-warn-text: #f0c76a; --st-crit-text: #ff9c9c; --st-serious-text: #f2a582;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+}
+html[data-theme="dark"] input, html[data-theme="dark"] select, html[data-theme="dark"] textarea,
+html[data-theme="dark"] button.btn.gray, html[data-theme="dark"] .twin, html[data-theme="dark"] .modal, html[data-theme="dark"] .drop,
+html[data-theme="dark"] .soon, html[data-theme="dark"] .login, html[data-theme="dark"] .empty-state, html[data-theme="dark"] .pod.p1,
+html[data-theme="dark"] #cloudConflict, html[data-theme="dark"] nav.top.open .menus { background: var(--card); color: var(--text); }
+html[data-theme="dark"] .tile.tone-bad { background: linear-gradient(var(--card), #2a1719); border-color: #5a2a2c; }
+html[data-theme="dark"] .tile.tone-warn { background: linear-gradient(var(--card), #2a2412); border-color: #5a4a1e; }
+html[data-theme="dark"] .tile.tone-good { border-color: #24502f; }
+html[data-theme="dark"] .badge, html[data-theme="dark"] .bartrack, html[data-theme="dark"] .pill, html[data-theme="dark"] .lbbar { background: #26323d; }
+html[data-theme="dark"] .pill.info { background: #15304d; color: #9cc6f5; }
+html[data-theme="dark"] .pill.good { background: var(--st-good-bg); } html[data-theme="dark"] .pill.warn { background: var(--st-warn-bg); }
+html[data-theme="dark"] .pill.crit { background: var(--st-crit-bg); } html[data-theme="dark"] .pill.serious { background: var(--st-serious-bg); }
+html[data-theme="dark"] .tabs a:hover { background: #ffffff10; }
+html[data-theme="dark"] .meter { background: color-mix(in srgb, var(--m) 22%, #16202a); }
+html[data-theme="dark"] .tgprev { background: #15304d; }
+html[data-theme="dark"] .xltable td.xc, html[data-theme="dark"] .xltable tbody td.xc input.xi { background: #232417; }
+html[data-theme="dark"] .xltable th.xlh { background: #2c2b17; }
+html[data-theme="dark"] .xltable input.xi:focus { background: var(--card); }
+html[data-theme="dark"] .xltable td.xexp { background: #15261a; }
+html[data-theme="dark"] .xltable tr.xrow td { background: #13302f; } html[data-theme="dark"] .xltable tr.xrow td.xc { background: #3a3417; }
+html[data-theme="dark"] table.plan2 th.grp { background: #13302f; }
+html[data-theme="dark"] .insights li.warn, html[data-theme="dark"] .insights li.crit, html[data-theme="dark"] .insights li.good { border-color: var(--line-2); }
+#themeBtn { background: none; border: 1px solid #ffffff30; color: #e3efef; border-radius: 99px; padding: 3px 9px; margin-left: 8px; cursor: pointer; font-size: 14px; }
+/* client card */
+.card-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.kpis-sm { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } .kpis-sm .tile .tv { font-size: 21px; }
+h4.ch { margin: 18px 0 8px; font-size: 14px; }
+ul.notes { list-style: none; padding: 0; margin: 0; } ul.notes li { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); } ul.notes li:last-child { border: 0; }
+a.clink { color: inherit; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; cursor: pointer; } a.clink:hover { color: var(--brand); text-decoration-color: var(--brand); }
+.modal .tableview { display: none !important; }
