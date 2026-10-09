@@ -41,7 +41,7 @@ const LB = {
       <div class="lbmain">
         <div class="lbtop"><span class="lbname">${esc(r.a.agent)}${r.move > 0 ? ` <span class="delta up" title="Поднялся с прошлой загрузки">▲${r.move}</span>` : r.move < 0 ? ` <span class="delta down" title="Опустился с прошлой загрузки">▼${-r.move}</span>` : ''}</span><b class="lbval">$${UI.fmt0(r.v)}</b></div>
         ${LB.bar(r, pace)}
-        <div class="lbsub"><span>${r.p === null ? '<span class="mut">план не задан</span>' : `<b style="color:${LB.COLORS[r.tone]}">${Math.round(r.p * 100)}%</b> из $${UI.fmt0(r.plan)} · ${LB.TONE_TEXT[r.tone]}`}</span><span>${LB.day(r.dv) || d0(r)}${r.need > 0 ? ` · нужно $${UI.fmt0(r.need)}/день` : ''}</span></div>
+        <div class="lbsub"><span>${r.p === null ? '<span class="mut">план не задан</span>' : `<b style="color:${LB.COLORS[r.tone]}">${Math.round(r.p * 100)}%</b> из $${UI.fmt0(r.plan)} · ${LB.TONE_TEXT[r.tone]}`}</span><span>${LB.day(r.dv) || d0(r)}${r.plan > 0 ? (r.v < r.plan ? ` · <b>${kind === 'money' ? 'осталось собрать' : 'осталось продать'} $${UI.fmt0(r.plan - r.v)}</b>` : ' · план закрыт ✓') : ''}</span></div>
       </div></div>`).join('');
     function d0(r) { return r.dv === null || r.dv === undefined ? '' : `<span class="mut">за день 0</span>`; }
   },
@@ -82,14 +82,14 @@ const LB = {
         if (r.p !== null && r.p > 0) { rr(bx, by, Math.max(14, bw * Math.min(r.p, 1)), 14, 7); x.fillStyle = LB.COLORS[r.tone]; x.fill(); }
         if (L.pace !== null && r.p !== null) { x.fillStyle = '#14212b'; x.fillRect(bx + bw * Math.min(L.pace, 1) - 1.5, by - 5, 3, 24); }
         text(r.p === null ? 'план не задан' : `${Math.round(r.p * 100)}% плана`, W - 72, y + 60, 24, r.p === null ? '#7b8792' : LB.COLORS[r.tone], 600, 'right');
-        const sub = [LB.day(r.dv), r.move > 0 ? `▲ ${r.move}` : r.move < 0 ? `▼ ${-r.move}` : ''].filter(Boolean).join('   ');
+        const sub = [r.plan > 0 ? (r.v < r.plan ? `${color === 'money' ? 'осталось собрать' : 'осталось продать'} $${UI.fmt0(r.plan - r.v)}` : 'план закрыт ✓') : '', LB.day(r.dv), r.move > 0 ? `▲ ${r.move}` : r.move < 0 ? `▼ ${-r.move}` : ''].filter(Boolean).join('   ');
         if (sub) text(sub, 146, y + 88, 20, '#7b8792');
       });
       return Y + SEC;
     };
     let Y = 230;
-    Y = section(Y, '🛒 Продажи', L.sales, '#2a78d6');
-    Y = section(Y + 10, '💰 Собранные деньги', L.money, '#1baf7a');
+    Y = section(Y, '🛒 Продажи', L.sales, 'sales');
+    Y = section(Y + 10, '💰 Собранные деньги', L.money, 'money');
     return c;
   },
   async blob(d) { const c = await LB.image(d); return new Promise(res => c.toBlob(res, 'image/png')); },
@@ -158,8 +158,8 @@ EXT_PAGES.leaders = async el => {
     <div class="lbheros">${top(L.sales, 'Лидер продаж')}${top(L.money, 'Лидер по сбору денег')}${L.overall[0] ? `<div class="lbhero"><span class="lbmedal">⭐</span><div><div class="mut">Лучший в общем зачёте</div><b>${esc(L.overall[0].a.agent)}</b><div>${L.hasPlans ? `${Math.round(L.overall[0].score * 100)}% планов в среднем` : `места: продажи ${L.overall[0].s.rank}, сбор ${L.overall[0].m.rank}`}</div></div></div>` : ''}
       <div class="lbhero team"><span class="lbmedal">👥</span><div><div class="mut">Команда</div><b>$${UI.fmt0(T.sold)}</b> продано${T.plan ? ` · ${UI.pct(T.sold, T.plan)}%` : ''}<div><b>$${UI.fmt0(T.paid)}</b> собрано${T.pool ? ` · ${UI.pct(T.paid, T.pool)}%` : ''}</div></div></div></div>
     <div class="grid">
-      ${UI.panel('🛒 Продажи', LB.rows(L.sales, pace, col), { cls: 'w6', sub: 'Сколько продал агент за период и сколько это от его плана' })}
-      ${UI.panel('💰 Собранные деньги', LB.rows(L.money, pace, col), { cls: 'w6', sub: 'Сколько денег собрал агент и сколько это от плана сбора' })}
+      ${UI.panel('🛒 Продажи', LB.rows(L.sales, pace, col, 'sales'), { cls: 'w6', sub: 'Сколько продал агент за период и сколько это от его плана' })}
+      ${UI.panel('💰 Собранные деньги', LB.rows(L.money, pace, col, 'money'), { cls: 'w6', sub: 'Сколько денег собрал агент и сколько это от плана сбора' })}
       ${UI.panel('⭐ Общий зачёт', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Место</th><th>Агент</th><th class="n">Продажи</th><th class="n">Сбор денег</th><th class="n">АКБ / ОКБ</th><th class="n">Долг клиентов</th><th class="n">${L.hasPlans ? 'Средний % планов' : 'Сумма мест'}</th></tr></thead><tbody>${L.overall.map((o, i) => `<tr><td>${i < 3 ? LB.MEDAL[i] : i + 1}</td><td><span class="lbava sm" style="background:${col(o.a.agent)}" aria-hidden="true">${esc(LB.initials(o.a.agent))}</span>${esc(o.a.agent)}</td><td class="n">$${UI.fmt0(o.s.v)}<br><small>${o.s.p === null ? 'план не задан' : Math.round(o.s.p * 100) + '% · ' + o.s.rank + ' место'}</small></td><td class="n">$${UI.fmt0(o.m.v)}<br><small>${o.m.p === null ? 'план не задан' : Math.round(o.m.p * 100) + '% · ' + o.m.rank + ' место'}</small></td><td class="n">${o.a.akb} / ${o.a.okb}<br><small>${UI.pct(o.a.akb, o.a.okb) ?? 0}%</small></td><td class="n">$${UI.fmt0(o.a.debt)}</td><td class="n"><b>${L.hasPlans ? Math.round(o.score * 100) + '%' : o.places}</b></td></tr>`).join('')}</tbody></table></div>
         <p class="mut" style="margin:10px 0 0">${L.hasPlans ? 'Общий зачёт — среднее выполнения плана продаж и плана сбора (каждый учитывается максимум до 150%).' : 'Планы заданы не у всех агентов, поэтому общий зачёт — по сумме мест в продажах и сборе (меньше — лучше). Задайте планы кнопкой «🎯 Планы агентов».'} Стрелки ▲▼ — изменение места с прошлой загрузки${d.prev ? ` (${UI.dateRu(d.prev.taken_at)})` : ''}. Чёрная метка на полосе — где агент должен быть по графику.</p>`, { cls: 'w12' })}
     </div>`;
