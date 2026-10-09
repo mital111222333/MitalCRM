@@ -238,3 +238,45 @@ td input.cell { width: 92px; text-align: right; padding: 4px 8px; min-height: 30
 /* static (serverless) version: no sign-in, no branches, no password */
 .static-mode #branch, .static-mode #out { display: none !important; }
 .static-mode #me { pointer-events: none; cursor: default; }
+
+/* ============ Add-ons: sync, reports, AI, Telegram ============ */
+.burger { display: none; background: none; border: 0; color: #fff; font-size: 22px; padding: 6px 12px 6px 0; cursor: pointer; }
+.menus { display: flex; align-items: stretch; }
+@media (max-width: 860px) {
+  .burger { display: block; }
+  nav.top .menus { display: none; }
+  nav.top.open .menus { display: block; position: fixed; top: 52px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #fff; padding: 8px 16px 40px; z-index: 30; }
+  nav.top.open .menu > button { display: block; color: var(--brand); padding: 14px 0 4px; font-weight: 600; border: 0; background: none; pointer-events: none; }
+  nav.top.open .drop { display: flex !important; flex-direction: column; gap: 6px; position: static; box-shadow: none; border: 0; padding: 0 0 8px 0; min-width: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+  nav.top.open .drop h4 { margin: 6px 0 0; }
+  nav.top.open .drop a { padding: 9px 0; font-size: 16px; }
+  .menu:hover .drop { display: none; }
+  .page-head { flex-wrap: wrap; gap: 10px; }
+  .page-head .actions { flex-wrap: wrap; }
+}
+#cloudBadge { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; padding: 4px 11px; border-radius: 99px; text-decoration: none; border: 1px solid #ffffff30; background: #ffffff14; color: #e3efef; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+body > #cloudBadge { position: fixed; left: 12px; bottom: 12px; z-index: 40; }
+@media (max-width: 860px) { #cloudBadge .cbt { display: none; } #cloudBadge { padding: 4px 9px; font-size: 15px; } }
+#cloudBadge.cb-ok { color: #9be3b4; }
+#cloudBadge.cb-busy { color: #a9cdf5; }
+#cloudBadge.cb-err { background: var(--st-crit-bg); color: var(--st-crit-text); border-color: transparent; }
+#cloudBadge.cb-off { color: var(--st-warn-text); background: var(--st-warn-bg); border-color: transparent; }
+#cloudConflict { position: fixed; left: 12px; right: 12px; top: 64px; z-index: 50; background: #fff; border: 2px solid var(--st-crit); border-radius: 12px; padding: 14px 16px; box-shadow: 0 12px 32px rgba(20,33,43,.2); max-width: 760px; margin: 0 auto; }
+#cloudConflict .cc-btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+ol.steps { margin: 0 0 10px; padding-left: 20px; } ol.steps li { margin: 4px 0; }
+.tgprev { background: #e7f0fa; border-radius: 12px; padding: 12px 14px; max-width: 520px; font-size: 14px; line-height: 1.5; }
+.aiq { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.aichat { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+.aichat .msg { max-width: 860px; padding: 12px 16px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.aichat .msg.me { align-self: flex-end; background: var(--brand-50); border-color: var(--brand-100); white-space: pre-wrap; }
+.aichat .msg p { margin: 0 0 8px; } .aichat .msg ul { margin: 0 0 8px; padding-left: 20px; } .aichat .msg li { margin: 3px 0; }
+.aichat .msg.thinking { color: var(--muted); }
+.aichat .mtools { display: flex; gap: 6px; margin-top: 8px; }
+.aihint { padding: 12px 0; }
+.aiask { display: flex; gap: 10px; align-items: flex-end; position: sticky; bottom: 0; background: var(--bg); padding: 8px 0 12px; margin-bottom: 16px; }
+.aiask textarea { flex: 1; font: inherit; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 10px; resize: vertical; min-height: 46px; }
+@media print {
+  nav.top, .no-print, #cloudBadge, .tabs, .actions, .twin, .bar select { display: none !important; }
+  body { background: #fff; } main { padding: 0 !important; } .panel, .tile { box-shadow: none !important; break-inside: avoid; }
+  .scroll { max-height: none !important; overflow: visible !important; }
+}

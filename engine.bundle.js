@@ -541,6 +541,7 @@ const emptyState = () => ({
   v: 1, seq: { wh: 0, ag: 0, task: 0 },
   wh: { list: DEFAULT_WAREHOUSES.map(([name, note], pos) => ({ name, note, pos })), uploads: [], min: {}, settings: {} },
   ag: { clients: {}, uploads: [], tasks: [], akb: 'paid' },
+  ext: {}, // settings of the add-ons (AI, Telegram, reports): kept and synced together with the data
 });
 
 // Accepts a parsed backup; returns a clean state or throws a readable error.
@@ -549,6 +550,7 @@ function normalizeState(x) {
   const s = emptyState();
   s.wh = { list: Array.isArray(x.wh.list) ? x.wh.list : s.wh.list, uploads: Array.isArray(x.wh.uploads) ? x.wh.uploads : [], min: x.wh.min || {}, settings: x.wh.settings || {} };
   s.ag = { clients: x.ag.clients || {}, uploads: Array.isArray(x.ag.uploads) ? x.ag.uploads : [], tasks: Array.isArray(x.ag.tasks) ? x.ag.tasks : [], akb: AKB_RULES[x.ag.akb] ? x.ag.akb : 'paid' };
+  s.ext = x.ext && typeof x.ext === 'object' && !Array.isArray(x.ext) ? x.ext : {};
   const max = a => a.reduce((m, o) => Math.max(m, Number(o.id) || 0), 0);
   s.seq = { wh: max(s.wh.uploads), ag: max(s.ag.uploads), task: max(s.ag.tasks) };
   return s;

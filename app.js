@@ -36,7 +36,7 @@ const PAGE_PERM = { home: 'dashboard', overview: 'dashboard', clients: 'clients'
 // Sections that run on the built-in demo data. They disappear once the demo data is deleted (Настройки → Данные).
 const DEMO_ROUTES = ['home', 'overview', 'logistics', 'payments', 'clients', 'zones', 'routes', 'orders', 'returns', 'bonus', 'staff', 'activity', 'tracking', 'stock', 'stockdate', 'transfers', 'balance', 'cash'];
 const canOpen = r => (!DEMO_ROUTES.includes(r) || me?.demo !== false) && (!PAGE_PERM[r] || can(PAGE_PERM[r] + '.view'));
-const landing = () => ['agents', 'wh', 'home', 'orders', 'clients', 'payments', 'balance', 'stock', 'logistics', 'transfers', 'staff', 'settings'].find(canOpen);
+const landing = () => ['rday', 'agents', 'wh', 'home', 'orders', 'clients', 'payments', 'balance', 'stock', 'logistics', 'transfers', 'staff', 'settings'].find(canOpen);
 
 // Menu: your own data first (warehouse stock, agents), then the demo sections that mirror the old LINKO menu. top item -> groups -> [title, route]
 const MENU = {
@@ -764,10 +764,13 @@ function render() {
     const gs = Object.entries(groups).map(([g, items]) => [g, items.filter(([, r]) => canOpen(r))]).filter(([, items]) => items.length);
     return gs.length ? `<div class="menu"><button>${top}</button><div class="drop">${gs.map(([g, items]) => `<div>${g ? `<h4>${g}</h4>` : ''}${items.map(([t, r]) => `<a href="#/${r}">${t}</a>`).join('')}</div>`).join('')}</div></div>` : '';
   }).join('');
-  app.innerHTML = `<nav class="top"><a class="logo" href="#/${landing() || 'home'}">crm</a>${menu}<span class="spacer"></span>
+  app.innerHTML = `<nav class="top"><button class="burger" id="burger" aria-label="Меню" aria-expanded="false">☰</button><a class="logo" href="#/${landing() || 'home'}">crm</a><div class="menus">${menu}</div><span class="spacer"></span>
     ${me.branch ? `<span class="branchlock" title="Ваш доступ ограничен этим филиалом">Филиал: ${esc(me.branch)}</span>` : '<select id="branch" class="branch" title="Филиал" aria-label="Филиал"><option value="">Все филиалы</option></select>'}
     ${can('settings.view') ? '<a class="gear" href="#/settings" title="Настройки: пользователи и роли" aria-label="Настройки">⚙</a>' : ''}
     <span class="user" id="me" title="Профиль и смена пароля">${esc(me.name)}<span class="role"> · ${esc(me.role)}</span></span><span class="user" id="out">Выйти</span></nav><main id="page"></main>`;
+  const nav = $('nav.top'), burger = $('#burger');
+  burger.onclick = () => { const open = nav.classList.toggle('open'); burger.setAttribute('aria-expanded', open); };
+  nav.querySelectorAll('.drop a').forEach(a => a.addEventListener('click', () => { nav.classList.remove('open'); burger.setAttribute('aria-expanded', 'false'); a.blur(); }));
   $('#me').onclick = profileModal;
   $('#out').onclick = async () => { try { await api('/api/logout', { method: 'POST', body: {} }); } catch { /* already signed out */ } signOut(); };
   if (!me.branch) api('/api/branches').then(list => {

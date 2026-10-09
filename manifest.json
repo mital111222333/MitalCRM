@@ -1,0 +1,11 @@
+{
+  "name": "MITAL CRM",
+  "short_name": "MITAL CRM",
+  "start_url": "./#/rday",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef1f4",
+  "theme_color": "#0c3b3d",
+  "lang": "ru",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

@@ -14,7 +14,7 @@
   const flush = async () => {
     if (!dirty || !engine) return;
     dirty = false; clearTimeout(timer);
-    try { await idbPut(engine.getState()); lastSaved = new Date(); saveError = null; }
+    try { await idbPut(engine.getState()); lastSaved = new Date(); saveError = null; window.CLOUD?.changed(); }
     catch (e) { saveError = e; dirty = true; if (typeof toast === 'function') toast('Не удалось сохранить данные в браузере: ' + (e.message || e) + '. Скачайте резервную копию (раздел «Данные»).'); }
   };
   const schedule = () => { dirty = true; clearTimeout(timer); timer = setTimeout(flush, 250); };
@@ -29,6 +29,18 @@
     catch { engine = CRMEngine.createEngine({ onChange: schedule }); } // unreadable stored state: start empty (a backup file can be restored)
     try { navigator.storage?.persist?.(); } catch { /* optional */ }
   })();
+
+  // add-ons (cloud sync, reports, AI, Telegram) reach the data through this object
+  window.CRMLocal = {
+    ready,
+    get engine() { return engine; },
+    flush: async () => { dirty = true; await flush(); },
+    touch: schedule, // call after changing engine.getState().ext directly
+    ext: () => engine.getState().ext,
+    // replace everything with a state that came from the cloud: saved locally, but not sent back
+    replaceFromCloud: async st => { engine.importState(st); dirty = false; clearTimeout(timer); await idbPut(engine.getState()); lastSaved = new Date(); },
+    request: (method, path, body) => engine.request(method, path, { json: body || {} }).then(r => r.json),
+  };
 
   const ME = { name: 'Вы', login: 'local', role: 'Владелец', branch: '', demo: false, perms: ['stock.view', 'stock.edit', 'agents.view', 'agents.edit'] };
   const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -54,9 +66,11 @@
 
   // ---------- menu: only the two sections that work without a server, plus the data page ----------
   window.EXT_MENU = {
-    'Склад': { 'Остатки и анализ': [['Обзор склада', 'wh'], ['Остатки по складам', 'whstock'], ['Что заканчивается', 'whlow'], ['Движение склада', 'whmove'], ['Загрузки', 'whup']] },
+    'Отчёты': { 'Готовые отчёты': [['Отчёт дня', 'rday'], ['Дебиторка', 'rdebt'], ['Спящие клиенты', 'rsleep'], ['Динамика по месяцам', 'rdyn']], 'Отправка': [['Telegram агентам', 'tg']] },
+    'ИИ': { 'Ассистент': [['ИИ-ассистент', 'ai']] },
     'Агенты': { 'Аналитика': [['Сводка по агентам', 'agents'], ['Лидерборд', 'leaders']], 'Клиенты и задания': [['Клиенты и долги', 'aclients'], ['Задания агентам', 'atasks']], 'Данные': [['Загрузки', 'aup']] },
-    'Данные': { '': [['Резервная копия', 'data']] },
+    'Склад': { 'Остатки и анализ': [['Обзор склада', 'wh'], ['Остатки по складам', 'whstock'], ['Что заканчивается', 'whlow'], ['Движение склада', 'whmove'], ['Загрузки', 'whup']] },
+    'Данные': { '': [['Синхронизация и настройки', 'cloud'], ['Резервная копия', 'data']] },
   };
   document.documentElement.classList.add('static-mode');
 
@@ -70,7 +84,7 @@
     const persisted = await (navigator.storage?.persisted?.() ?? Promise.resolve(false)).catch(() => false);
     let usage = '';
     try { const e = await navigator.storage?.estimate?.(); if (e?.usage) usage = ` · занято в браузере: ${(e.usage / 1048576).toFixed(1)} МБ`; } catch { /* optional */ }
-    el.innerHTML = `<div class="page-head"><div><h2>Резервная копия</h2><div class="sub">Все данные хранятся только в этом браузере на этом устройстве${usage}</div></div></div>
+    el.innerHTML = `<div class="page-head"><div><h2>Резервная копия</h2><div class="sub">${window.CLOUD?.on() ? 'Данные хранятся в браузере и синхронизируются с облаком' : 'Данные хранятся только в этом браузере — включите синхронизацию в «Данные → Синхронизация и настройки»'}${usage}</div></div></div>
       <div class="grid">
       ${UI.panel('Что сохранено', `<div class="kpis" style="margin:0">
         ${UI.tile('Загрузок склада', UI.fmt0(s.wh))}${UI.tile('Загрузок по агентам', UI.fmt0(s.ag))}${UI.tile('Клиентов', UI.fmt0(s.clients))}${UI.tile('Заданий', UI.fmt0(s.tasks))}</div>
