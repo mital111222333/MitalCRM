@@ -280,3 +280,21 @@ ol.steps { margin: 0 0 10px; padding-left: 20px; } ol.steps li { margin: 4px 0; 
   body { background: #fff; } main { padding: 0 !important; } .panel, .tile { box-shadow: none !important; break-inside: avoid; }
   .scroll { max-height: none !important; overflow: visible !important; }
 }
+/* leaderboard */
+.lbheros { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.lbhero { display: flex; gap: 12px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
+.lbhero b { font-size: 16px; } .lbhero > div { min-width: 0; } .lbhero .mut { font-size: 12px; }
+.lbhero.team { background: var(--nav); color: #fff; border-color: var(--nav); } .lbhero.team .mut { color: #9fd3cf; }
+.lbhero .lbmedal { font-size: 30px; }
+.lbrow { display: grid; grid-template-columns: 34px 38px 1fr; gap: 10px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.lbrow:last-child { border-bottom: 0; }
+.lbpos { text-align: center; font-weight: 600; color: var(--text-2); } .lbmedal { font-size: 24px; line-height: 1; }
+.lbava { width: 38px; height: 38px; border-radius: 50%; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; flex: none; }
+.lbava.sm { width: 26px; height: 26px; font-size: 10px; margin-right: 8px; vertical-align: middle; }
+.lbmain { min-width: 0; }
+.lbtop { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.lbname { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .lbval { font-size: 17px; white-space: nowrap; }
+.lbbar { position: relative; height: 10px; background: #edf0f3; border-radius: 5px; margin: 7px 0 5px; }
+.lbbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; }
+.lbbar b { position: absolute; top: -4px; width: 2px; height: 18px; background: var(--text); border-radius: 1px; }
+.lbsub { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }

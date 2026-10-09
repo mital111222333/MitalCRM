@@ -30,6 +30,21 @@
     try { navigator.storage?.persist?.(); } catch { /* optional */ }
   })();
 
+  // plans set per agent for a plan period (Лидерборд → «Планы агентов») replace the sum of the clients' plans
+  function applyAgentPlans(d) {
+    if (!d || d.empty || !d.upload || !engine) return d;
+    const P = engine.getState().ext?.agentPlans?.[d.upload.period_from];
+    if (!P) return d;
+    const fc = d.forecast || {}, dl = Math.max(fc.days_left || 0, 1);
+    for (const a of d.agents) {
+      const p = P[a.agent]; if (!p) continue;
+      if (p.plan > 0) a.plan = p.plan;
+      if (p.pool > 0) a.pool = p.pool;
+      if (fc.projectable) { a.need_sell_day = Math.max(0, a.plan - a.sold) / dl; a.need_collect_day = Math.max(0, a.pool - a.paid) / dl; }
+    }
+    return d;
+  }
+
   // add-ons (cloud sync, reports, AI, Telegram) reach the data through this object
   window.CRMLocal = {
     ready,
@@ -39,7 +54,7 @@
     ext: () => engine.getState().ext,
     // replace everything with a state that came from the cloud: saved locally, but not sent back
     replaceFromCloud: async st => { engine.importState(st); dirty = false; clearTimeout(timer); await idbPut(engine.getState()); lastSaved = new Date(); },
-    request: (method, path, body) => engine.request(method, path, { json: body || {} }).then(r => r.json),
+    request: (method, path, body) => engine.request(method, path, { json: body || {} }).then(r => (path.startsWith('/api/ag/dashboard') ? applyAgentPlans(r.json) : r.json)),
   };
 
   const ME = { name: 'Вы', login: 'local', role: 'Владелец', branch: '', demo: false, perms: ['stock.view', 'stock.edit', 'agents.view', 'agents.edit'] };
@@ -60,7 +75,7 @@
     if (body instanceof Blob) req = { raw: new Uint8Array(await body.arrayBuffer()) };
     else if (typeof body === 'string' && body) { try { req = { json: JSON.parse(body) }; } catch { return json({ error: 'Некорректный запрос' }, 400); } }
     const r = await engine.request(method, path, req);
-    return json(r.json, r.status);
+    return json(path.startsWith('/api/ag/dashboard') ? applyAgentPlans(r.json) : r.json, r.status);
   };
   try { localStorage.setItem('token', 'local'); } catch { /* storage blocked: the page will show the sign-in form */ }
 

@@ -26,8 +26,12 @@ const TG = {
   },
   chatName: c => [c.first_name, c.last_name].filter(Boolean).join(' ') || c.title || 'Без имени',
   async discover() {
-    const ups = await TG.call('getUpdates', { timeout: 0, allowed_updates: ['message'] }), conf = TG.conf();
-    for (const u of ups) { const c = u.message?.chat; if (c && c.type === 'private') conf.seen[c.id] = { id: c.id, name: TG.chatName(c) + (c.username ? ` (@${c.username})` : '') }; }
+    const ups = await TG.call('getUpdates', { timeout: 0, allowed_updates: ['message', 'my_chat_member'] }), conf = TG.conf();
+    for (const u of ups) {
+      const c = u.message?.chat || u.my_chat_member?.chat; if (!c) continue;
+      if (c.type === 'private') conf.seen[c.id] = { id: c.id, name: TG.chatName(c) + (c.username ? ` (@${c.username})` : '') };
+      else if (c.type === 'group' || c.type === 'supergroup') (conf.groups ||= {})[c.id] = { id: c.id, name: c.title || 'Группа' };
+    }
     if (ups.length) await TG.call('getUpdates', { offset: ups.at(-1).update_id + 1, timeout: 0 }).catch(() => {});
     CRMLocal.touch();
     return Object.keys(conf.seen).length;
