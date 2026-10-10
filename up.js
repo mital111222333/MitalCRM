@@ -276,6 +276,7 @@ window.LINKO_AUTO = {
       const files = snap.files.map(f => new File([bin(f.b64)], f.name));
       const box = document.createElement('div');
       await UPALL.run(files, box, PLAN.day());
+      { const S = CRMLocal.engine.getState(), last = (S.ag.uploads || []).slice().sort((a, b) => b.id - a.id)[0]; if (last && Date.now() - Date.parse(last.uploaded_at || 0) < 10 * 60000) last.snap_at = snap.at; } // when LINKO gave this balance (for card payments by time)
       x.linkoAuto.importedAt = snap.at; x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
       if (box.textContent.includes('✓')) { toast(`Данные из LINKO обновлены (${new Date(snap.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })})`); const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]'); if (!typing && typeof route === 'function') route(); }
       await LINKO_AUTO.extra();

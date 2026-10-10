@@ -99,38 +99,28 @@ const LX = {
     // is not a return and is positive; everything else is kept with the reason so the page can show what was left out
     const sameCur = c => !c || c === payCur || (LX.sym(c) === '$' && LX.sym(payCur) === '$');
     const why = p => !sameCur(p['currency.name']) ? 'другая валюта: ' + p['currency.name'] : p.order_return || /return|возврат/i.test(String(p.type)) ? 'возврат' : !(LX.n(p.amount) > 0) ? 'сумма ' + (p.amount ?? 'пусто') : '';
-    const skipped = pays.filter(p => why(p)).map(p => ({ date: LX.day(p.accepted_time || p.created_date), time: String(p.accepted_time || p.created_date || '').slice(11, 16), amount: LX.n(p.amount), real: LX.n(p.real_amount), cur: p['currency.name'] || '', type: p.type, ptype: p.payment_type, client: p['client.name'] || '', by: LX.person(p, 'user'), why: why(p) }));
+    const skipped = pays.filter(p => why(p)).map(p => ({ date: LX.day(p.created_date || p.accepted_time), time: String(p.created_date || p.accepted_time || '').slice(11, 16), ts: Date.parse(p.created_date || p.accepted_time) || 0, amount: LX.n(p.amount), real: LX.n(p.real_amount), cur: p['currency.name'] || '', type: p.type, ptype: p.payment_type, client: p['client.name'] || '', by: LX.person(p, 'user'), why: why(p) }));
     const payments = pays.filter(p => !why(p))
-      .map(p => ({ date: LX.day(p.accepted_time || p.created_date), time: String(p.accepted_time || p.created_date || '').slice(11, 16), amount: LX.n(p.amount), type: p.type, ptype: p.payment_type, cur: p['currency.name'] || '', client: p['client.name'] || '', agent: p['client.name'] ? LX.clientAgent(p['client.name'], LX.person(p, 'user')) : LX.agentName(LX.person(p, 'user')) || 'Без агента', by: LX.person(p, 'user'), courier: LX.person(p, 'delivery_man') }));
-    // Reconcile with the client balance, which is what LINKO's «Оплачено» shows. For each day that has a balance snapshot
-    // and one from the day before: paid that day by client = paid now − paid the day before (same plan period).
-    //  • more than the transactions → the rest was paid by card / bank (LINKO keeps those out of the transactions list);
-    //  • less than the transactions → a transaction LINKO counts on another day (e.g. accepted today, created earlier): left out of that day.
+      .map(p => ({ date: LX.day(p.created_date || p.accepted_time), time: String(p.created_date || p.accepted_time || '').slice(11, 16), ts: Date.parse(p.created_date || p.accepted_time) || 0, amount: LX.n(p.amount), type: p.type, ptype: p.payment_type, cur: p['currency.name'] || '', client: p['client.name'] || '', agent: p['client.name'] ? LX.clientAgent(p['client.name'], LX.person(p, 'user')) : LX.agentName(LX.person(p, 'user')) || 'Без агента', by: LX.person(p, 'user'), courier: LX.person(p, 'delivery_man') }));
+    // Card / bank payments: LINKO keeps them out of the transactions list, but the client balance (its «Оплачено») counts them.
+    // Between two balance snapshots, per client: growth of «Оплачено» − transactions created in that same time window = paid by card / bank.
+    // The window is the snapshots' own times, so a payment entered in the evening after the last snapshot is not taken for a card payment the next day.
     const ups = (CRMLocal.engine.getState().ag.uploads || []).slice().sort((a, b) => (a.taken_at < b.taken_at ? -1 : a.taken_at > b.taken_at ? 1 : a.id - b.id));
-    const byDate = new Map(); for (const u of ups) byDate.set(u.period_from + '|' + u.taken_at, u);
+    const at = u => Date.parse(u.snap_at || u.uploaded_at || (u.taken_at + 'T23:59:59')) || 0;
     const firstTx = payments.map(p => p.date).sort()[0] || '';
-    const balDay = new Map(), covered = new Set();
-    for (const u of byDate.values()) {
+    const byClient = new Map(); for (const p of payments) { if (!byClient.has(p.client)) byClient.set(p.client, []); byClient.get(p.client).push(p); }
+    for (const u of ups) {
       if (firstTx && u.taken_at < firstTx) continue;
       const prev = ups.filter(x => x.period_from === u.period_from && x.taken_at < u.taken_at).pop();
       if (!prev && u.taken_at !== u.period_from) continue; // no snapshot of the day before: can't tell what was paid that day
-      covered.add(u.taken_at);
+      const t1 = prev ? at(prev) : Date.parse(u.period_from + 'T00:00:00'), t2 = at(u);
       const before = new Map((prev?.rows || []).map(r => [r.client, r.paid || 0]));
-      for (const r of u.rows || []) { const d = (r.paid || 0) - (before.get(r.client) || 0); if (Math.abs(d) > 0.005) balDay.set(u.taken_at + '|' + r.client, Math.max(0, d)); }
-    }
-    const kept = [], used = new Map();
-    for (const p of payments.slice().sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))) {
-      const k = p.date + '|' + p.client;
-      if (!covered.has(p.date)) { kept.push(p); continue; }
-      const room = (balDay.get(k) || 0) - (used.get(k) || 0);
-      if (p.amount <= room + 0.5) { kept.push(p); used.set(k, (used.get(k) || 0) + p.amount); }
-      else skipped.push({ date: p.date, time: p.time, amount: p.amount, real: 0, cur: p.cur, type: p.type, ptype: p.ptype, client: p.client, by: p.by, why: 'в балансе LINKO за этот день её нет (LINKO считает её другим днём)' });
-    }
-    payments.length = 0; payments.push(...kept);
-    for (const [k, d] of balDay) {
-      const extra = d - (used.get(k) || 0); if (extra <= 0.5) continue;
-      const [date, client] = [k.slice(0, 10), k.slice(11)];
-      payments.push({ date, time: '', amount: Math.round(extra * 1000) / 1000, type: 'по балансу', ptype: 'card', cur: '', client, agent: LX.clientAgent(client, ''), by: '', courier: '', bal: true });
+      for (const r of u.rows || []) {
+        const grew = (r.paid || 0) - (before.get(r.client) || 0); if (grew <= 0.5) continue;
+        const tx = (byClient.get(r.client) || []).filter(p => p.ts > t1 && p.ts <= t2).reduce((a, p) => a + p.amount, 0);
+        const extra = grew - tx;
+        if (extra > 0.5) payments.push({ date: u.taken_at, time: '', ts: t2, amount: Math.round(extra * 1000) / 1000, type: 'по балансу', ptype: 'card', cur: '', client: r.client, agent: LX.clientAgent(r.client, ''), by: '', courier: '', bal: true });
+      }
     }
     const ords = orders.filter(inCur).map(o => ({ id: o.id, date: LX.day(o.created_date), status: o.status, sum: LX.n(o.total_price), fact: LX.n(o.fact_price), ret: LX.n(o.total_return_price), paid: !!o.is_paid, deliver: LX.day(o.date_delivery), client: o['client.name'] || '', address: o['market.address'] || '', agent: o['client.name'] ? LX.clientAgent(o['client.name'], LX.person(o, 'user')) : LX.agentName(LX.person(o, 'user')) || 'Без агента' }));
     const returns = rets.filter(r => !r['currency.name'] || r['currency.name'] === (LX.curOf(rets) || cur)).map(r => ({ date: LX.day(r.created_date), status: r.status, sum: LX.n(r.total_price), client: r['client.name'] || '', agent: r['client.name'] ? LX.clientAgent(r['client.name'], LX.person(r, 'responsible_agent')) : LX.agentName(LX.person(r, 'responsible_agent')) || 'Без агента', reason: [r.reason, r.comment].filter(Boolean).join(' · ') }));
