@@ -94,6 +94,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--petrol); outline
 .tile.tone-warn { background: var(--card); border-color: var(--line); box-shadow: inset 4px 0 0 var(--oil), var(--shadow); }
 .tile.tone-bad { background: var(--card); border-color: var(--line); box-shadow: inset 4px 0 0 #cc3a2f, var(--shadow); }
 .tile.tone-good { box-shadow: inset 4px 0 0 #1e8e4e, var(--shadow); }
+.tile.hero { display: block; margin: 0; padding: 16px 18px; border-radius: var(--radius); border-color: transparent; }
+.tile.hero .tl, .tile.hero .ts { color: #9fb4c4; }
+.tile.hero .tv { color: #fff; }
 html[data-theme="dark"] .tile.tone-warn, html[data-theme="dark"] .tile.tone-bad { background: var(--card); }
 
 table { border-radius: var(--radius-s); }
@@ -209,3 +212,4 @@ html.standalone .side { padding-top: env(safe-area-inset-top); }
 @media (max-width: 900px) { html.standalone nav.top { height: calc(54px + env(safe-area-inset-top)); } #installBtn { padding: 5px 10px; font-size: 12px; } }
 .dz.big { padding: 34px 20px; border-width: 2px; border-color: var(--oil); background: var(--oil-soft); } .dz.big b { font-size: 16px; }
 .btn.bookmarklet { background: var(--oil) !important; color: #1a1405 !important; border-color: var(--oil) !important; cursor: grab; font-size: 15px; padding: 10px 18px; }
+.modal-bg { z-index: 70; }

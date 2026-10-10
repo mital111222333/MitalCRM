@@ -208,8 +208,6 @@ const LINKO = {
       <div class="bar" style="margin:0"><button class="btn" id="lkProbeCopy">📋 Скопировать список для Claude</button></div>`;
     box.querySelector('#lkProbeCopy').onclick = async () => { const t = LINKO.probeText(p).replace(/[0-9a-f]{40}/gi, '***'); try { await navigator.clipboard.writeText(t); toast('Скопировано — вставьте в чат Claude'); } catch { const m = modal(`<h3>Скопируйте текст</h3><textarea style="width:100%;height:50vh;font:12px monospace">${esc(t)}</textarea><div class="bar"><span class="spacer"></span><button class="btn" id="cx">Закрыть</button></div>`); m.el.querySelector('textarea').select(); m.el.querySelector('#cx').onclick = m.close; } };
   },
-  data: {}, // future: handlers for extra LINKO data, by job id
-  jobs() { return []; },
   show(text, cls = 'mut') {
     if (text !== undefined) LINKO.pending = { text, cls };
     const box = document.getElementById('lkMsg'); if (box && LINKO.pending) { box.className = LINKO.pending.cls; box.textContent = LINKO.pending.text; }
@@ -222,7 +220,8 @@ addEventListener('message', async e => {
   if (d.type === 'mital-hello') {
     const t = UI.localDate(Date.now());
     let probe = false; try { probe = !!localStorage.getItem('crm_linko_probe'); } catch { /* ignore */ }
-    e.source.postMessage({ type: 'mital-ready', from: PLAN.from(t), to: t, probe, jobs: LINKO.jobs() }, e.origin);
+    const from = PLAN.from(t); await LX.load(); LINKO.run = { from, to: t, at: new Date().toISOString() };
+    e.source.postMessage({ type: 'mital-ready', from, to: t, probe, jobs: (d.v >= 3 ? LX.jobs : []).map(j => ({ id: j.id, title: j.title, path: LX.fill(j.path, from, t) })) }, e.origin);
     if (probe && !(d.v >= 3)) setTimeout(() => toast('Для проверки нужна новая закладка: удалите старую «⚡ В MITAL CRM» и перетащите новую с этой страницы'), 3000);
     if (location.hash !== '#/up') location.hash = '#/up';
     LINKO.show('Получаю данные из LINKO…');
@@ -233,7 +232,10 @@ addEventListener('message', async e => {
     const pm = document.getElementById('lkProbeMsg'); if (pm) pm.textContent = '';
     LINKO.probeView(document.getElementById('lkProbeRes'));
   } else if (d.type === 'mital-data' && typeof d.id === 'string') {
-    if (LINKO.data[d.id]) try { await LINKO.data[d.id](d.rows || [], d.error); } catch (x) { console.warn('LINKO data', d.id, x); }
+    if (!Array.isArray(d.rows) || !LX.jobs.some(j => j.id === d.id)) return;
+    const r = LINKO.run || { from: PLAN.from(UI.localDate(Date.now())), to: UI.localDate(Date.now()) };
+    LX.put(d.id, d.rows.slice(0, 60000), { from: r.from, to: r.to, at: r.at, error: d.error || '', src: 'bookmark' });
+    if (d.id === LX.jobs[LX.jobs.length - 1].id) toast('Данные LINKO обновлены: заказы, товары, оплаты, долги, работа агентов');
   } else if (d.type === 'mital-progress') {
     LINKO.show(d.text, d.text.startsWith('✕') ? 'neg' : 'mut');
   } else if (d.type === 'mital-import' && Array.isArray(d.files)) {
@@ -253,19 +255,26 @@ addEventListener('message', async e => {
 // (linko-latest.json); whichever device opens the CRM first imports it — the phone needs nothing else ----------
 window.LINKO_AUTO = {
   busy: false, lastTry: 0,
+  // orders, products, payments, debts by age, agents' day… — written by the script every 30 minutes
+  async extra() {
+    const snap = await CLOUD.readJson('linko-extra.json'); if (!snap || !snap.at || !snap.data) return;
+    const cur = CRMLocal.ext().lx; if (cur && cur.at >= snap.at) return;
+    await LX.load(); if (LX.importSnap(snap) && /^#\/lx/.test(location.hash) && !document.querySelector('.modal-bg') && typeof route === 'function') route();
+  },
   async check() {
     if (LINKO_AUTO.busy || Date.now() - LINKO_AUTO.lastTry < 60000 || !window.CLOUD?.on()) return;
     LINKO_AUTO.lastTry = Date.now(); LINKO_AUTO.busy = true;
     try {
-      const snap = await CLOUD.readJson('linko-latest.json'); if (!snap || !snap.at || !Array.isArray(snap.files)) return;
+      const snap = await CLOUD.readJson('linko-latest.json'); if (!snap || !snap.at || !Array.isArray(snap.files)) return await LINKO_AUTO.extra();
       const x = CRMLocal.ext(); x.linkoAuto = { ...(x.linkoAuto || {}), seenAt: snap.at, error: snap.error || '' };
-      if (snap.error || (x.linkoAuto.importedAt && x.linkoAuto.importedAt >= snap.at)) return;
+      if (snap.error || (x.linkoAuto.importedAt && x.linkoAuto.importedAt >= snap.at)) return await LINKO_AUTO.extra();
       const bin = b => Uint8Array.from(atob(b), c => c.charCodeAt(0));
       const files = snap.files.map(f => new File([bin(f.b64)], f.name));
       const box = document.createElement('div');
       await UPALL.run(files, box, PLAN.day());
       x.linkoAuto.importedAt = snap.at; x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
       if (box.textContent.includes('✓')) { toast(`Данные из LINKO обновлены (${new Date(snap.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })})`); const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]'); if (!typing && typeof route === 'function') route(); }
+      await LINKO_AUTO.extra();
     } catch (e) { console.warn('LINKO auto', e); }
     finally { LINKO_AUTO.busy = false; }
   },

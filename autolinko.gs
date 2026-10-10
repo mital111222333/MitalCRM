@@ -2,6 +2,7 @@
  * MITAL CRM — автозагрузка из LINKO (Google Apps Script, бесплатно).
  * Каждые 5 минут (с 7 до 22) берёт из LINKO баланс клиентов (с начала периода плана по сегодня) и остатки всех складов
  * и кладёт их в ваш приватный репозиторий mitalcrm-data (файл linko-latest.json).
+ * Раз в 30 минут — заказы, товары, оплаты, возвраты, долги по срокам, работу агентов и др. (файл linko-extra.json).
  * CRM на любом устройстве, включая телефон, при открытии сама забирает эти данные.
  *
  * Как поставить: см. CRM → «Данные → Синхронизация и настройки» → «Автозагрузка из LINKO».
@@ -15,6 +16,8 @@ const CFG = {
   GH_REPO: 'mitalcrm-data',
   LINKO_API: 'https://mital.linko.uz/ru/api/v1/',
   TZ: 'Asia/Tashkent',
+  CRM_URL: 'https://mital111222333.github.io/MitalCRM/', // отсюда скрипт берёт список разделов LINKO (linko-jobs.json)
+  EXTRA_MIN: 30,                           // заказы, товары, оплаты, долги, работа агентов — раз в 30 минут
   TG_BOT: '',                              // необязательно: токен Telegram-бота — пришлёт сообщение, если что-то сломалось
   TG_CHAT: '',                             // необязательно: ваш chat id
 };
@@ -30,6 +33,11 @@ function setup() {
 function run() {
   const hour = Number(Utilities.formatDate(new Date(), CFG.TZ, 'H'));
   if (hour < 7 || hour > 22) return; // ночью данные не меняются
+  base_();
+  try { extra_(); } catch (e) { Logger.log('Доп. данные: ' + (e.message || e)); }
+}
+
+function base_() {
   let snap;
   try { snap = collect_(); }
   catch (e) {
@@ -84,6 +92,31 @@ function collect_() {
   return { at: new Date().toISOString(), from: from, to: today, files: files };
 }
 
+// the list of LINKO sections comes from the CRM site, so new data needs no new script
+function extra_() {
+  const P = PropertiesService.getScriptProperties();
+  if (Date.now() - Number(P.getProperty('extraAt') || 0) < CFG.EXTRA_MIN * 60000) return;
+  P.setProperty('extraAt', String(Date.now()));
+  const jobs = JSON.parse(UrlFetchApp.fetch(CFG.CRM_URL + 'linko-jobs.json?t=' + Date.now(), { muteHttpExceptions: true }).getContentText());
+  const to = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(to), data = {}, errors = {};
+  jobs.forEach(j => {
+    try {
+      const path = j.path.replace(/\{from\}/g, from).replace(/\{to\}/g, to);
+      let rows = [], next = path, n = 0;
+      while (next && n++ < 60) { const r = get_(next); if (Array.isArray(r)) { rows = rows.concat(r); next = null; } else if (r && Array.isArray(r.results)) { rows = rows.concat(r.results); next = r.next; } else { rows.push(r); next = null; } }
+      data[j.id] = rows.map(r => pick_(r, j.pick));
+    } catch (e) { errors[j.id] = String(e.message || e); if (/ключ/.test(errors[j.id])) throw e; }
+  });
+  const body = JSON.stringify({ data: data, errors: errors });
+  const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
+  if (hash === P.getProperty('extraHash')) { Logger.log('Доп. данные без изменений'); return; }
+  saveToGithub_('linko-extra.json', JSON.stringify({ at: new Date().toISOString(), from: from, to: to, data: data, errors: errors }));
+  P.setProperty('extraHash', hash);
+  Logger.log('Доп. данные сохранены: ' + Object.keys(data).map(k => k + ' ' + data[k].length).join(', ') + (Object.keys(errors).length ? ' · ошибки: ' + Object.keys(errors).join(', ') : ''));
+}
+function get2_(o, k) { if (o == null) return undefined; if (Object.prototype.hasOwnProperty.call(o, k)) return o[k]; return k.split('.').reduce((v, p) => (v == null ? undefined : v[p]), o); }
+function pick_(row, keys) { if (!keys || !keys.length || row == null || typeof row !== 'object') return row; const o = {}; keys.forEach(k => { const v = get2_(row, k); if (v !== undefined && v !== null && v !== '') o[k] = v; }); return o; }
+
 function planFrom_(d) {
   let y = Number(d.slice(0, 4)), m = Number(d.slice(5, 7));
   if (Number(d.slice(8, 10)) < CFG.PLAN_DAY) { m--; if (!m) { m = 12; y--; } }
@@ -93,7 +126,8 @@ function auth_() { return { Authorization: 'Token ' + CFG.LINKO_TOKEN }; }
 function get_(u) {
   const r = UrlFetchApp.fetch(u.indexOf('http') === 0 ? u : CFG.LINKO_API + u, { headers: auth_(), muteHttpExceptions: true });
   const code = r.getResponseCode();
-  if (code === 401 || code === 403) throw new Error('LINKO не принял ключ (' + code + '): возьмите новый ключ LINKO и вставьте в скрипт');
+  if (code === 401) throw new Error('LINKO не принял ключ (401): возьмите новый ключ LINKO и вставьте в скрипт');
+  if (code === 403) throw new Error('LINKO: нет доступа к разделу (403)');
   if (code !== 200) throw new Error('LINKO ответил ' + code);
   return JSON.parse(r.getContentText());
 }

@@ -239,7 +239,7 @@ EXT_PAGES.cloud = async el => {
     const t = v => new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     return UI.panel('🤖 Автозагрузка из LINKO — каждые 5 минут, без вас', `
       <p style="margin-top:0">${la.seenAt ? (la.error ? `<b class="neg">Последняя попытка ${t(la.seenAt)}: ${esc(la.error)}</b>` : `✓ Работает. Последние данные из LINKO: <b>${t(la.seenAt)}</b>${la.importedAt ? `, загружены в CRM` : ''}.`) : 'Пока не настроена.'}</p>
-      <p class="mut">Бесплатный скрипт Google сам берёт баланс и остатки из LINKO каждые 5 минут (с 7 до 22). Открытая CRM на компьютере и телефоне сама подхватывает новые данные — нажимать закладку больше не нужно.</p>
+      <p class="mut">Бесплатный скрипт Google сам берёт баланс и остатки из LINKO каждые 5 минут (с 7 до 22), а заказы, товары, оплаты, долги по срокам и работу агентов — раз в 30 минут. Открытая CRM на компьютере и телефоне сама подхватывает новые данные — нажимать закладку больше не нужно.</p>
       <ol class="steps">
         <li>${hasKey ? '✓ Ключ LINKO получен.' : (() => { let old = false; try { old = !!localStorage.getItem('crm_linko_oldbm'); } catch { /* ignore */ } return old ? '<b class="neg">Ваша закладка «⚡ В MITAL CRM» старая и не передаёт ключ.</b> Удалите её, перетащите новую из раздела <a href="#/up">⬆ Загрузить</a> и нажмите её в LINKO.' : '<b>Сначала один раз нажмите закладку «⚡ В MITAL CRM» в LINKO на этом компьютере</b> — CRM запомнит ключ LINKO для скрипта. Если закладка у вас давно — удалите её и перетащите новую из раздела <a href="#/up">⬆ Загрузить</a>.'; })()}</li>
         <li>Нажмите кнопку ниже — готовый скрипт скопируется (ключи уже внутри).</li>
@@ -291,7 +291,7 @@ EXT_PAGES.cloud = async el => {
       return;
     }
     const cc = CLOUD.cfg(), src = await (await fetch('autolinko.gs', { cache: 'no-cache' })).text();
-    const code = src.replace('ВСТАВЬТЕ_КЛЮЧ_LINKO', key).replace('ВСТАВЬТЕ_КЛЮЧ_GITHUB', cc.token).replace("GH_OWNER: 'mital111222333'", `GH_OWNER: '${cc.owner}'`).replace("GH_REPO: 'mitalcrm-data'", `GH_REPO: '${cc.repo}'`).replace('PLAN_DAY: 16,', `PLAN_DAY: ${PLAN.day()},`);
+    const code = src.replace('ВСТАВЬТЕ_КЛЮЧ_LINKO', key).replace('ВСТАВЬТЕ_КЛЮЧ_GITHUB', cc.token).replace("GH_OWNER: 'mital111222333'", `GH_OWNER: '${cc.owner}'`).replace("GH_REPO: 'mitalcrm-data'", `GH_REPO: '${cc.repo}'`).replace('PLAN_DAY: 16,', `PLAN_DAY: ${PLAN.day()},`).replace("CRM_URL: 'https://mital111222333.github.io/MitalCRM/'", `CRM_URL: '${location.origin + location.pathname.replace(/[^/]*$/, '')}'`);
     try { await navigator.clipboard.writeText(code); toast('Скрипт скопирован — вставьте его в script.google.com'); }
     catch { const m = modal(`<h3>Скопируйте скрипт</h3><textarea style="width:100%;height:50vh;font:12px monospace">${esc(code)}</textarea><div class="bar"><span class="spacer"></span><button class="btn" id="cx">Закрыть</button></div>`); m.el.querySelector('textarea').select(); m.el.querySelector('#cx').onclick = m.close; }
   };
