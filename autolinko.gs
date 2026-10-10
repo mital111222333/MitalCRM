@@ -17,6 +17,9 @@ const CFG = {
   LINKO_API: 'https://mital.linko.uz/ru/api/v1/',
   TZ: 'Asia/Tashkent',
   CRM_URL: 'https://mital111222333.github.io/MitalCRM/', // отсюда скрипт берёт список разделов LINKO (linko-jobs.json)
+  GPS_URL: 'https://gps.logic.uz',         // GPS-платформа агентов
+  GPS_EMAIL: '',                           // логин от GPS (вписывается из CRM)
+  GPS_PASSWORD: '',                        // пароль от GPS
   EXTRA_MIN: 30,                           // заказы, товары, оплаты, долги, работа агентов — раз в 30 минут
   TG_BOT: '',                              // необязательно: токен Telegram-бота — пришлёт сообщение, если что-то сломалось
   TG_CHAT: '',                             // необязательно: ваш chat id
@@ -34,6 +37,7 @@ function run() {
   const hour = Number(Utilities.formatDate(new Date(), CFG.TZ, 'H'));
   if (hour < 7 || hour > 22) return; // ночью данные не меняются
   base_();
+  try { gps_(); } catch (e) { Logger.log('GPS: ' + (e.message || e)); }
   try { extra_(); } catch (e) { Logger.log('Доп. данные: ' + (e.message || e)); }
 }
 
@@ -90,6 +94,40 @@ function collect_() {
   if (fresh && !found.length) P.deleteProperty('branchesAt'); // nothing found among known branches — look them all up next time
   if (!files.length) throw new Error('LINKO ничего не отдал');
   return { at: new Date().toISOString(), from: from, to: today, files: files };
+}
+
+// agents' positions from the GPS platform (GPS Server / GPSWOX API) → gps-latest.json
+function gps_() {
+  if (!CFG.GPS_EMAIL || !CFG.GPS_PASSWORD) return;
+  const P = PropertiesService.getScriptProperties(), base = CFG.GPS_URL.replace(/\/+$/, '');
+  const login = () => {
+    const r = UrlFetchApp.fetch(base + '/api/login', { method: 'post', payload: { email: CFG.GPS_EMAIL, password: CFG.GPS_PASSWORD }, muteHttpExceptions: true });
+    let j = {}; try { j = JSON.parse(r.getContentText()); } catch (e) { throw new Error('GPS: вход не удался (' + r.getResponseCode() + ')'); }
+    if (!j.user_api_hash) throw new Error('GPS: неверный логин или пароль');
+    P.setProperty('gpsHash', j.user_api_hash); return j.user_api_hash;
+  };
+  const call = (path, hash) => UrlFetchApp.fetch(base + '/api/' + path + (path.indexOf('?') < 0 ? '?' : '&') + 'lang=ru&user_api_hash=' + encodeURIComponent(hash), { muteHttpExceptions: true });
+  let snap;
+  try {
+    let hash = P.getProperty('gpsHash') || login(), r = call('get_devices', hash);
+    if (r.getResponseCode() === 401 || r.getResponseCode() === 403 || /"status"\s*:\s*0/.test(r.getContentText().slice(0, 200))) { hash = login(); r = call('get_devices', hash); }
+    if (r.getResponseCode() !== 200) throw new Error('GPS ответил ' + r.getResponseCode());
+    const devices = [];
+    JSON.parse(r.getContentText()).forEach(g => (g.items || []).forEach(d => devices.push({ id: d.id, name: d.name, group: g.title, online: d.online, time: d.time, timestamp: d.timestamp, lat: d.lat, lng: d.lng, speed: d.speed, course: d.course, stop_duration: d.stop_duration, address: d.address, tail: (d.tail || []).slice(-15) })));
+    snap = { at: new Date().toISOString(), devices: devices.map(d => ({ ...d, id: String(d.id) })), live: { url: base, hash: hash } };
+    // clients marked on the GPS map (points of interest) — once an hour
+    if (Date.now() - Number(P.getProperty('poiAt') || 0) > 3600 * 1000) {
+      P.setProperty('poiAt', String(Date.now()));
+      const m = call('get_user_map_icons', hash);
+      if (m.getResponseCode() === 200) {
+        let j = JSON.parse(m.getContentText()), list = Array.isArray(j) ? j : Array.isArray(j.items) ? j.items : (j.items && (j.items.mapIcons || j.items.data)) || j.data || [];
+        snap.pois = list.map(p => { let c = p.coordinates; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = null; } } c = c || p; return { name: p.name || p.title || '', lat: Number(c.lat), lng: Number(c.lng || c.lon) }; }).filter(p => p.name && p.lat && p.lng);
+      }
+    }
+  } catch (e) { snap = { at: new Date().toISOString(), error: String(e.message || e), devices: [] }; }
+  if (snap.pois) { saveToGithub_('gps-pois.json', JSON.stringify({ at: snap.at, pois: snap.pois })); snap.poisCount = snap.pois.length; delete snap.pois; }
+  saveToGithub_('gps-latest.json', JSON.stringify(snap));
+  Logger.log(snap.error ? 'GPS ошибка: ' + snap.error : 'GPS: устройств ' + snap.devices.length + (snap.poisCount != null ? ', клиентов на карте ' + snap.poisCount : ''));
 }
 
 // the list of LINKO sections comes from the CRM site, so new data needs no new script
