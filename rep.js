@@ -98,13 +98,36 @@ REP.agentText = (d, name) => {
   lines.push(`💰 Собрано: <b>${f(a.paid)}</b>${a.pool ? ` из ${f(a.pool)} — ${UI.pct(a.paid, a.pool)}%` : ''}${a.d_paid ? ` (за день +${f(a.d_paid)})` : ''}`);
   if (fc.projectable && fc.days_left) lines.push(`📅 Осталось ${fc.days_left} дн. Нужно в день: продавать ${f(a.need_sell_day || 0)}, собирать ${f(a.need_collect_day || 0)}`);
   lines.push(`📌 Долг ваших клиентов: <b>${f(a.debt)}</b> (${a.debtors} кл.) · АКБ ${a.akb} из ${a.okb} · место в рейтинге: ${rank} из ${d.agents.length}`);
-  const debt = mine.filter(c => c.debt > 0).sort((x, y) => y.score - x.score).slice(0, 7);
-  if (debt.length) { lines.push('', '<b>Собрать в первую очередь:</b>'); for (const c of debt) lines.push(`• ${esc(c.name)} — ${f(c.debt)}${c.lastPay ? `, без оплаты ${c.payDays} дн.` : `, нет оплат с ${UI.dm(d.hist.since)}`}`); }
+  const rt = typeof ROUTE !== 'undefined' && ROUTE.text(d, name);
+  if (rt) lines.push('', rt);
+  else {
+    const debt = mine.filter(c => c.debt > 0).sort((x, y) => y.score - x.score).slice(0, 7);
+    if (debt.length) { lines.push('', '<b>Собрать в первую очередь:</b>'); for (const c of debt) lines.push(`• ${esc(c.name)} — ${f(c.debt)}${c.lastPay ? `, без оплаты ${c.payDays} дн.` : `, нет оплат с ${UI.dm(d.hist.since)}`}`); }
+  }
   const sleep = mine.filter(c => c.buyDays !== null && c.buyDays > 30 && c.lastBuy).sort((x, y) => y.buyDays - x.buyDays).slice(0, 5);
   if (sleep.length) { lines.push('', '<b>Давно не покупали:</b>'); for (const c of sleep) lines.push(`• ${esc(c.name)} — ${c.buyDays} дн.`); }
   const tasks = d.tasks.filter(t => t.agent === name && t.status !== 'done');
   if (tasks.length) { lines.push('', '<b>Ваши задания:</b>'); for (const t of tasks.slice(0, 8)) lines.push(`${t.status === 'overdue' ? '❌' : '⏳'} ${esc(t.client)}: ${esc(t.kind)}${t.target ? ` ${f(t.target)}` : ''}${t.due ? ` до ${UI.dateRu(t.due)}` : ''}${t.fact ? ` (сделано ${f(t.fact)})` : ''}`); }
   return lines.join('\n');
+};
+
+// ---------- hero: where the plan period stands (sales and money against the plan and the calendar) ----------
+REP.hero = d => {
+  const T = agTotals(d), fc = d.forecast, pace = agPace(d), f = UI.fmt0, end = fc.period_end || d.upload.period_to;
+  const g = (title, now, plan, more, dayDelta, word) => {
+    const p = plan > 0 ? now / plan : null, cls = p === null ? '' : p >= 1 ? 'done' : pace !== null && p < pace * 0.6 ? 'low' : '';
+    const tag = p === null ? '' : `<span class="pct-tag ${p >= 1 ? 'ok' : pace !== null && p < pace * 0.6 ? 'lag' : pace !== null && p < pace * 0.9 ? 'mid' : ''}">${Math.round(p * 100)}%</span>`;
+    return `<div class="gauge2"><div class="gt"><span>${title}</span>${tag}</div><div class="gv">$${f(now)}${plan ? ` <span>из $${f(plan)}</span>` : ''}</div>
+      <div class="oilbar" title="${p === null ? 'План не задан' : Math.round(p * 100) + '% плана'}"><i class="${cls}" style="width:${p === null ? 0 : Math.min(p, 1) * 100}%"></i>${pace !== null && p !== null ? `<b style="left:calc(${Math.min(pace, 1) * 100}% - 1.5px)" title="По графику: ${Math.round(pace * 100)}%"></b>` : ''}</div>
+      <div class="gs"><span>${dayDelta ? `за день <b>+$${f(dayDelta)}</b>` : 'за день —'}</span><span>${plan ? (now < plan ? `осталось ${word} <b>$${f(plan - now)}</b>` : '<b>план закрыт ✓</b>') : 'план не задан'}</span>${more ? `<span>с ожиданиями <b>$${f(now + more)}</b></span>` : ''}</div></div>`;
+  };
+  return `<section class="hero" aria-label="Итоги периода">
+    <div class="hp"><h3>Период плана ${UI.dm(d.upload.period_from)} — ${UI.dm(end)}</h3>
+      ${fc.projectable ? `<div class="big">${fc.days_left}<small>${UI.plural(fc.days_left, 'день', 'дня', 'дней')} до конца</small></div>
+      <div><div class="track"><i style="width:${Math.round(pace * 100)}%"></i></div><div class="track-l"><span>${UI.dm(d.upload.period_from)}</span><span>прошло ${Math.round(pace * 100)}%</span><span>${UI.dm(end)}</span></div></div>` : `<div class="big">${UI.dm(d.upload.taken_at)}</div>`}
+      <div style="font-size:12px;color:#8ea4b5">Данные на ${UI.dateRu(d.upload.taken_at)}. Белая метка на полосах — где команда должна быть по графику.</div></div>
+    <div class="gauges">${g('🛒 Продажи', T.sold, T.plan, T.more_sale || 0, T.d_sold, 'продать')}${g('💰 Сбор денег', T.paid, T.pool, T.more_pool || 0, T.d_paid, 'собрать')}</div>
+  </section>`;
 };
 
 // ---------- Отчёт дня ----------
@@ -115,12 +138,9 @@ EXT_PAGES.rday = async el => {
   const call = d.clients.filter(c => c.debt > 0).sort((a, b) => b.score - a.score).slice(0, 12);
   const od = d.tasks.filter(t => t.status === 'overdue'), open = d.tasks.filter(t => t.status === 'work');
   const lowN = d.low ? (d.low.counts.out || 0) + (d.low.counts.low || 0) + (d.low.counts.blocked || 0) : 0;
-  body.innerHTML = `<div class="kpis">
-    ${UI.tile('Продано', '$' + f(T.sold), { sub: T.plan ? `план ${f(T.plan)} · ${UI.pct(T.sold, T.plan)}%` : 'план не задан', delta: UI.delta(T.d_sold, { title: 'За день (к прошлой загрузке)' }) })}
-    ${UI.tile('Собрано денег', '$' + f(T.paid), { sub: T.pool ? `пул ${f(T.pool)} · ${UI.pct(T.paid, T.pool)}%` : 'пул не задан', delta: UI.delta(T.d_paid, { title: 'За день (к прошлой загрузке)' }) })}
+  body.innerHTML = `${REP.hero(d)}<div class="kpis">
     ${UI.tile('Долг клиентов', '$' + f(T.debt), { sub: `должников ${T.debtors}`, delta: UI.delta(T.d_debt, { inverse: true }), tone: 'warn' })}
     ${UI.tile('АКБ / ОКБ', `${T.akb} / ${T.okb}`, { sub: `активны ${UI.pct(T.akb, T.okb) ?? 0}%` })}
-    ${fc.projectable ? UI.tile('Период плана', `${Math.round(pace * 100)}%`, { sub: `${UI.dm(d.upload.period_from)}–${UI.dm(fc.period_end)} · прошло ${fc.elapsed} из ${fc.month_days} дн., осталось ${fc.days_left}` }) : ''}
     ${(() => { const pc = PREV.compare(d); if (!pc) return ''; return pc.missing ? UI.tile(`К прошлому периоду`, '—', { sub: `загрузите баланс прошлого периода (с ${UI.dateRu(pc.prevFrom)}) — появится сравнение на ${pc.n}-й день` }) : UI.tile(`К прошлому периоду, ${pc.n}-й день`, `$${f(T.sold)}`, { sub: `тогда продано $${f(pc.total.sold)} ${PREV.chip(T.sold, pc.total.sold)}<br>собрано $${f(T.paid)} / тогда $${f(pc.total.paid)} ${PREV.chip(T.paid, pc.total.paid)}`, hint: `Сравнение с периодом от ${UI.dateRu(pc.prevFrom)}: загрузка на ${UI.dateRu(pc.prevDate)} (${pc.prevN}-й день)` }); })()}
     ${T.pool ? UI.tile('Сбор к ' + UI.dm(fc.period_end || d.upload.period_to), '$' + f(T.paid + (T.more_pool || 0)), { sub: `собрано ${f(T.paid)} + ещё соберётся ${f(T.more_pool || 0)} · ${UI.pct(T.paid + (T.more_pool || 0), T.pool)}% пула`, tone: T.paid + (T.more_pool || 0) >= T.pool ? 'good' : 'warn' }) : ''}
     ${T.proj_sold ? UI.tile('Прогноз продаж', '≈ $' + f(T.proj_sold), { sub: T.plan ? `${UI.pct(T.proj_sold, T.plan)}% плана при текущем темпе` : '', tone: T.plan && T.proj_sold < T.plan * 0.9 ? 'warn' : 'good' }) : ''}

@@ -2,7 +2,7 @@
 // Data comes from /api/ag/dashboard: every upload of the LINKO "Баланс клиентов" export is a dated snapshot.
 window.EXT_PAGES = window.EXT_PAGES || {};
 
-const AG_TABS = [['agents', 'Сводка'], ['leaders', 'Лидерборд'], ['aclients', 'Клиенты и долги'], ['atasks', 'Задания'], ['aup', 'Загрузки']];
+const AG_TABS = [['agents', 'Сводка'], ['leaders', 'Лидерборд'], ['aclients', 'Клиенты и долги'], ['amap', '🗺 Маршруты'], ['atasks', 'Задания'], ['aup', 'Загрузки']];
 const AKB_RULES = { paid: 'платят (оплатили за период)', sold: 'покупали (были продажи)', any: 'платят или покупали' };
 const AKB_SHORT = { paid: 'платят', sold: 'покупали', any: 'платят или покупали' };
 const TASK_STATUS = { done: ['good', '✓', 'Выполнено'], work: ['info', '◔', 'В работе'], overdue: ['crit', '✕', 'Просрочено'] };

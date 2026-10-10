@@ -375,3 +375,20 @@ h4.ch { margin: 18px 0 8px; font-size: 14px; }
 ul.notes { list-style: none; padding: 0; margin: 0; } ul.notes li { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); } ul.notes li:last-child { border: 0; }
 a.clink { color: inherit; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; cursor: pointer; } a.clink:hover { color: var(--brand); text-decoration-color: var(--brand); }
 .modal .tableview { display: none !important; }
+/* routes */
+.rtgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-bottom: 16px; }
+.rtday { padding: 12px 14px; transition: box-shadow .15s; } .rtday.over { box-shadow: 0 0 0 2px var(--brand); }
+.rthead { display: flex; gap: 8px; align-items: center; justify-content: space-between; } .rthead b { font-size: 15px; }
+.rtzone { flex: 1; max-width: 170px; min-height: 30px; padding: 4px 8px; font-size: 13px; }
+.rtsum { font-size: 12px; margin: 4px 0 8px; }
+.rtlist { list-style: none; margin: 0; padding: 0; counter-reset: rt; }
+.rtlist li { counter-increment: rt; display: grid; grid-template-columns: 14px 1fr auto; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.rtlist li .rtn::before { content: counter(rt) ". "; color: var(--muted); }
+.rtlist li.miss { opacity: .7; } .rtlist li.drag { opacity: .4; }
+.rtlist .grip { color: var(--muted); cursor: grab; font-size: 11px; }
+.rtbtns { display: flex; gap: 3px; align-items: center; } .rtbtns .btn.sm { padding: 2px 7px; min-height: 26px; } .rtbtns select.sm { min-height: 26px; padding: 2px 4px; font-size: 12px; width: 46px; }
+.rtadd input { width: 100%; margin-top: 8px; font-size: 13px; }
+.newbox { background: #e0ecfb; border: 1px solid #bcd4f3; border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; font-size: 13px; line-height: 1.6; }
+html[data-theme="dark"] .newbox { background: #15304d; border-color: #24496f; }
+tr.mguess td { background: var(--st-warn-bg); } tr.mnone td { background: var(--st-crit-bg); }
+@media (max-width: 700px) { .rtbtns .btn.sm[data-up], .rtbtns .btn.sm[data-dn] { display: none; } }

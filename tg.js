@@ -60,9 +60,10 @@ EXT_PAGES.tg = async el => {
       <div class="scroll" style="max-height:none"><table><thead><tr><th>Кто</th><th>Чат в Telegram</th></tr></thead><tbody>
       <tr><td><b>Я (руководитель)</b><br><small class="mut">сводка по всей команде</small></td><td>${opt(conf.me, '__me')}</td></tr>
       ${agents.map(n => `<tr><td>${esc(n)}</td><td>${opt(conf.chats[n], n)}</td></tr>`).join('')}</tbody></table></div>`, { cls: 'w6' }) : ''}
-  ${bot && !bot.error && !d.empty ? UI.panel('3. Отправить отчёт', `<p class="mut" style="margin-top:0">Каждый агент получит только свои цифры: продажи и сбор к плану, сколько нужно в день, кому из должников звонить, кто давно не покупал, его задания.</p>
+  ${bot && !bot.error && !d.empty ? UI.panel('3. Отправить отчёт', `<p class="mut" style="margin-top:0">Каждый агент получит только свои цифры: продажи и сбор к плану, сколько нужно в день, его маршрут на день (точки по порядку: сколько собрать и продать у каждого клиента), кто давно не покупал, его задания. Если маршрут не задан — список должников.</p>
       <div class="scroll" style="max-height:none"><table><tbody>${agents.map(n => `<tr><td><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-pick="${esc(n)}" ${conf.chats[n] ? '' : 'disabled'} ${tgPick.has(n) && conf.chats[n] ? 'checked' : ''}>${esc(n)}</label></td><td>${conf.chats[n] ? last(n) : '<small class="mut">не привязан</small>'}</td><td><button class="btn gray sm" data-prev="${esc(n)}">Просмотр</button></td></tr>`).join('')}</tbody></table></div>
-      <div class="bar" style="margin-top:12px"><button class="btn" id="tSend" ${linked.length ? '' : 'disabled'}>📤 Отправить выбранным агентам</button><button class="btn gray" id="tMe" ${conf.me ? '' : 'disabled'}>Отправить сводку себе</button><span id="tMsg" role="status" class="mut"></span></div>`, { cls: 'w6' }) : ''}
+      <div class="bar" style="margin-top:12px"><label class="mut">🗺 Маршрут в отчёте: <select id="tWhen"><option value="" ${!CRMLocal.ext().routeWhen ? 'selected' : ''}>авто (до 18:00 — сегодня, после — завтра)</option><option value="today" ${CRMLocal.ext().routeWhen === 'today' ? 'selected' : ''}>на сегодня</option><option value="tomorrow" ${CRMLocal.ext().routeWhen === 'tomorrow' ? 'selected' : ''}>на завтра</option></select></label></div>
+      <div class="bar" style="margin-top:8px"><button class="btn" id="tSend" ${linked.length ? '' : 'disabled'}>📤 Отправить выбранным агентам</button><button class="btn gray" id="tMe" ${conf.me ? '' : 'disabled'}>Отправить сводку себе</button><span id="tMsg" role="status" class="mut"></span></div>`, { cls: 'w6' }) : ''}
   ${bot && !bot.error && !d.empty ? UI.panel('Как это выглядит у агента', `<div id="tPrev" class="tgprev">${REP.agentText(d, agents.find(n => conf.chats[n]) || agents[0]).replace(/\n/g, '<br>')}</div>`, { cls: 'w12' }) : ''}
   </div>`;
 
@@ -82,6 +83,7 @@ EXT_PAGES.tg = async el => {
   });
   body.querySelectorAll('[data-pick]').forEach(b => b.onchange = () => { b.checked ? tgPick.add(b.dataset.pick) : tgPick.delete(b.dataset.pick); });
   body.querySelectorAll('[data-prev]').forEach(b => b.onclick = () => { $('#tPrev', body).innerHTML = REP.agentText(d, b.dataset.prev).replace(/\n/g, '<br>'); $('#tPrev', body).scrollIntoView({ behavior: 'smooth', block: 'nearest' }); });
+  const when = $('#tWhen', body); if (when) when.onchange = () => { CRMLocal.ext().routeWhen = when.value; CRMLocal.touch(); re(); };
   const send = $('#tSend', body);
   if (send) send.onclick = async () => {
     const list = agents.filter(n => tgPick.has(n) && conf.chats[n]), msg = $('#tMsg', body);

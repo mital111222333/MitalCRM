@@ -58,7 +58,7 @@ const LB = {
     const fit = (t, size, weight, maxW) => { x.font = `${weight} ${size}px ${F}`; if (x.measureText(t).width <= maxW) return t; while (t.length > 3 && x.measureText(t + '…').width > maxW) t = t.slice(0, -1); return t + '…'; };
     x.fillStyle = '#eef1f4'; x.fillRect(0, 0, W, H);
     // header
-    const g = x.createLinearGradient(0, 0, W, 0); g.addColorStop(0, '#0c3b3d'); g.addColorStop(1, '#0f6e6e'); x.fillStyle = g; x.fillRect(0, 0, W, 200);
+    const g = x.createLinearGradient(0, 0, W, 0); g.addColorStop(0, '#0e2433'); g.addColorStop(1, '#183a50'); x.fillStyle = g; x.fillRect(0, 0, W, 200);
     text('🏆 ЛИДЕРЫ MITAL', 56, 84, 52, '#ffffff', 700);
     const fc = d.forecast, per = `${UI.dateRu(d.upload.period_from)} — ${UI.dateRu(fc.period_end || d.upload.period_to)}`;
     text(`Данные на ${UI.dateRu(d.upload.taken_at)} · период плана ${per}${fc.projectable ? ` · осталось ${fc.days_left} дн.` : ''}`, 58, 132, 24, '#cde8e6');

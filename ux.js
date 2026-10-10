@@ -5,7 +5,7 @@
   const set = (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } };
 
   // ---------- theme ----------
-  const apply = t => { document.documentElement.dataset.theme = t; const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = t === 'dark' ? '#08262a' : '#0c3b3d'; };
+  const apply = t => { document.documentElement.dataset.theme = t; const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = t === 'dark' ? '#081521' : '#0e2433'; };
   apply(get('crm_theme') || 'light');
   const button = () => {
     const nav = document.querySelector('nav.top'); if (!nav || nav.querySelector('#themeBtn')) return;

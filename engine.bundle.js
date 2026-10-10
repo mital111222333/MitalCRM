@@ -701,7 +701,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
     for (const r of rows) {
       const c = S.ag.clients[r.name], oldAgent = c?.agent;
       if (!c) {
-        S.ag.clients[r.name] = { name: r.name, num: r.num, agent: r.agent, type: r.type, landmark: r.landmark, phone: r.phone, zone: r.zone, plan: r.plan || 0, pool: r.pool || 0, note: r.note || '' };
+        S.ag.clients[r.name] = { name: r.name, num: r.num, agent: r.agent, type: r.type, landmark: r.landmark, phone: r.phone, zone: r.zone, plan: r.plan || 0, pool: r.pool || 0, note: r.note || '', added: date, first: !before };
         created++;
       } else {
         if (r.agent && r.agent !== c.agent) { agentChanges++; c.agent = r.agent; }
@@ -851,7 +851,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
   };
 }
 
-module.exports = { createEngine, emptyState, normalizeState };
+module.exports = { createEngine, emptyState, normalizeState, readTableAsync };
 
 }
 };
