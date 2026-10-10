@@ -37,7 +37,8 @@ EXT_PAGES.up = async el => {
   <div class="grid">
     ${UI.panel('⚡ Из LINKO одной кнопкой', `<div id="lkBox"><p style="margin-top:0">Перетащите эту кнопку мышкой на <b>панель закладок</b> браузера (под адресной строкой):</p>
       <p><a class="btn bookmarklet" id="lkLink" href="#" title="Перетащите на панель закладок">⚡ В MITAL CRM</a></p>
-      <p class="mut" style="margin-bottom:0">Дальше: откройте LINKO, войдите и нажмите эту закладку. CRM откроется сама, возьмёт баланс клиентов с ${UI.dateRu(from)} по сегодня и остатки всех складов и загрузит их — без скачивания файлов. Работает на компьютере.</p></div><div id="lkMsg" role="status" style="margin-top:8px"></div>`, { cls: 'w12', sub: 'Один раз поставить закладку — дальше обновление данных одним нажатием' })}
+      <p class="mut" style="margin-bottom:0">Дальше: откройте LINKO, войдите и нажмите эту закладку. CRM откроется сама, возьмёт баланс клиентов с ${UI.dateRu(from)} по сегодня и остатки всех складов и загрузит их — без скачивания файлов. Работает на компьютере.</p></div><div id="lkMsg" role="status" style="margin-top:8px"></div>
+      <div class="bar" style="margin:10px 0 0"><button class="btn gray" id="lkProbe">🔍 Проверить, какие ещё данные есть в LINKO</button><span id="lkProbeMsg" class="mut"></span></div><div id="lkProbeRes"></div>`, { cls: 'w12', sub: 'Один раз поставить закладку — дальше обновление данных одним нажатием' })}
     ${UI.panel('⚡ Всё сразу', `<div class="dz big" id="upAll" tabindex="0" role="button"><b>Перетащите сюда все файлы из LINKO разом</b>баланс и остатки складов — CRM сама поймёт, где какой файл (или нажмите, чтобы выбрать несколько)</div><div id="upAllMsg" role="status" style="margin-top:10px"></div>`, { cls: 'w12', sub: 'Самый быстрый способ: выделите в папке «Загрузки» все скачанные файлы и перетащите их сюда' })}
     ${UI.panel('💰 Баланс клиентов', `<p class="mut" style="margin-top:0">Выгрузка из LINKO: продажи, оплаты, возвраты и долги по каждому клиенту.</p>
       <div class="dz" id="upAg" tabindex="0" role="button"><b>Файл «balance…»</b>перетащите или нажмите</div>
@@ -94,6 +95,11 @@ EXT_PAGES.up = async el => {
   UI.bindDrop($('#upAll', el), files => UPALL.run(files, $('#upAllMsg', el), day));
   LINKO.link().then(href => { const a = $('#lkLink', el); if (a) { a.href = href; a.onclick = e => { e.preventDefault(); toast('Не нажимайте здесь — перетащите кнопку на панель закладок, а нажимайте её на странице LINKO'); }; } });
   if (LINKO.pending) LINKO.show();
+  const pb = $('#lkProbe', el), pm = $('#lkProbeMsg', el);
+  const probeOn = () => { try { return !!localStorage.getItem('crm_linko_probe'); } catch { return false; } };
+  if (probeOn()) pm.textContent = 'Включено: теперь откройте LINKO и нажмите закладку «⚡ В MITAL CRM».';
+  pb.onclick = () => { try { localStorage.setItem('crm_linko_probe', '1'); } catch { /* ignore */ } pm.innerHTML = '<b>Включено.</b> Теперь откройте LINKO и нажмите закладку «⚡ В MITAL CRM». Проверка займёт 1–3 минуты.'; };
+  LINKO.probeView($('#lkProbeRes', el));
   el.querySelectorAll('[data-wh]').forEach(z => UI.bindDrop(z, async files => {
     const w = whs[+z.dataset.wh], box = el.querySelector(`[data-whmsg="${z.dataset.wh}"]`), f = files[0], date = upFileDate(f);
     box.className = 'mut'; box.textContent = 'Загружаю…';
@@ -186,6 +192,24 @@ const LINKO = {
     const code = src.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n').replace('__CRM_URL__', location.origin + location.pathname);
     return 'javascript:' + encodeURIComponent(code);
   },
+  // the list of LINKO sections found by the bookmark check: names, record counts and field names only
+  probeText(p) {
+    const ok = p.items.filter(x => x.status === 200 && x.fields);
+    return 'LINKO — найдено разделов с данными: ' + ok.length + ' (проверено ' + p.items.length + ')\n'
+      + ok.map(x => x.path + ' | ' + (x.count === '' ? '?' : x.count) + ' | ' + x.fields).join('\n')
+      + '\n\nДругие ответы: ' + p.items.filter(x => x.status !== 200).map(x => x.path + ' ' + x.status).join(', ')
+      + '\n\nАдреса, которые открывал LINKO: ' + (p.calls || []).join(', ');
+  },
+  probeView(box) {
+    const p = CRMLocal.ext().linkoProbe; if (!box || !p) return;
+    const ok = p.items.filter(x => x.status === 200 && x.fields);
+    box.innerHTML = `<p style="margin:12px 0 6px">✓ Проверка LINKO ${new Date(p.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}: найдено <b>${ok.length}</b> разделов с данными.
+      Нажмите кнопку и вставьте текст в чат Claude (Ctrl+V) — там только названия разделов и полей, без цифр и ключей.</p>
+      <div class="bar" style="margin:0"><button class="btn" id="lkProbeCopy">📋 Скопировать список для Claude</button></div>`;
+    box.querySelector('#lkProbeCopy').onclick = async () => { const t = LINKO.probeText(p).replace(/[0-9a-f]{40}/gi, '***'); try { await navigator.clipboard.writeText(t); toast('Скопировано — вставьте в чат Claude'); } catch { const m = modal(`<h3>Скопируйте текст</h3><textarea style="width:100%;height:50vh;font:12px monospace">${esc(t)}</textarea><div class="bar"><span class="spacer"></span><button class="btn" id="cx">Закрыть</button></div>`); m.el.querySelector('textarea').select(); m.el.querySelector('#cx').onclick = m.close; } };
+  },
+  data: {}, // future: handlers for extra LINKO data, by job id
+  jobs() { return []; },
   show(text, cls = 'mut') {
     if (text !== undefined) LINKO.pending = { text, cls };
     const box = document.getElementById('lkMsg'); if (box && LINKO.pending) { box.className = LINKO.pending.cls; box.textContent = LINKO.pending.text; }
@@ -197,13 +221,24 @@ addEventListener('message', async e => {
   const d = e.data;
   if (d.type === 'mital-hello') {
     const t = UI.localDate(Date.now());
-    e.source.postMessage({ type: 'mital-ready', from: PLAN.from(t), to: t }, e.origin);
+    let probe = false; try { probe = !!localStorage.getItem('crm_linko_probe'); } catch { /* ignore */ }
+    e.source.postMessage({ type: 'mital-ready', from: PLAN.from(t), to: t, probe, jobs: LINKO.jobs() }, e.origin);
+    if (probe && !(d.v >= 3)) setTimeout(() => toast('Для проверки нужна новая закладка: удалите старую «⚡ В MITAL CRM» и перетащите новую с этой страницы'), 3000);
     if (location.hash !== '#/up') location.hash = '#/up';
     LINKO.show('Получаю данные из LINKO…');
+  } else if (d.type === 'mital-probe' && Array.isArray(d.items)) {
+    const clean = v => String(v == null ? '' : v).slice(0, 900);
+    CRMLocal.ext().linkoProbe = { at: new Date().toISOString(), items: d.items.slice(0, 400).map(x => ({ path: clean(x.path), status: Number(x.status) || 0, count: x.count === '' ? '' : Number(x.count) || 0, fields: clean(x.fields) })), calls: (d.calls || []).slice(0, 200).map(clean) };
+    CRMLocal.touch(); try { localStorage.removeItem('crm_linko_probe'); } catch { /* ignore */ }
+    const pm = document.getElementById('lkProbeMsg'); if (pm) pm.textContent = '';
+    LINKO.probeView(document.getElementById('lkProbeRes'));
+  } else if (d.type === 'mital-data' && typeof d.id === 'string') {
+    if (LINKO.data[d.id]) try { await LINKO.data[d.id](d.rows || [], d.error); } catch (x) { console.warn('LINKO data', d.id, x); }
   } else if (d.type === 'mital-progress') {
     LINKO.show(d.text, d.text.startsWith('✕') ? 'neg' : 'mut');
   } else if (d.type === 'mital-import' && Array.isArray(d.files)) {
-    if (typeof d.key === 'string' && /^[A-Za-z0-9]{20,80}$/.test(d.key)) { try { localStorage.setItem('crm_linko_key', d.key); } catch { /* ignore */ } } // kept on this device only, for the auto-loader script
+    const okKey = typeof d.key === 'string' && /^[A-Za-z0-9_-]{20,80}$/.test(d.key);
+    try { if (okKey) { localStorage.setItem('crm_linko_key', d.key); localStorage.removeItem('crm_linko_oldbm'); } else localStorage.setItem('crm_linko_oldbm', '1'); } catch { /* ignore */ } // the key is kept on this device only, for the auto-loader script
     if (location.hash !== '#/up') { location.hash = '#/up'; await new Promise(r => setTimeout(r, 400)); }
     LINKO.show(`Загружаю: ${d.files.length} файл(а) из LINKO…`);
     const files = d.files.filter(f => f && f.name && f.data).map(f => new File([f.data], String(f.name).slice(0, 120)));

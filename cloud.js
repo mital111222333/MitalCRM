@@ -241,13 +241,13 @@ EXT_PAGES.cloud = async el => {
       <p style="margin-top:0">${la.seenAt ? (la.error ? `<b class="neg">Последняя попытка ${t(la.seenAt)}: ${esc(la.error)}</b>` : `✓ Работает. Последние данные из LINKO: <b>${t(la.seenAt)}</b>${la.importedAt ? `, загружены в CRM` : ''}.`) : 'Пока не настроена.'}</p>
       <p class="mut">Бесплатный скрипт Google сам берёт баланс и остатки из LINKO каждые 5 минут (с 7 до 22). Открытая CRM на компьютере и телефоне сама подхватывает новые данные — нажимать закладку больше не нужно.</p>
       <ol class="steps">
-        <li>${hasKey ? '✓ Ключ LINKO получен.' : '<b>Сначала один раз нажмите закладку «⚡ В MITAL CRM» в LINKO на этом компьютере</b> — CRM запомнит ключ LINKO для скрипта.'}</li>
+        <li>${hasKey ? '✓ Ключ LINKO получен.' : (() => { let old = false; try { old = !!localStorage.getItem('crm_linko_oldbm'); } catch { /* ignore */ } return old ? '<b class="neg">Ваша закладка «⚡ В MITAL CRM» старая и не передаёт ключ.</b> Удалите её, перетащите новую из раздела <a href="#/up">⬆ Загрузить</a> и нажмите её в LINKO.' : '<b>Сначала один раз нажмите закладку «⚡ В MITAL CRM» в LINKO на этом компьютере</b> — CRM запомнит ключ LINKO для скрипта. Если закладка у вас давно — удалите её и перетащите новую из раздела <a href="#/up">⬆ Загрузить</a>.'; })()}</li>
         <li>Нажмите кнопку ниже — готовый скрипт скопируется (ключи уже внутри).</li>
         <li>Откройте <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com → Новый проект</a>, сотрите всё в окне и вставьте скрипт (Ctrl+V). Нажмите 💾 (Ctrl+S).</li>
         <li>Вверху в списке функций выберите <b>setup</b> и нажмите <b>▶ Выполнить</b>. Google попросит разрешение: «Проверить разрешения» → ваш аккаунт → «Дополнительно» → «Перейти к проекту» → «Разрешить».</li>
         <li>Готово. Через минуту здесь появится «✓ Работает».</li>
       </ol>
-      <div class="bar" style="margin:0"><button class="btn" id="laCopy" ${hasKey && c ? '' : 'disabled'}>📋 Скопировать готовый скрипт</button>${!c ? '<span class="mut">Сначала подключите синхронизацию выше</span>' : ''}</div>
+      <div class="bar" style="margin:0"><button class="btn" id="laCopy" ${c ? '' : 'disabled'}>📋 Скопировать готовый скрипт</button>${!c ? '<span class="mut">Сначала подключите синхронизацию выше</span>' : ''}</div>
       <p class="mut" style="margin-bottom:0">Скрипт хранится в вашем аккаунте Google, ключи никуда кроме LINKO и вашего GitHub не отправляются. Не пересылайте скрипт другим людям. Если в LINKO выйти из аккаунта, ключ может смениться — тогда снова нажмите закладку и повторите шаги 2–4.</p>`, { cls: 'w12' });
   })()}
   ${UI.panel('📲 Приложение на телефоне', `<p class="mut" style="margin-top:0">${window.PWA?.standalone() ? '✓ Вы уже открыли CRM как приложение.' : 'Установите CRM на главный экран — будет открываться одним нажатием, как обычное приложение, без браузера и адресной строки. Работает и без интернета: покажет последние сохранённые данные.'}</p>
@@ -276,6 +276,20 @@ EXT_PAGES.cloud = async el => {
   const lc = $('#laCopy', el);
   if (lc) lc.onclick = async () => {
     let key = ''; try { key = localStorage.getItem('crm_linko_key') || ''; } catch { /* ignore */ }
+    if (!key) {
+      const m = modal(`<h3>Сначала нужен ключ LINKO</h3>
+        <p>CRM ещё не получила ключ LINKO на этом компьютере. Скорее всего, у вас в браузере <b>старая закладка</b> — она не передаёт ключ. Обновите её:</p>
+        <ol class="steps">
+          <li>На панели закладок нажмите правой кнопкой на «⚡ В MITAL CRM» → <b>Удалить</b>.</li>
+          <li>В CRM откройте <a href="#/up">⬆ Загрузить</a> и перетащите новую кнопку «⚡ В MITAL CRM» на панель закладок.</li>
+          <li>Откройте LINKO (app.linko.uz) и нажмите новую закладку. Дождитесь загрузки данных.</li>
+          <li>Вернитесь сюда — кнопка «📋 Скопировать готовый скрипт» заработает.</li>
+        </ol>
+        <p class="mut">Делайте это в том же браузере на этом компьютере, где открыта CRM.</p>
+        <div class="bar"><span class="spacer"></span><button class="btn" id="cx">Понятно</button></div>`);
+      m.el.querySelector('#cx').onclick = m.close; m.el.querySelector('a[href="#/up"]').onclick = m.close;
+      return;
+    }
     const cc = CLOUD.cfg(), src = await (await fetch('autolinko.gs', { cache: 'no-cache' })).text();
     const code = src.replace('ВСТАВЬТЕ_КЛЮЧ_LINKO', key).replace('ВСТАВЬТЕ_КЛЮЧ_GITHUB', cc.token).replace("GH_OWNER: 'mital111222333'", `GH_OWNER: '${cc.owner}'`).replace("GH_REPO: 'mitalcrm-data'", `GH_REPO: '${cc.repo}'`).replace('PLAN_DAY: 16,', `PLAN_DAY: ${PLAN.day()},`);
     try { await navigator.clipboard.writeText(code); toast('Скрипт скопирован — вставьте его в script.google.com'); }
