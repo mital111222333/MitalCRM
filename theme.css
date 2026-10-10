@@ -201,3 +201,9 @@ html[data-theme="dark"] .insights li.crit { border-left-color: #e0564a; } html[d
   .bar > .btn, .bar > button.btn { padding: 7px 11px; font-size: 13px; min-height: 34px; }
   .insights li { font-size: 12.5px; padding: 8px 10px; }
 }
+
+/* ---------- installed app (home-screen icon) ---------- */
+#installBtn { background: var(--oil); color: #1a1405; border: 0; border-radius: 99px; padding: 5px 12px; font: 600 13px var(--font); cursor: pointer; white-space: nowrap; }
+html.standalone nav.top { padding-top: env(safe-area-inset-top); height: calc(56px + env(safe-area-inset-top)); }
+html.standalone .side { padding-top: env(safe-area-inset-top); }
+@media (max-width: 900px) { html.standalone nav.top { height: calc(54px + env(safe-area-inset-top)); } #installBtn { padding: 5px 10px; font-size: 12px; } }

@@ -225,6 +225,9 @@ EXT_PAGES.cloud = async el => {
     <div class="form"><label style="grid-column:1/-1">Ключ Gemini<input id="gKey" type="password" value="${esc(ext.ai?.key || '')}" placeholder="AIza…" autocomplete="off"></label>
     <label style="grid-column:1/-1">Модель<select id="gModel"><option value="">Автоматически (быстрая Flash)</option>${ext.ai?.model ? `<option selected>${esc(ext.ai.model)}</option>` : ''}</select></label></div>
     <div class="bar" style="margin-top:12px"><button class="btn" id="gSave">Сохранить и проверить</button><span id="gMsg" role="status" class="mut"></span></div>`, { cls: 'w6' })}
+  ${UI.panel('📲 Приложение на телефоне', `<p class="mut" style="margin-top:0">${window.PWA?.standalone() ? '✓ Вы уже открыли CRM как приложение.' : 'Установите CRM на главный экран — будет открываться одним нажатием, как обычное приложение, без браузера и адресной строки. Работает и без интернета: покажет последние сохранённые данные.'}</p>
+    ${window.PWA?.standalone() ? '' : `<div class="bar" style="margin:0"><button class="btn" id="pwaGo">📲 Установить приложение</button></div>
+    <ul class="steps" style="margin-top:10px"><li><b>Android (Chrome):</b> кнопка выше или меню ⋮ → «Установить приложение».</li><li><b>iPhone:</b> откройте в Safari → «Поделиться» → «На экран „Домой“».</li><li><b>Компьютер (Chrome / Edge):</b> кнопка выше или значок ⊕ в адресной строке.</li></ul>`}`, { cls: 'w6' })}
   ${UI.panel('Telegram', `<p class="mut" style="margin-top:0">Бот для отправки отчётов агентам настраивается в разделе <a href="#/tg">Отчёты → Telegram агентам</a>.</p>
     <p class="mut" style="margin-bottom:0">${ext.tg?.token ? '✓ Бот подключён' : 'Бот ещё не подключён'}${ext.tg?.chats ? ` · агентов с Telegram: ${Object.keys(ext.tg.chats).length}` : ''}</p>`, { cls: 'w6' })}
   </div>`;
@@ -244,6 +247,7 @@ EXT_PAGES.cloud = async el => {
       catch (e) { msg.className = 'neg'; msg.textContent = e.message; }
     };
   }
+  const pg = $('#pwaGo', el); if (pg) pg.onclick = () => PWA.install();
   $('#gSave', el).onclick = async () => {
     const msg = $('#gMsg', el), key = $('#gKey', el).value.trim();
     const x = CRMLocal.ext(); x.ai = { ...(x.ai || {}), key, model: $('#gModel', el).value };
