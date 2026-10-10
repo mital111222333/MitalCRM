@@ -207,3 +207,5 @@ html[data-theme="dark"] .insights li.crit { border-left-color: #e0564a; } html[d
 html.standalone nav.top { padding-top: env(safe-area-inset-top); height: calc(56px + env(safe-area-inset-top)); }
 html.standalone .side { padding-top: env(safe-area-inset-top); }
 @media (max-width: 900px) { html.standalone nav.top { height: calc(54px + env(safe-area-inset-top)); } #installBtn { padding: 5px 10px; font-size: 12px; } }
+.dz.big { padding: 34px 20px; border-width: 2px; border-color: var(--oil); background: var(--oil-soft); } .dz.big b { font-size: 16px; }
+.btn.bookmarklet { background: var(--oil) !important; color: #1a1405 !important; border-color: var(--oil) !important; cursor: grab; font-size: 15px; padding: 10px 18px; }

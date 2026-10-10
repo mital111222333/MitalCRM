@@ -35,6 +35,10 @@ EXT_PAGES.up = async el => {
   const when = u => (u ? `последняя: ${UI.dateRu(u.taken_at)}${u.uploaded_at ? ', загружено ' + new Date(u.uploaded_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}` : 'ещё не загружали');
   el.innerHTML = `<div class="page-head"><div><h2>Загрузить данные</h2><div class="sub">Сегодня ${UI.dateRu(t0)} · просто перетащите файл в нужный блок (или нажмите на него) — дата и период подставятся сами. Повторная загрузка за день заменяет предыдущую.</div></div></div>
   <div class="grid">
+    ${UI.panel('⚡ Из LINKO одной кнопкой', `<div id="lkBox"><p style="margin-top:0">Перетащите эту кнопку мышкой на <b>панель закладок</b> браузера (под адресной строкой):</p>
+      <p><a class="btn bookmarklet" id="lkLink" href="#" title="Перетащите на панель закладок">⚡ В MITAL CRM</a></p>
+      <p class="mut" style="margin-bottom:0">Дальше: откройте LINKO, войдите и нажмите эту закладку. CRM откроется сама, возьмёт баланс клиентов с ${UI.dateRu(from)} по сегодня и остатки всех складов и загрузит их — без скачивания файлов. Работает на компьютере.</p></div><div id="lkMsg" role="status" style="margin-top:8px"></div>`, { cls: 'w12', sub: 'Один раз поставить закладку — дальше обновление данных одним нажатием' })}
+    ${UI.panel('⚡ Всё сразу', `<div class="dz big" id="upAll" tabindex="0" role="button"><b>Перетащите сюда все файлы из LINKO разом</b>баланс и остатки складов — CRM сама поймёт, где какой файл (или нажмите, чтобы выбрать несколько)</div><div id="upAllMsg" role="status" style="margin-top:10px"></div>`, { cls: 'w12', sub: 'Самый быстрый способ: выделите в папке «Загрузки» все скачанные файлы и перетащите их сюда' })}
     ${UI.panel('💰 Баланс клиентов', `<p class="mut" style="margin-top:0">Выгрузка из LINKO: продажи, оплаты, возвраты и долги по каждому клиенту.</p>
       <div class="dz" id="upAg" tabindex="0" role="button"><b>Файл «balance…»</b>перетащите или нажмите</div>
       <div class="form" style="margin-top:12px"><label>Период плана начинается с числа<select id="upDay">${Array.from({ length: 28 }, (_, i) => i + 1).map(n => `<option ${n === day ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
@@ -87,6 +91,9 @@ EXT_PAGES.up = async el => {
         + ` <a href="#/leaders">Открыть лидерборд →</a>`);
     } catch (e) { show(box, false, '✕ ' + esc(e.message)); }
   });
+  UI.bindDrop($('#upAll', el), files => UPALL.run(files, $('#upAllMsg', el), day));
+  LINKO.link().then(href => { const a = $('#lkLink', el); if (a) { a.href = href; a.onclick = e => { e.preventDefault(); toast('Не нажимайте здесь — перетащите кнопку на панель закладок, а нажимайте её на странице LINKO'); }; } });
+  if (LINKO.pending) LINKO.show();
   el.querySelectorAll('[data-wh]').forEach(z => UI.bindDrop(z, async files => {
     const w = whs[+z.dataset.wh], box = el.querySelector(`[data-whmsg="${z.dataset.wh}"]`), f = files[0], date = upFileDate(f);
     box.className = 'mut'; box.textContent = 'Загружаю…';
@@ -97,3 +104,111 @@ EXT_PAGES.up = async el => {
     } catch (e) { show(box, false, '✕ ' + esc(e.message)); }
   }));
 };
+
+// ---------- «Всё сразу»: recognise every file (balance / stock of which warehouse / plan) and load them in one go ----------
+const UPALL = {
+  async kind(file) {
+    const sheets = await CRMEngine.readTableAsync(new Uint8Array(await file.arrayBuffer()), file.name);
+    for (const sh of sheets) for (const row of sh.rows.slice(0, 15)) {
+      const h = (row || []).map(v => String(v ?? '').trim().toLowerCase());
+      if (h.includes('клиент') && h.some(x => x.startsWith('продано')) && h.some(x => x.startsWith('баланс'))) return { type: 'balance' };
+      if (h.some(x => x === 'продукт' || x === 'товар' || x === 'наименование') && h.some(x => x.startsWith('всего товаров') || x.startsWith('доступн'))) {
+        const ci = h.findIndex(x => x === 'продукт' || x === 'товар' || x === 'наименование'), ai = h.findIndex(x => x === 'aртикул' || x === 'артикул'), ti = h.findIndex(x => x.startsWith('всего товаров'));
+        const map = new Map(); for (const r of sh.rows.slice(sh.rows.indexOf(row) + 1)) { const name = String(r?.[ci] ?? '').trim(); if (!name) continue; map.set(String(r?.[ai] ?? '').trim() || name, Number(r?.[ti]) || 0); }
+        return { type: 'stock', map };
+      }
+      if (h.includes('клиент') && (h.includes('план') || h.includes('пул'))) return { type: 'plan' };
+    }
+    return { type: 'unknown' };
+  },
+  // which warehouse a stock file belongs to: the one whose latest stock is closest to the file
+  guessWh(map, used) {
+    const S = CRMLocal.engine.getState(), res = [];
+    for (const w of S.wh.list) {
+      const last = S.wh.uploads.filter(u => u.warehouse === w.name).sort((a, b) => (a.taken_at < b.taken_at ? 1 : a.taken_at > b.taken_at ? -1 : b.id - a.id))[0];
+      if (!last) continue;
+      let diff = 0, tot = 0; const prev = new Map(last.rows.map(r => [r.art, r.total]));
+      for (const art of new Set([...map.keys(), ...prev.keys()])) { const a = map.get(art) || 0, b = prev.get(art) || 0; diff += Math.abs(a - b); tot += Math.max(a, b); }
+      res.push({ wh: w.name, score: tot ? diff / tot : 1 });
+    }
+    res.sort((a, b) => a.score - b.score);
+    const best = res.find(r => !used.has(r.wh));
+    return best && best.score < 0.5 ? best.wh : null;
+  },
+  async run(files, box, day) {
+    box.className = 'mut'; box.textContent = 'Читаю файлы…';
+    const items = [];
+    for (const f of files) { try { items.push({ f, ...(await UPALL.kind(f)) }); } catch (e) { items.push({ f, type: 'error', error: e.message }); } }
+    const used = new Set(), whs = CRMLocal.engine.getState().wh.list.map(w => w.name);
+    const BR = (CRMLocal.ext().linkoBranch ||= {}), brOf = it => (it.f.name.match(/branch (\d+)/) || [])[1];
+    for (const it of items.filter(i => i.type === 'stock' && brOf(i) && whs.includes(BR[brOf(i)]))) { it.wh = BR[brOf(it)]; used.add(it.wh); }
+    for (const it of items.filter(i => i.type === 'stock' && !i.wh)) { it.wh = UPALL.guessWh(it.map, used); if (it.wh) used.add(it.wh); }
+    const unsure = items.filter(i => i.type === 'stock' && !i.wh);
+    if (unsure.length) {
+      const ok = await new Promise(res => {
+        const m = modal(`<h3>Какой это склад?</h3><p class="mut" style="margin-top:0">В файле остатков нет названия склада. Выберите один раз — дальше CRM будет узнавать склад сама по остаткам.</p>
+          ${unsure.map((it, i) => `<label style="display:block;margin:8px 0">${esc(it.f.name.replace(/^stock LINKO branch (\d+)\.csv$/, 'Склад LINKO № $1'))} <small class="mut">(${UI.fmt0([...it.map.values()].reduce((a, b) => a + b, 0))} шт.)</small><select data-u="${i}" style="display:block;width:100%;margin-top:4px">${whs.map(w => `<option ${used.has(w) ? '' : ''}>${esc(w)}</option>`).join('')}<option value="">— не загружать —</option></select></label>`).join('')}
+          <div class="bar" style="margin-top:12px"><span class="spacer"></span><button class="btn gray" id="uX">Отмена</button><button class="btn" id="uOk">Загрузить</button></div>`);
+        const free = whs.filter(w => !used.has(w)); m.el.querySelectorAll('select[data-u]').forEach((s, i) => { if (free[i]) s.value = free[i]; });
+        m.el.querySelector('#uX').onclick = () => { m.close(); res(false); };
+        m.el.querySelector('#uOk').onclick = () => { m.el.querySelectorAll('select[data-u]').forEach(s => { unsure[+s.dataset.u].wh = s.value || null; }); m.close(); res(true); };
+      });
+      if (!ok) { box.textContent = 'Загрузка отменена'; return; }
+    }
+    for (const it of items) if (it.type === 'stock' && it.wh && brOf(it)) BR[brOf(it)] = it.wh;
+    CRMLocal.touch();
+    const lines = [];
+    // balance first, then stock
+    for (const it of items.sort((a, b) => (a.type === 'balance' ? -1 : 0) - (b.type === 'balance' ? -1 : 0))) {
+      const date = upFileDate(it.f);
+      try {
+        if (it.type === 'balance') {
+          const pf = PLAN.from(date, day), d = await UI.rawUpload(`/api/ag/upload?file=${encodeURIComponent(it.f.name)}&date=${date}&from=${pf}&to=${date}`, it.f);
+          lines.push(d.error ? `✕ ${esc(it.f.name)}: ${esc(d.error)}` : `✓ Баланс: ${d.clients} клиентов на ${UI.dateRu(date)}${d.created ? `, новых ${d.created}` : ''}`);
+        } else if (it.type === 'stock') {
+          if (!it.wh) { lines.push(`— ${esc(it.f.name)}: пропущен`); continue; }
+          const d = await UI.rawUpload(`/api/wh/upload?warehouse=${encodeURIComponent(it.wh)}&date=${date}&file=${encodeURIComponent(it.f.name)}`, it.f);
+          lines.push(d.error ? `✕ ${esc(it.f.name)}: ${esc(d.error)}` : `✓ Склад ${esc(it.wh)}: ${d.items} товаров, ${UI.fmt0(d.total)} шт.`);
+        } else if (it.type === 'plan') lines.push(`ℹ ${esc(it.f.name)} — это план. Загрузите его в блок «План по клиентам», чтобы выбрать период.`);
+        else lines.push(`✕ ${esc(it.f.name)}: ${esc(it.error || 'не похоже ни на баланс, ни на остатки склада')}`);
+      } catch (e) { lines.push(`✕ ${esc(it.f.name)}: ${esc(e.message)}`); }
+    }
+    box.className = ''; box.innerHTML = lines.map(l => `<div class="${l.startsWith('✓') ? 'pos' : l.startsWith('✕') ? 'neg' : 'mut'}">${l}</div>`).join('') + (lines.some(l => l.startsWith('✓')) ? '<div style="margin-top:8px"><a class="btn" href="#/rday">Открыть отчёт дня</a></div>' : '');
+  },
+};
+
+// ---------- LINKO bookmark: answers the bookmark running on app.linko.uz and imports what it sends ----------
+const LINKO = {
+  ORIGIN: /^https:\/\/[a-z0-9-]+\.linko\.uz$/,
+  pending: null,
+  async link() {
+    const src = await (await fetch('linko.js', { cache: 'no-cache' })).text();
+    const code = src.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n').replace('__CRM_URL__', location.origin + location.pathname);
+    return 'javascript:' + encodeURIComponent(code);
+  },
+  show(text, cls = 'mut') {
+    if (text !== undefined) LINKO.pending = { text, cls };
+    const box = document.getElementById('lkMsg'); if (box && LINKO.pending) { box.className = LINKO.pending.cls; box.textContent = LINKO.pending.text; }
+  },
+};
+addEventListener('message', async e => {
+  if (!LINKO.ORIGIN.test(e.origin) || !e.data || typeof e.data !== 'object') return;
+  await CRMLocal.ready;
+  const d = e.data;
+  if (d.type === 'mital-hello') {
+    const t = UI.localDate(Date.now());
+    e.source.postMessage({ type: 'mital-ready', from: PLAN.from(t), to: t }, e.origin);
+    if (location.hash !== '#/up') location.hash = '#/up';
+    LINKO.show('Получаю данные из LINKO…');
+  } else if (d.type === 'mital-progress') {
+    LINKO.show(d.text, d.text.startsWith('✕') ? 'neg' : 'mut');
+  } else if (d.type === 'mital-import' && Array.isArray(d.files)) {
+    if (location.hash !== '#/up') { location.hash = '#/up'; await new Promise(r => setTimeout(r, 400)); }
+    LINKO.show(`Загружаю: ${d.files.length} файл(а) из LINKO…`);
+    const files = d.files.filter(f => f && f.name && f.data).map(f => new File([f.data], String(f.name).slice(0, 120)));
+    const box = document.getElementById('upAllMsg') || document.getElementById('lkMsg');
+    await UPALL.run(files, box, PLAN.day());
+    LINKO.pending = null; const lk = document.getElementById('lkMsg'); if (lk) lk.textContent = '';
+    try { window.focus(); } catch { /* ignore */ }
+  }
+});

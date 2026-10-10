@@ -106,6 +106,7 @@ window.CLOUD = (() => {
     await CRMLocal.replaceFromCloud(remote.state);
     set(LS.sha, remote.sha); set(LS.dirty, null); set(LS.at, remote.savedAt);
     rerender();
+    if (typeof toast === 'function' && remote.device) toast(`Данные обновлены: ${remote.device.split(' · ')[0].toLowerCase()}, ${new Date(remote.savedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`);
   }
 
   function showConflict(remote) {
@@ -164,11 +165,11 @@ window.CLOUD = (() => {
     new MutationObserver(() => { if (!document.querySelector('nav.top #cloudBadge') && document.querySelector('nav.top')) badge(); }).observe(document.getElementById('app'), { childList: true });
     if (cfg()) await sync({ quiet: false });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && cfg() && Date.now() - lastCheck > 30000) sync({ quiet: true });
+      if (document.visibilityState === 'visible' && cfg() && Date.now() - lastCheck > 10000) sync({ quiet: true });
       if (document.visibilityState === 'hidden' && get(LS.dirty)) { clearTimeout(timer); sync({ quiet: true }); }
     });
     addEventListener('online', () => cfg() && sync({ quiet: true }));
-    setInterval(() => { if (cfg() && document.visibilityState === 'visible' && Date.now() - lastCheck > 120000) sync({ quiet: true }); }, 30000);
+    setInterval(() => { if (cfg() && document.visibilityState === 'visible' && Date.now() - lastCheck > 25000) sync({ quiet: true }); }, 30000);
   })();
 
   return {
