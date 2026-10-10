@@ -134,6 +134,7 @@ EXT_PAGES.gps = async el => {
       <div class="tscroll" style="max-height:55vh"><table><thead><tr><th>Мой</th><th>Устройство на GPS</th><th>Агент в CRM</th></tr></thead><tbody>${all.map(d => `<tr><td><input type="checkbox" data-m="${esc(d.id)}" ${GPS.isMine(d) ? 'checked' : ''}></td><td>${esc(d.name)}<br><small class="mut">${esc(d.group)}</small></td><td><select data-n="${esc(d.id)}"><option value="">—</option>${agents.map(a => `<option ${GPS.agentOf(d) === a ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>
       <div class="bar" style="margin-top:12px"><span class="spacer"></span><button class="btn gray" id="mX">Отмена</button><button class="btn" id="mOk">Сохранить</button></div>`);
     $('#mX', m.el).onclick = m.close;
+    m.el.querySelectorAll('tbody tr').forEach(tr => { tr.style.cursor = 'pointer'; tr.onclick = e => { if (e.target.closest('input,select')) return; const cb = tr.querySelector('[data-m]'); cb.checked = !cb.checked; }; });
     $('#mOk', m.el).onclick = () => {
       const c = GPS.cfg(); c.mine = [...m.el.querySelectorAll('[data-m]')].filter(x => x.checked).map(x => x.dataset.m);
       c.names = {}; m.el.querySelectorAll('[data-n]').forEach(s => { if (s.value) c.names[s.dataset.n] = s.value; });

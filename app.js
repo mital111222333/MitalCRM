@@ -59,7 +59,7 @@ const STATUS = { new: 'Новый', delivered: 'Доставлен', cancelled: 
 function modal(html) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal">${html}</div>`;
-  bg.onclick = e => e.target === bg && bg.remove();
+  bg.onclick = e => { if (e.target === bg) bg.remove(); }; // a handler returning false would cancel clicks on checkboxes inside
   document.body.appendChild(bg);
   return { el: bg.firstChild, close: () => bg.remove() };
 }
