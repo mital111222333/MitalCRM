@@ -17,7 +17,7 @@ const CFG = {
   LINKO_API: 'https://mital.linko.uz/ru/api/v1/',
   TZ: 'Asia/Tashkent',
   CRM_URL: 'https://mital111222333.github.io/MitalCRM/', // отсюда скрипт берёт список разделов LINKO (linko-jobs.json)
-  GPS_URL: 'https://gps.logic.uz',         // GPS-платформа агентов
+  GPS_URL: 'http://gps.logic.uz',         // GPS-платформа агентов
   GPS_EMAIL: '',                           // логин от GPS (вписывается из CRM)
   GPS_PASSWORD: '',                        // пароль от GPS
   EXTRA_MIN: 30,                           // заказы, товары, оплаты, долги, работа агентов — раз в 30 минут
@@ -99,9 +99,17 @@ function collect_() {
 // agents' positions from the GPS platform (GPS Server / GPSWOX API) → gps-latest.json
 function gps_() {
   if (!CFG.GPS_EMAIL || !CFG.GPS_PASSWORD) return;
-  const P = PropertiesService.getScriptProperties(), base = CFG.GPS_URL.replace(/\/+$/, '');
+  const P = PropertiesService.getScriptProperties(), url0 = CFG.GPS_URL.replace(/\/+$/, '').replace(/^(?!https?:\/\/)/, 'http://');
+  // gps.logic.uz may work only over http (or only https): try both and remember the one that answers
+  const both = [url0, url0.indexOf('https:') === 0 ? url0.replace('https:', 'http:') : url0.replace('http:', 'https:')];
+  let base = P.getProperty('gpsBase') || url0;
   const login = () => {
-    const r = UrlFetchApp.fetch(base + '/api/login', { method: 'post', payload: { email: CFG.GPS_EMAIL, password: CFG.GPS_PASSWORD }, muteHttpExceptions: true });
+    let r = null, err = '';
+    for (const b of [base].concat(both.filter(x => x !== base))) {
+      try { r = UrlFetchApp.fetch(b + '/api/login', { method: 'post', payload: { email: CFG.GPS_EMAIL, password: CFG.GPS_PASSWORD }, muteHttpExceptions: true, followRedirects: true }); base = b; P.setProperty('gpsBase', b); break; }
+      catch (e) { err = String(e.message || e); r = null; }
+    }
+    if (!r) throw new Error('GPS-платформа не отвечает Google (' + err + ')');
     let j = {}; try { j = JSON.parse(r.getContentText()); } catch (e) { throw new Error('GPS: вход не удался (' + r.getResponseCode() + ')'); }
     if (!j.user_api_hash) throw new Error('GPS: неверный логин или пароль');
     P.setProperty('gpsHash', j.user_api_hash); return j.user_api_hash;
@@ -109,25 +117,43 @@ function gps_() {
   const call = (path, hash) => UrlFetchApp.fetch(base + '/api/' + path + (path.indexOf('?') < 0 ? '?' : '&') + 'lang=ru&user_api_hash=' + encodeURIComponent(hash), { muteHttpExceptions: true });
   let snap;
   try {
-    let hash = P.getProperty('gpsHash') || login(), r = call('get_devices', hash);
+    let hash = P.getProperty('gpsHash') || login(), r;
+    try { r = call('get_devices', hash); } catch (e) { P.deleteProperty('gpsBase'); base = url0; hash = login(); r = call('get_devices', hash); }
     if (r.getResponseCode() === 401 || r.getResponseCode() === 403 || /"status"\s*:\s*0/.test(r.getContentText().slice(0, 200))) { hash = login(); r = call('get_devices', hash); }
     if (r.getResponseCode() !== 200) throw new Error('GPS ответил ' + r.getResponseCode());
     const devices = [];
     JSON.parse(r.getContentText()).forEach(g => (g.items || []).forEach(d => devices.push({ id: d.id, name: d.name, group: g.title, online: d.online, time: d.time, timestamp: d.timestamp, lat: d.lat, lng: d.lng, speed: d.speed, course: d.course, stop_duration: d.stop_duration, address: d.address, tail: (d.tail || []).slice(-15) })));
     snap = { at: new Date().toISOString(), devices: devices.map(d => ({ ...d, id: String(d.id) })), live: { url: base, hash: hash } };
-    // clients marked on the GPS map (points of interest) — once an hour
+    // clients marked on the GPS map: points (map icons) and zones (geofences) — once an hour
     if (Date.now() - Number(P.getProperty('poiAt') || 0) > 3600 * 1000) {
       P.setProperty('poiAt', String(Date.now()));
-      const m = call('get_user_map_icons', hash);
-      if (m.getResponseCode() === 200) {
-        let j = JSON.parse(m.getContentText()), list = Array.isArray(j) ? j : Array.isArray(j.items) ? j.items : (j.items && (j.items.mapIcons || j.items.data)) || j.data || [];
-        snap.pois = list.map(p => { let c = p.coordinates; if (typeof c === 'string') { try { c = JSON.parse(c); } catch (e) { c = null; } } c = c || p; return { name: p.name || p.title || '', lat: Number(c.lat), lng: Number(c.lng || c.lon) }; }).filter(p => p.name && p.lat && p.lng);
-      }
+      const pois = [], info = [];
+      ['get_user_map_icons', 'get_geofences'].forEach(path => {
+        try {
+          const m = call(path, hash); info.push(path + ' ' + m.getResponseCode());
+          if (m.getResponseCode() === 200) pointsOf_(JSON.parse(m.getContentText())).forEach(p => pois.push(p));
+        } catch (e) { info.push(path + ' ' + (e.message || e)); }
+      });
+      snap.pois = pois; snap.poisInfo = info.join(', ');
     }
   } catch (e) { snap = { at: new Date().toISOString(), error: String(e.message || e), devices: [] }; }
   if (snap.pois) { saveToGithub_('gps-pois.json', JSON.stringify({ at: snap.at, pois: snap.pois })); snap.poisCount = snap.pois.length; delete snap.pois; }
   saveToGithub_('gps-latest.json', JSON.stringify(snap));
-  Logger.log(snap.error ? 'GPS ошибка: ' + snap.error : 'GPS: устройств ' + snap.devices.length + (snap.poisCount != null ? ', клиентов на карте ' + snap.poisCount : ''));
+  Logger.log(snap.error ? 'GPS ошибка: ' + snap.error : 'GPS: устройств ' + snap.devices.length + (snap.poisCount != null ? ', клиентов на карте ' + snap.poisCount + ' (' + snap.poisInfo + ')' : ''));
+}
+
+// finds named places with coordinates anywhere in a GPS answer: {name, lat, lng} | {coordinates:{lat,lng}|"json"} | {center} | polygon
+function pointsOf_(j) {
+  const out = [], seen = {};
+  const coord = v => { if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return null; } } if (Array.isArray(v) && v.length) { let la = 0, ln = 0, n = 0; v.forEach(p => { const c = coord(p); if (c) { la += c.lat; ln += c.lng; n++; } }); return n ? { lat: la / n, lng: ln / n } : null; } if (v && typeof v === 'object') { const la = Number(v.lat != null ? v.lat : v.latitude), ln = Number(v.lng != null ? v.lng : v.lon != null ? v.lon : v.longitude); if (la && ln) return { lat: la, lng: ln }; } return null; };
+  const walk = (o, d) => {
+    if (!o || typeof o !== 'object' || d > 6) return;
+    if (Array.isArray(o)) { o.forEach(x => walk(x, d + 1)); return; }
+    const name = o.name || o.title;
+    if (name && typeof name === 'string') { const c = coord(o.center) || coord(o.coordinates) || coord(o.polygon) || coord(o); if (c && !seen[name]) { seen[name] = 1; out.push({ name: name, lat: c.lat, lng: c.lng }); return; } }
+    Object.keys(o).forEach(k => walk(o[k], d + 1));
+  };
+  walk(j, 0); return out;
 }
 
 // the list of LINKO sections comes from the CRM site, so new data needs no new script
@@ -150,7 +176,7 @@ function extra_() {
   if (hash === P.getProperty('extraHash')) { Logger.log('Доп. данные без изменений'); return; }
   saveToGithub_('linko-extra.json', JSON.stringify({ at: new Date().toISOString(), from: from, to: to, data: data, errors: errors }));
   P.setProperty('extraHash', hash);
-  Logger.log('Доп. данные сохранены: ' + Object.keys(data).map(k => k + ' ' + data[k].length).join(', ') + (Object.keys(errors).length ? ' · ошибки: ' + Object.keys(errors).join(', ') : ''));
+  Logger.log('Доп. данные сохранены: ' + Object.keys(data).map(k => k + ' ' + data[k].length).join(', ') + (Object.keys(errors).length ? ' · ошибки: ' + Object.keys(errors).map(k => k + ' (' + String(errors[k]).slice(0, 80) + ')').join(', ') : ''));
 }
 function get2_(o, k) { if (o == null) return undefined; if (Object.prototype.hasOwnProperty.call(o, k)) return o[k]; return k.split('.').reduce((v, p) => (v == null ? undefined : v[p]), o); }
 function pick_(row, keys) { if (!keys || !keys.length || row == null || typeof row !== 'object') return row; const o = {}; keys.forEach(k => { const v = get2_(row, k); if (v !== undefined && v !== null && v !== '') o[k] = v; }); return o; }

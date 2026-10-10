@@ -253,7 +253,7 @@ EXT_PAGES.cloud = async el => {
   ${(() => {
     let g = {}; try { g = JSON.parse(localStorage.getItem('crm_gps_login') || '{}'); } catch { /* none */ }
     return UI.panel('📍 GPS агентов (gps.logic.uz)', `<p class="mut" style="margin-top:0">Чтобы видеть агентов на карте в разделе <a href="#/gps">Агенты → 📍 Где агенты</a>, впишите здесь логин и пароль, с которыми вы входите на gps.logic.uz. Они сохраняются <b>только на этом компьютере</b> и попадают в ваш скрипт автозагрузки — никуда больше. Никому их не отправляйте, мне в чат тоже.</p>
-      <div class="form"><label>Адрес платформы<input id="gpsUrl" value="${esc(g.url || 'https://gps.logic.uz')}" autocomplete="off"></label><label>Логин (e-mail)<input id="gpsEmail" value="${esc(g.email || '')}" autocomplete="off"></label><label>Пароль<input id="gpsPass" type="password" value="${esc(g.password || '')}" autocomplete="new-password"></label></div>
+      <div class="form"><label>Адрес платформы<input id="gpsUrl" value="${esc(g.url || 'http://gps.logic.uz')}" autocomplete="off"></label><label>Логин (e-mail)<input id="gpsEmail" value="${esc(g.email || '')}" autocomplete="off"></label><label>Пароль<input id="gpsPass" type="password" value="${esc(g.password || '')}" autocomplete="new-password"></label></div>
       <div class="bar" style="margin-top:10px"><button class="btn gray" id="gpsSave">Сохранить</button><span id="gpsMsg" class="mut" role="status">${g.email ? '✓ Сохранено. После этого обновите скрипт автозагрузки (кнопка «Скопировать готовый скрипт» выше → вставить → setup).' : ''}</span></div>`, { cls: 'w6' });
   })()}
   ${UI.panel('📲 Приложение на телефоне', `<p class="mut" style="margin-top:0">${window.PWA?.standalone() ? '✓ Вы уже открыли CRM как приложение.' : 'Установите CRM на главный экран — будет открываться одним нажатием, как обычное приложение, без браузера и адресной строки. Работает и без интернета: покажет последние сохранённые данные.'}</p>
@@ -302,7 +302,7 @@ EXT_PAGES.cloud = async el => {
     let code = src.replace('ВСТАВЬТЕ_КЛЮЧ_LINKO', key).replace('ВСТАВЬТЕ_КЛЮЧ_GITHUB', cc.token).replace("GH_OWNER: 'mital111222333'", `GH_OWNER: '${cc.owner}'`).replace("GH_REPO: 'mitalcrm-data'", `GH_REPO: '${cc.repo}'`).replace('PLAN_DAY: 16,', `PLAN_DAY: ${PLAN.day()},`).replace("CRM_URL: 'https://mital111222333.github.io/MitalCRM/'", `CRM_URL: '${location.origin + location.pathname.replace(/[^/]*$/, '')}'`);
     let gps = {}; try { gps = JSON.parse(localStorage.getItem('crm_gps_login') || '{}'); } catch { /* none */ }
     const q = v => JSON.stringify(String(v || ''));
-    code = code.replace("GPS_URL: 'https://gps.logic.uz',", `GPS_URL: ${q(gps.url || 'https://gps.logic.uz')},`).replace("GPS_EMAIL: '',", `GPS_EMAIL: ${q(gps.email)},`).replace("GPS_PASSWORD: '',", `GPS_PASSWORD: ${q(gps.password)},`);
+    code = code.replace("GPS_URL: 'http://gps.logic.uz',", `GPS_URL: ${q(gps.url || 'http://gps.logic.uz')},`).replace("GPS_EMAIL: '',", `GPS_EMAIL: ${q(gps.email)},`).replace("GPS_PASSWORD: '',", `GPS_PASSWORD: ${q(gps.password)},`);
     try { await navigator.clipboard.writeText(code); toast('Скрипт скопирован — вставьте его в script.google.com'); }
     catch { const m = modal(`<h3>Скопируйте скрипт</h3><textarea style="width:100%;height:50vh;font:12px monospace">${esc(code)}</textarea><div class="bar"><span class="spacer"></span><button class="btn" id="cx">Закрыть</button></div>`); m.el.querySelector('textarea').select(); m.el.querySelector('#cx').onclick = m.close; }
   };

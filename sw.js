@@ -1,7 +1,7 @@
 // Service worker: the CRM opens like an app from the home screen and works without internet with the last saved data.
 // Pages and scripts: network first (so every update reaches the phone at once), the saved copy when offline.
 // Fonts: saved once and reused. Calls to GitHub, Gemini and Telegram are never cached.
-const CACHE = 'mital-crm-v9';
+const CACHE = 'mital-crm-v11';
 const SHELL = ['./', './index.html', './manifest.json', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png',
   './style.css', './theme.css', './charts.js', './ui.js', './wh.js', './ag.js', './engine.bundle.js', './static-api.js', './cloud.js', './up.js',
   './rep.js', './tg.js', './ai.js', './lb.js', './cl.js', './card.js', './sig.js', './agent.js', './wh2.js', './route.js', './lx.js', './gps.js', './linko-jobs.json', './linko.js', './ux.js', './pwa.js', './app.js', './icon-maskable-512.png'];
