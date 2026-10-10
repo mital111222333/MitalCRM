@@ -71,12 +71,13 @@ const GPS = {
 EXT_PAGES.gps = async el => {
   clearInterval(GPS.timer);
   el.innerHTML = `<div class="page-head"><div><h2>📍 Где агенты</h2><div class="sub" id="gSub">Загружаю…</div></div>
-    <div class="actions"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="gCl" ${GPS.showClients ? 'checked' : ''}> клиенты на карте</label><button class="btn gray" id="gMine">Мои агенты…</button></div></div>
+    <div class="actions"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="gCl" ${GPS.showClients ? 'checked' : ''}> клиенты на карте</label><button class="btn gray" id="gMine">Мои агенты…</button><a class="btn" id="gOpen" href="http://gps.logic.uz/objects" target="_blank" rel="noopener">Открыть gps.logic.uz ↗</a></div></div>
     <div class="gps-wrap"><div id="gMap" class="gps-map"></div><div id="gList" class="gps-list"></div></div><div id="gInfo"></div>`;
   await CRMLocal.ready;
   try { await Promise.all([loadCss('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'), loadScript('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js')]); }
   catch { $('#gMap', el).innerHTML = '<p class="mut" style="padding:16px">Карта не загрузилась — проверьте интернет.</p>'; }
   await GPS.load();
+  if (GPS.snap?.live?.url) $('#gOpen', el).href = GPS.snap.live.url.replace(/\/+$/, '') + '/objects';
   if (!GPS.snap && !GPS.live) {
     $('#gSub', el).textContent = 'GPS ещё не подключён';
     $('.gps-wrap', el).outerHTML = UI.empty('Подключите GPS', `Впишите логин и пароль от <b>gps.logic.uz</b> в «<a href="#/cloud">Данные → Синхронизация и настройки</a>» → блок «📍 GPS агентов», затем обновите скрипт автозагрузки (скопировать → вставить в script.google.com → setup). Через 5 минут здесь появятся ваши агенты.`);
