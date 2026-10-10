@@ -141,10 +141,11 @@ window.CLOUD = (() => {
         lastCheck = Date.now();
         if (remote.missing) { setStatus('saving'); await push(c); return setStatus('ok'); }
         const known = get(LS.sha);
-        if (remote.sha === known) return setStatus('ok');
+        if (remote.sha === known) { setStatus('ok'); window.LINKO_AUTO?.check(); return; }
         const summary = CRMLocal.engine.summary(), localEmpty = !summary.wh && !summary.ag && !summary.tasks;
         if (!known && !localEmpty) return showConflict(remote); // first connection on a device that already has its own data
         await adopt(remote); setStatus('ok');
+        window.LINKO_AUTO?.check();
       } catch (e) { setStatus('error', e.message); if (!quiet) toast('Синхронизация: ' + e.message); }
       finally { busy = null; }
     })();
@@ -174,6 +175,13 @@ window.CLOUD = (() => {
 
   return {
     on: () => !!cfg(),
+    // read another (small) file of the data repository, e.g. linko-latest.json written by the auto-loader
+    async readJson(path) {
+      const c = cfg(); if (!c) return null;
+      let r; try { r = await fetch(`https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/contents/${path}?t=${Date.now()}`, { cache: 'no-store', headers: { Authorization: 'Bearer ' + c.token, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28' } }); } catch { return null; }
+      if (!r.ok) return null;
+      try { return await r.json(); } catch { return null; }
+    },
     cfg,
     status: () => ({ status, message, at: get(LS.at), dirty: !!get(LS.dirty) }),
     changed,
@@ -226,6 +234,22 @@ EXT_PAGES.cloud = async el => {
     <div class="form"><label style="grid-column:1/-1">Ключ Gemini<input id="gKey" type="password" value="${esc(ext.ai?.key || '')}" placeholder="AIza…" autocomplete="off"></label>
     <label style="grid-column:1/-1">Модель<select id="gModel"><option value="">Автоматически (быстрая Flash)</option>${ext.ai?.model ? `<option selected>${esc(ext.ai.model)}</option>` : ''}</select></label></div>
     <div class="bar" style="margin-top:12px"><button class="btn" id="gSave">Сохранить и проверить</button><span id="gMsg" role="status" class="mut"></span></div>`, { cls: 'w6' })}
+  ${(() => {
+    const la = ext.linkoAuto || {}, hasKey = (() => { try { return !!localStorage.getItem('crm_linko_key'); } catch { return false; } })();
+    const t = v => new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return UI.panel('🤖 Автозагрузка из LINKO — каждые 5 минут, без вас', `
+      <p style="margin-top:0">${la.seenAt ? (la.error ? `<b class="neg">Последняя попытка ${t(la.seenAt)}: ${esc(la.error)}</b>` : `✓ Работает. Последние данные из LINKO: <b>${t(la.seenAt)}</b>${la.importedAt ? `, загружены в CRM` : ''}.`) : 'Пока не настроена.'}</p>
+      <p class="mut">Бесплатный скрипт Google сам берёт баланс и остатки из LINKO каждые 5 минут (с 7 до 22). Открытая CRM на компьютере и телефоне сама подхватывает новые данные — нажимать закладку больше не нужно.</p>
+      <ol class="steps">
+        <li>${hasKey ? '✓ Ключ LINKO получен.' : '<b>Сначала один раз нажмите закладку «⚡ В MITAL CRM» в LINKO на этом компьютере</b> — CRM запомнит ключ LINKO для скрипта.'}</li>
+        <li>Нажмите кнопку ниже — готовый скрипт скопируется (ключи уже внутри).</li>
+        <li>Откройте <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com → Новый проект</a>, сотрите всё в окне и вставьте скрипт (Ctrl+V). Нажмите 💾 (Ctrl+S).</li>
+        <li>Вверху в списке функций выберите <b>setup</b> и нажмите <b>▶ Выполнить</b>. Google попросит разрешение: «Проверить разрешения» → ваш аккаунт → «Дополнительно» → «Перейти к проекту» → «Разрешить».</li>
+        <li>Готово. Через минуту здесь появится «✓ Работает».</li>
+      </ol>
+      <div class="bar" style="margin:0"><button class="btn" id="laCopy" ${hasKey && c ? '' : 'disabled'}>📋 Скопировать готовый скрипт</button>${!c ? '<span class="mut">Сначала подключите синхронизацию выше</span>' : ''}</div>
+      <p class="mut" style="margin-bottom:0">Скрипт хранится в вашем аккаунте Google, ключи никуда кроме LINKO и вашего GitHub не отправляются. Не пересылайте скрипт другим людям. Если в LINKO выйти из аккаунта, ключ может смениться — тогда снова нажмите закладку и повторите шаги 2–4.</p>`, { cls: 'w12' });
+  })()}
   ${UI.panel('📲 Приложение на телефоне', `<p class="mut" style="margin-top:0">${window.PWA?.standalone() ? '✓ Вы уже открыли CRM как приложение.' : 'Установите CRM на главный экран — будет открываться одним нажатием, как обычное приложение, без браузера и адресной строки. Работает и без интернета: покажет последние сохранённые данные.'}</p>
     ${window.PWA?.standalone() ? '' : `<div class="bar" style="margin:0"><button class="btn" id="pwaGo">📲 Установить приложение</button></div>
     <ul class="steps" style="margin-top:10px"><li><b>Android (Chrome):</b> кнопка выше или меню ⋮ → «Установить приложение».</li><li><b>iPhone:</b> откройте в Safari → «Поделиться» → «На экран „Домой“».</li><li><b>Компьютер (Chrome / Edge):</b> кнопка выше или значок ⊕ в адресной строке.</li></ul>`}`, { cls: 'w6' })}
@@ -249,6 +273,14 @@ EXT_PAGES.cloud = async el => {
     };
   }
   const pg = $('#pwaGo', el); if (pg) pg.onclick = () => PWA.install();
+  const lc = $('#laCopy', el);
+  if (lc) lc.onclick = async () => {
+    let key = ''; try { key = localStorage.getItem('crm_linko_key') || ''; } catch { /* ignore */ }
+    const cc = CLOUD.cfg(), src = await (await fetch('autolinko.gs', { cache: 'no-cache' })).text();
+    const code = src.replace('ВСТАВЬТЕ_КЛЮЧ_LINKO', key).replace('ВСТАВЬТЕ_КЛЮЧ_GITHUB', cc.token).replace("GH_OWNER: 'mital111222333'", `GH_OWNER: '${cc.owner}'`).replace("GH_REPO: 'mitalcrm-data'", `GH_REPO: '${cc.repo}'`).replace('PLAN_DAY: 16,', `PLAN_DAY: ${PLAN.day()},`);
+    try { await navigator.clipboard.writeText(code); toast('Скрипт скопирован — вставьте его в script.google.com'); }
+    catch { const m = modal(`<h3>Скопируйте скрипт</h3><textarea style="width:100%;height:50vh;font:12px monospace">${esc(code)}</textarea><div class="bar"><span class="spacer"></span><button class="btn" id="cx">Закрыть</button></div>`); m.el.querySelector('textarea').select(); m.el.querySelector('#cx').onclick = m.close; }
+  };
   $('#gSave', el).onclick = async () => {
     const msg = $('#gMsg', el), key = $('#gKey', el).value.trim();
     const x = CRMLocal.ext(); x.ai = { ...(x.ai || {}), key, model: $('#gModel', el).value };

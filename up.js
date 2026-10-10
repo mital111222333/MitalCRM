@@ -203,6 +203,7 @@ addEventListener('message', async e => {
   } else if (d.type === 'mital-progress') {
     LINKO.show(d.text, d.text.startsWith('✕') ? 'neg' : 'mut');
   } else if (d.type === 'mital-import' && Array.isArray(d.files)) {
+    if (typeof d.key === 'string' && /^[A-Za-z0-9]{20,80}$/.test(d.key)) { try { localStorage.setItem('crm_linko_key', d.key); } catch { /* ignore */ } } // kept on this device only, for the auto-loader script
     if (location.hash !== '#/up') { location.hash = '#/up'; await new Promise(r => setTimeout(r, 400)); }
     LINKO.show(`Загружаю: ${d.files.length} файл(а) из LINKO…`);
     const files = d.files.filter(f => f && f.name && f.data).map(f => new File([f.data], String(f.name).slice(0, 120)));
@@ -212,3 +213,28 @@ addEventListener('message', async e => {
     try { window.focus(); } catch { /* ignore */ }
   }
 });
+
+// ---------- automatic loading: a Google Apps Script takes LINKO data every 5 minutes and leaves it in the data repository
+// (linko-latest.json); whichever device opens the CRM first imports it — the phone needs nothing else ----------
+window.LINKO_AUTO = {
+  busy: false, lastTry: 0,
+  async check() {
+    if (LINKO_AUTO.busy || Date.now() - LINKO_AUTO.lastTry < 60000 || !window.CLOUD?.on()) return;
+    LINKO_AUTO.lastTry = Date.now(); LINKO_AUTO.busy = true;
+    try {
+      const snap = await CLOUD.readJson('linko-latest.json'); if (!snap || !snap.at || !Array.isArray(snap.files)) return;
+      const x = CRMLocal.ext(); x.linkoAuto = { ...(x.linkoAuto || {}), seenAt: snap.at, error: snap.error || '' };
+      if (snap.error || (x.linkoAuto.importedAt && x.linkoAuto.importedAt >= snap.at)) return;
+      const bin = b => Uint8Array.from(atob(b), c => c.charCodeAt(0));
+      const files = snap.files.map(f => new File([bin(f.b64)], f.name));
+      const box = document.createElement('div');
+      await UPALL.run(files, box, PLAN.day());
+      x.linkoAuto.importedAt = snap.at; x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
+      if (box.textContent.includes('✓')) { toast(`Данные из LINKO обновлены (${new Date(snap.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })})`); const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]'); if (!typing && typeof route === 'function') route(); }
+    } catch (e) { console.warn('LINKO auto', e); }
+    finally { LINKO_AUTO.busy = false; }
+  },
+};
+addEventListener('load', () => setTimeout(() => LINKO_AUTO.check(), 4000));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(() => LINKO_AUTO.check(), 1500); });
+setInterval(() => { if (document.visibilityState === 'visible') LINKO_AUTO.check(); }, 2 * 60000); // the script writes every 5 minutes; an open CRM picks it up within ~2 minutes

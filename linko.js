@@ -48,7 +48,7 @@
       files.push({ name: 'stock LINKO branch ' + br + '.csv', data: new TextEncoder().encode(csv(rows)).buffer });
     }
     say('Передаю в CRM…');
-    w.postMessage({ type: 'mital-import', files }, CRM.replace(/^(https?:\/\/[^/]+).*$/, '$1'), files.map(f => f.data));
+    w.postMessage({ type: 'mital-import', files, key: t }, CRM.replace(/^(https?:\/\/[^/]+).*$/, '$1'), files.map(f => f.data));
   }
 
   // handshake: knock on the CRM window until it answers with the plan period (it may still be loading)
