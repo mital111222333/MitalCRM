@@ -772,6 +772,7 @@ function render() {
     amap: '<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2zm0 0v14m6-12v14"/>',
     more: '<path d="M4 7h16M4 12h16M4 17h16"/>',
     lxpay: '<path d="M3 7h18v10H3zM3 11h18M7 15h3"/>',
+    lxday: '<path d="M6 6h15l-2 8H7zM6 6 5 3H2M9 20a1 1 0 1 0 0-.1M18 20a1 1 0 1 0 0-.1"/>',
     agents: '<path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm-7 10a7 7 0 0 1 14 0m1-10a3 3 0 1 0 0-6m2 16h3a6 6 0 0 0-4-5.6"/>',
   };
   const tab = (r, t) => `<a href="#/${r}" data-r="${r}"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON[r]}</svg><span>${t}</span></a>`;

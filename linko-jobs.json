@@ -1,7 +1,7 @@
 [
-  {"id": "orders", "title": "заказы", "path": "sales/order/?begin_date={from}&end_date={to}&page=1&page_size=500",
+  {"id": "orders", "title": "заказы", "every": 5, "path": "sales/order/?begin_date={from}&end_date={to}&page=1&page_size=500",
    "pick": ["id", "created_date", "status", "total_price", "fact_price", "total_return_price", "discount_price", "is_paid", "date_delivery", "payment_type", "currency.name", "user.first_name", "user.second_name", "client.id", "client.name", "market.name", "market.address"]},
-  {"id": "items", "title": "товары в заказах", "path": "sales/order_product/?begin_date={from}&end_date={to}&page=1&page_size=500",
+  {"id": "items", "title": "товары в заказах", "every": 5, "path": "sales/order_product/?begin_date={from}&end_date={to}&page=1&page_size=500",
    "pick": ["order_id", "product_id", "product_name", "amount", "return_amount", "price", "is_bonus", "currency.name", "product.vendor_code", "product.code", "order_created_date"]},
   {"id": "pays", "title": "оплаты", "every": 5, "path": "sales/client_transaction/?begin_date={from}&end_date={to}&page=1&page_size=500",
    "pick": ["id", "type", "amount", "real_amount", "created_date", "accepted_time", "payment_type", "currency.name", "user.first_name", "user.second_name", "client.id", "client.name", "order_return", "delivery_man.first_name", "delivery_man.second_name"]},

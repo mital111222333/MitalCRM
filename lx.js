@@ -45,6 +45,7 @@ const LX = {
   },
   // when the payments were last taken from LINKO
   payAt() { const s = LX.st(); return s ? s.fastAt || s.at : null; },
+  ordAt() { const s = LX.st(), fast = LX.jobs.find(j => j.id === 'orders')?.every; return s ? (fast && s.fastAt) || s.at : null; },
 
   // ---------- helpers ----------
   n: v => Number(v) || 0,
@@ -122,7 +123,7 @@ const LX = {
         if (extra > 0.5) payments.push({ date: u.taken_at, time: '', ts: t2, amount: Math.round(extra * 1000) / 1000, type: 'по балансу', ptype: 'card', cur: '', client: r.client, agent: LX.clientAgent(r.client, ''), by: '', courier: '', bal: true });
       }
     }
-    const ords = orders.filter(inCur).map(o => ({ id: o.id, date: LX.day(o.created_date), status: o.status, sum: LX.n(o.total_price), fact: LX.n(o.fact_price), ret: LX.n(o.total_return_price), paid: !!o.is_paid, deliver: LX.day(o.date_delivery), client: o['client.name'] || '', address: o['market.address'] || '', agent: o['client.name'] ? LX.clientAgent(o['client.name'], LX.person(o, 'user')) : LX.agentName(LX.person(o, 'user')) || 'Без агента' }));
+    const ords = orders.filter(inCur).map(o => ({ id: o.id, date: LX.day(o.created_date), time: String(o.created_date || '').slice(11, 16), status: o.status, ptype: o.payment_type, sum: LX.n(o.total_price), fact: LX.n(o.fact_price), ret: LX.n(o.total_return_price), paid: !!o.is_paid, deliver: LX.day(o.date_delivery), client: o['client.name'] || '', address: o['market.address'] || '', agent: o['client.name'] ? LX.clientAgent(o['client.name'], LX.person(o, 'user')) : LX.agentName(LX.person(o, 'user')) || 'Без агента' }));
     const returns = rets.filter(r => !r['currency.name'] || r['currency.name'] === (LX.curOf(rets) || cur)).map(r => ({ date: LX.day(r.created_date), status: r.status, sum: LX.n(r.total_price), client: r['client.name'] || '', agent: r['client.name'] ? LX.clientAgent(r['client.name'], LX.person(r, 'responsible_agent')) : LX.agentName(LX.person(r, 'responsible_agent')) || 'Без агента', reason: [r.reason, r.comment].filter(Boolean).join(' · ') }));
     return (LX.cache = { cur, payCur, lines, payments, skipped, ords, returns });
   },
@@ -130,7 +131,7 @@ const LX = {
   sumBy(rows, key, val = r => r.sum) { const m = new Map(); for (const r of rows) { const k = typeof key === 'function' ? key(r) : r[key]; m.set(k, (m.get(k) || 0) + val(r)); } return [...m.entries()].sort((a, b) => b[1] - a[1]); },
 
   // ---------- page frame ----------
-  TABS: [['lxbrand', 'Бренды и товары'], ['lxcross', 'Кому что предложить'], ['lxpay', 'Оплаты по дням'], ['lxord', 'Заказы и возвраты'], ['lxage', 'Просрочка долга'], ['lxwork', 'Работа агентов'], ['lxprof', 'Прибыль'], ['lxrec', 'Рекомендация склада']],
+  TABS: [['lxbrand', 'Бренды и товары'], ['lxcross', 'Кому что предложить'], ['lxpay', 'Оплаты по дням'], ['lxday', 'Заказы по дням'], ['lxord', 'Заказы и возвраты'], ['lxage', 'Просрочка долга'], ['lxwork', 'Работа агентов'], ['lxprof', 'Прибыль'], ['lxrec', 'Рекомендация склада']],
   agent: '',
   async shell(el, tab, tools = '') {
     await CRMLocal.ready; await LX.load();
@@ -216,6 +217,32 @@ EXT_PAGES.lxpay = async el => {
     </div>`;
   LX.bindAgent(body);
   $('#lxCsv', el).onclick = () => UI.csv('оплаты-' + t0, [['Дата', 'Время', 'Клиент', 'Агент', 'Способ', 'Сумма'], ...P.map(p => [p.date, p.time, p.client, p.agent, LX.pt(p.ptype), p.amount])]);
+};
+
+// ---------- Заказы по дням: who ordered what today ----------
+LX.dead = s => /cancel|reject|отмен|отклон/i.test(String(s));
+EXT_PAGES.lxday = async el => {
+  const body = await LX.shell(el, 'lxday', '<button class="btn gray" id="lxCsv">⬇ Excel (CSV)</button>'); if (!body) return;
+  const M = LX.model(), f = UI.fmt0, $$ = v => LX.money(v, M.cur), t0 = UI.localDate(Date.now()), y0 = UI.localDate(Date.now() - 864e5), wk = UI.localDate(Date.now() - 6 * 864e5);
+  const all = M.ords.filter(o => !LX.agent || o.agent === LX.agent), O = all.filter(o => !LX.dead(o.status)), dead = all.filter(o => LX.dead(o.status));
+  const sum = a => a.reduce((x, o) => x + o.sum, 0), onDay = d => O.filter(o => o.date === d);
+  const days = [...new Set(O.map(o => o.date))].sort(), agents = LX.agentsOf(O);
+  const today = onDay(t0).sort((a, b) => b.time.localeCompare(a.time)), deadToday = dead.filter(o => o.date === t0);
+  const items = new Map(); for (const l of M.lines) { if (!items.has(l.order)) items.set(l.order, []); items.get(l.order).push(l); }
+  const what = o => { const L = items.get(o.id) || []; return L.length ? L.map(l => `${esc(l.product)} <span class="mut">×${f(l.qty - l.ret)}${l.bonus ? ' бонус' : ''}</span>`).join('<br>') : '<span class="mut">—</span>'; };
+  const brandsToday = LX.sumBy(M.lines.filter(l => l.date === t0 && (!LX.agent || l.agent === LX.agent) && today.some(o => o.id === l.order)), 'brand');
+  const clientsToday = new Set(today.map(o => o.client)).size;
+  body.innerHTML = `<div class="bar">${LX.agentSel(LX.agentsOf(M.ords))}</div>
+    <div class="kpis">${UI.tile('Сегодня', $$(sum(today)), { sub: `${today.length} заказов · ${clientsToday} клиентов · данные на ${LX.ordAt() ? new Date(LX.ordAt()).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—'}`, hero: true })}${UI.tile('Вчера', $$(sum(onDay(y0))), { sub: `${onDay(y0).length} заказов` })}${UI.tile('За 7 дней', $$(sum(O.filter(o => o.date >= wk))), { sub: `${O.filter(o => o.date >= wk).length} заказов` })}${UI.tile('За период', $$(sum(O)), { sub: `${O.length} заказов` })}</div>
+    <div class="grid">
+    ${UI.panel('Заказано по дням', days.length > 1 ? CH.columns(days.slice(-31).map(d => ({ label: UI.dm(d), values: [sum(onDay(d))] })), [{ name: 'Заказы', color: 'var(--c1)' }], { fmt: f, height: 230 }) : '<p class="mut">Мало дней для графика.</p>', { cls: 'w12' })}
+    ${UI.panel('Сегодня по агентам', today.length ? CH.hbars(LX.sumBy(today, 'agent').map(([label, value]) => ({ label: `${label} (${today.filter(o => o.agent === label).length})`, value })), { unit: LX.u(M.cur), fmt: f }) : '<p class="mut">Сегодня заказов ещё нет.</p>', { cls: 'w6' })}
+    ${UI.panel('Сегодня по брендам', brandsToday.length ? CH.hbars(brandsToday.map(([label, value]) => ({ label, value })), { unit: LX.u(M.cur), fmt: f, share: true }) : '<p class="mut">Нет товаров в сегодняшних заказах.</p>', { cls: 'w6' })}
+    ${UI.panel(`Заказы сегодня (${today.length})`, today.length ? LX.table(['Время', 'Клиент', 'Агент', '#Сумма', 'Статус', 'Товары', 'Доставка', 'Адрес'], today.map(o => `<tr><td>${esc(o.time || '—')}</td><td>${LX.cl(o.client)}</td><td>${esc(o.agent)}</td><td class="n"><b>${f(o.sum)}</b></td><td>${UI.pill(LX.closed(o.status) ? 'good' : 'info', LX.st2(o.status))}</td><td><small>${what(o)}</small></td><td>${o.deliver ? UI.dm(o.deliver) : '—'}</td><td><small>${esc(o.address)}</small></td></tr>`), { max: '520px' }) : '<p class="mut">Сегодня заказов ещё нет.</p>', { cls: 'w12', sub: deadToday.length ? `Отменённые не считаются: ${deadToday.length} на ${$$(sum(deadToday))}` : '' })}
+    ${UI.panel('Таблица: дни × агенты', LX.table(['День', ...agents.map(a => '#' + a), '#Всего', '#Заказов'], days.slice().reverse().map(d => { const D = onDay(d), m = new Map(LX.sumBy(D, 'agent')); return `<tr><td>${UI.dateRu(d)}</td>${agents.map(a => `<td class="n">${m.get(a) ? f(m.get(a)) : '<span class="mut">—</span>'}</td>`).join('')}<td class="n"><b>${f(sum(D))}</b></td><td class="n">${D.length}</td></tr>`; }), { max: '420px' }), { cls: 'w12' })}
+    </div>`;
+  LX.bindAgent(body);
+  $('#lxCsv', el).onclick = () => UI.csv('заказы-' + t0, [['Дата', 'Время', 'Клиент', 'Агент', 'Сумма', 'Статус', 'Товары', 'Доставка', 'Адрес'], ...all.map(o => [o.date, o.time, o.client, o.agent, o.sum, LX.st2(o.status), (items.get(o.id) || []).map(l => `${l.product} x${l.qty - l.ret}`).join('; '), o.deliver, o.address])]);
 };
 
 // ---------- Заказы и возвраты ----------
