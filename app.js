@@ -781,7 +781,7 @@ function render() {
     ${me.branch ? `<span class="branchlock" title="Ваш доступ ограничен этим филиалом">Филиал: ${esc(me.branch)}</span>` : '<select id="branch" class="branch" title="Филиал" aria-label="Филиал"><option value="">Все филиалы</option></select>'}
     ${can('settings.view') ? '<a class="gear" href="#/settings" title="Настройки: пользователи и роли" aria-label="Настройки">⚙</a>' : ''}
     <span class="user" id="me" title="Профиль и смена пароля">${esc(me.name)}<span class="role"> · ${esc(me.role)}</span></span><span class="user" id="out">Выйти</span></nav><main id="page"></main></div>
-    <nav class="tabbar" aria-label="Быстрые разделы">${tab('rday', 'Отчёт дня')}${tab('leaders', 'Лидеры')}${tab('lxpay', 'Оплаты')}${tab('agents', 'Агенты')}<a href="#" id="tbMore"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON.more}</svg><span>Ещё</span></a></nav>
+    <nav class="tabbar" aria-label="Быстрые разделы">${tab('rday', 'Отчёт дня')}${tab('leaders', 'Лидеры')}${tab('lxpay', 'Оплаты')}${tab('lxday', 'Заказы')}<a href="#" id="tbMore"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON.more}</svg><span>Ещё</span></a></nav>
     <div class="scrim" id="scrim"></div>`;
   const burger = $('#burger'), side = $('#side');
   const setOpen = open => { document.body.classList.toggle('drawer', open); burger.setAttribute('aria-expanded', open); };
