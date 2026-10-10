@@ -762,7 +762,7 @@ function render() {
   }
   // left sidebar (computer) / drawer + bottom tab bar (phone)
   const sections = Object.entries(MENU).map(([top, groups]) => {
-    const items = Object.values(groups).flat().filter(([, r]) => canOpen(r));
+    const items = Object.values(groups).flat().filter(([, r]) => canOpen(r) && !(window.MENU_HIDDEN && MENU_HIDDEN(r)));
     return items.length ? `<div class="sgrp"><div class="sh">${esc(top.replace(/^[^\p{L}]+/u, ''))}</div>${items.map(([t, r]) => `<a href="#/${r}" data-r="${r}">${esc(t.replace(/^[^\p{L}]+/u, ''))}</a>`).join('')}</div>` : '';
   }).join('');
   const ICON = {
@@ -771,6 +771,8 @@ function render() {
     leaders: '<path d="M8 21h8m-4-4v4m-6-17h12v5a6 6 0 0 1-12 0zM6 6H3a3 3 0 0 0 3 4m12-4h3a3 3 0 0 1-3 4"/>',
     amap: '<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2zm0 0v14m6-12v14"/>',
     more: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    lxpay: '<path d="M3 7h18v10H3zM3 11h18M7 15h3"/>',
+    agents: '<path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm-7 10a7 7 0 0 1 14 0m1-10a3 3 0 1 0 0-6m2 16h3a6 6 0 0 0-4-5.6"/>',
   };
   const tab = (r, t) => `<a href="#/${r}" data-r="${r}"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON[r]}</svg><span>${t}</span></a>`;
   app.innerHTML = `<aside class="side" id="side" aria-label="Разделы"><a class="brandmark" href="#/${landing() || 'home'}"><b>mital</b><span>CRM супервайзера</span></a><nav class="sidenav">${sections}</nav></aside>
@@ -778,7 +780,7 @@ function render() {
     ${me.branch ? `<span class="branchlock" title="Ваш доступ ограничен этим филиалом">Филиал: ${esc(me.branch)}</span>` : '<select id="branch" class="branch" title="Филиал" aria-label="Филиал"><option value="">Все филиалы</option></select>'}
     ${can('settings.view') ? '<a class="gear" href="#/settings" title="Настройки: пользователи и роли" aria-label="Настройки">⚙</a>' : ''}
     <span class="user" id="me" title="Профиль и смена пароля">${esc(me.name)}<span class="role"> · ${esc(me.role)}</span></span><span class="user" id="out">Выйти</span></nav><main id="page"></main></div>
-    <nav class="tabbar" aria-label="Быстрые разделы">${tab('up', 'Загрузить')}${tab('rday', 'Отчёт дня')}${tab('leaders', 'Лидеры')}${tab('amap', 'Маршруты')}<a href="#" id="tbMore"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON.more}</svg><span>Ещё</span></a></nav>
+    <nav class="tabbar" aria-label="Быстрые разделы">${tab('rday', 'Отчёт дня')}${tab('leaders', 'Лидеры')}${tab('lxpay', 'Оплаты')}${tab('agents', 'Агенты')}<a href="#" id="tbMore"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON.more}</svg><span>Ещё</span></a></nav>
     <div class="scrim" id="scrim"></div>`;
   const burger = $('#burger'), side = $('#side');
   const setOpen = open => { document.body.classList.toggle('drawer', open); burger.setAttribute('aria-expanded', open); };

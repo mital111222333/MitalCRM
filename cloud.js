@@ -256,6 +256,8 @@ EXT_PAGES.cloud = async el => {
       <div class="form"><label>Адрес платформы<input id="gpsUrl" value="${esc(g.url || 'http://gps.logic.uz')}" autocomplete="off"></label><label>Логин (e-mail)<input id="gpsEmail" value="${esc(g.email || '')}" autocomplete="off"></label><label>Пароль<input id="gpsPass" type="password" value="${esc(g.password || '')}" autocomplete="new-password"></label></div>
       <div class="bar" style="margin-top:10px"><button class="btn gray" id="gpsSave">Сохранить</button><span id="gpsMsg" class="mut" role="status">${g.email ? '✓ Сохранено. После этого обновите скрипт автозагрузки (кнопка «Скопировать готовый скрипт» выше → вставить → setup).' : ''}</span></div>`, { cls: 'w6' });
   })()}
+  ${(() => { let on = []; try { on = JSON.parse(localStorage.getItem('crm_menu_extra') || '[]'); } catch { /* none */ }
+    return UI.panel('☰ Меню', `<p class="mut" style="margin-top:0">Эти разделы скрыты из меню. Отметьте, если какой-то снова нужен.</p>${Object.entries(window.MENU_OPTIONAL || {}).map(([r, t]) => `<label style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" data-menu="${r}" ${on.includes(r) ? 'checked' : ''}> ${esc(t)}</label>`).join('')}`, { cls: 'w6' }); })()}
   ${UI.panel('📲 Приложение на телефоне', `<p class="mut" style="margin-top:0">${window.PWA?.standalone() ? '✓ Вы уже открыли CRM как приложение.' : 'Установите CRM на главный экран — будет открываться одним нажатием, как обычное приложение, без браузера и адресной строки. Работает и без интернета: покажет последние сохранённые данные.'}</p>
     ${window.PWA?.standalone() ? '' : `<div class="bar" style="margin:0"><button class="btn" id="pwaGo">📲 Установить приложение</button></div>
     <ul class="steps" style="margin-top:10px"><li><b>Android (Chrome):</b> кнопка выше или меню ⋮ → «Установить приложение».</li><li><b>iPhone:</b> откройте в Safari → «Поделиться» → «На экран „Домой“».</li><li><b>Компьютер (Chrome / Edge):</b> кнопка выше или значок ⊕ в адресной строке.</li></ul>`}`, { cls: 'w6' })}
@@ -279,6 +281,7 @@ EXT_PAGES.cloud = async el => {
     };
   }
   const pg = $('#pwaGo', el); if (pg) pg.onclick = () => PWA.install();
+  el.querySelectorAll('[data-menu]').forEach(cb => cb.onchange = () => { const on = [...el.querySelectorAll('[data-menu]')].filter(x => x.checked).map(x => x.dataset.menu); try { localStorage.setItem('crm_menu_extra', JSON.stringify(on)); } catch { /* blocked */ } render(); });
   const gs = $('#gpsSave', el);
   if (gs) gs.onclick = () => { const g = { url: $('#gpsUrl', el).value.trim().replace(/\/+$/, ''), email: $('#gpsEmail', el).value.trim(), password: $('#gpsPass', el).value }; try { localStorage.setItem('crm_gps_login', JSON.stringify(g)); } catch { /* blocked */ } $('#gpsMsg', el).textContent = '✓ Сохранено. Теперь обновите скрипт автозагрузки: «Скопировать готовый скрипт» → вставить в script.google.com → setup.'; };
   const lc = $('#laCopy', el);
