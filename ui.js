@@ -119,3 +119,6 @@ const UI = {
     b.textContent = on ? 'График' : 'Таблица'; b.setAttribute('aria-pressed', String(on)); hide();
   });
 })();
+
+// hides keys in any error text shown on screen (LINKO key, GPS key, GitHub key)
+window.maskKey = t => String(t == null ? '' : t).replace(/(token|user_api_hash|hash)=[^&\s]+/gi, '$1=***').replace(/\b[0-9a-f]{40}\b/gi, '***').replace(/github_pat_\w+/g, '***');

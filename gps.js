@@ -83,7 +83,7 @@ EXT_PAGES.gps = async el => {
     $('.gps-wrap', el).outerHTML = UI.empty('Подключите GPS', `Впишите логин и пароль от <b>gps.logic.uz</b> в «<a href="#/cloud">Данные → Синхронизация и настройки</a>» → блок «📍 GPS агентов», затем обновите скрипт автозагрузки (скопировать → вставить в script.google.com → setup). Через 5 минут здесь появятся ваши агенты.`);
     return;
   }
-  if (GPS.snap?.error && !GPS.live) $('#gInfo', el).innerHTML = `<p class="neg">GPS: ${esc(GPS.snap.error)}</p>`;
+  if (GPS.snap?.error && !GPS.live) $('#gInfo', el).innerHTML = `<p class="neg">GPS: ${esc(maskKey(GPS.snap.error))}</p>`;
   const L = window.L;
   if (L) {
     if (GPS.map) { try { GPS.map.remove(); } catch { /* old map */ } }

@@ -37,19 +37,22 @@ function run() {
   const hour = Number(Utilities.formatDate(new Date(), CFG.TZ, 'H'));
   if (hour < 7 || hour > 22) return; // ночью данные не меняются
   base_();
-  try { gps_(); } catch (e) { Logger.log('GPS: ' + (e.message || e)); }
-  try { extra_(); } catch (e) { Logger.log('Доп. данные: ' + (e.message || e)); }
+  try { gps_(); } catch (e) { Logger.log('GPS: ' + mask_(e.message || e)); }
+  try { extra_(); } catch (e) { Logger.log('Доп. данные: ' + mask_(e.message || e)); }
 }
 
 function base_() {
   let snap;
   try { snap = collect_(); }
   catch (e) {
-    snap = { at: new Date().toISOString(), error: String(e.message || e), files: [] };
-    const P0 = PropertiesService.getScriptProperties(); // tell about an error once, not every 5 minutes
+    snap = { at: new Date().toISOString(), error: mask_(e.message || e), files: [] };
+    const P0 = PropertiesService.getScriptProperties();
+    const fails = Number(P0.getProperty('failN') || 0) + 1; P0.setProperty('failN', String(fails));
+    if (fails < 3) { Logger.log('Сбой связи с LINKO (' + fails + '-й раз подряд), попробую через 5 минут: ' + snap.error); return; }
+    // tell about an error once, not every 5 minutes
     if (P0.getProperty('lastErr') !== snap.error) { notify_('⚠ MITAL CRM: автозагрузка из LINKO не сработала — ' + snap.error); P0.setProperty('lastErr', snap.error); }
   }
-  if (!snap.error) PropertiesService.getScriptProperties().deleteProperty('lastErr');
+  if (!snap.error) { PropertiesService.getScriptProperties().deleteProperty('lastErr'); PropertiesService.getScriptProperties().deleteProperty('failN'); }
   // write to GitHub only when something changed in LINKO (or once an hour as a heartbeat) — keeps quotas and history small
   const P = PropertiesService.getScriptProperties();
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify([snap.error || '', snap.files]), Utilities.Charset.UTF_8));
@@ -67,7 +70,7 @@ function collect_() {
   // 1) client balance: LINKO's Excel export (it has agents), otherwise the same numbers from the API
   let got = false;
   for (const u of [CFG.LINKO_API + 'stats/client_balances_expanded/export/?token=' + CFG.LINKO_TOKEN + '&' + q, CFG.LINKO_API + 'stats/client_balances_expanded/export/?' + q]) {
-    const r = UrlFetchApp.fetch(u, { headers: auth_(), muteHttpExceptions: true, followRedirects: true });
+    let r; try { r = fetch_(u, { headers: auth_(), muteHttpExceptions: true, followRedirects: true }); } catch (e) { continue; }
     const b = r.getContent();
     if (r.getResponseCode() === 200 && b.length > 4 && b[0] === 0x50 && b[1] === 0x4b) { files.push({ name: 'balance - ' + today + 'T000000.xlsx', b64: Utilities.base64Encode(b) }); got = true; break; }
   }
@@ -106,15 +109,15 @@ function gps_() {
   const login = () => {
     let r = null, err = '';
     for (const b of [base].concat(both.filter(x => x !== base))) {
-      try { r = UrlFetchApp.fetch(b + '/api/login', { method: 'post', payload: { email: CFG.GPS_EMAIL, password: CFG.GPS_PASSWORD }, muteHttpExceptions: true, followRedirects: true }); base = b; P.setProperty('gpsBase', b); break; }
+      try { r = fetch_(b + '/api/login', { method: 'post', payload: { email: CFG.GPS_EMAIL, password: CFG.GPS_PASSWORD }, muteHttpExceptions: true, followRedirects: true }); base = b; P.setProperty('gpsBase', b); break; }
       catch (e) { err = String(e.message || e); r = null; }
     }
-    if (!r) throw new Error('GPS-платформа не отвечает Google (' + err + ')');
+    if (!r) throw new Error('GPS-платформа не отвечает Google (' + mask_(err) + ')');
     let j = {}; try { j = JSON.parse(r.getContentText()); } catch (e) { throw new Error('GPS: вход не удался (' + r.getResponseCode() + ')'); }
     if (!j.user_api_hash) throw new Error('GPS: неверный логин или пароль');
     P.setProperty('gpsHash', j.user_api_hash); return j.user_api_hash;
   };
-  const call = (path, hash) => UrlFetchApp.fetch(base + '/api/' + path + (path.indexOf('?') < 0 ? '?' : '&') + 'lang=ru&user_api_hash=' + encodeURIComponent(hash), { muteHttpExceptions: true });
+  const call = (path, hash) => fetch_(base + '/api/' + path + (path.indexOf('?') < 0 ? '?' : '&') + 'lang=ru&user_api_hash=' + encodeURIComponent(hash), { muteHttpExceptions: true });
   let snap;
   try {
     let hash = P.getProperty('gpsHash') || login(), r;
@@ -136,7 +139,7 @@ function gps_() {
       });
       snap.pois = pois; snap.poisInfo = info.join(', ');
     }
-  } catch (e) { snap = { at: new Date().toISOString(), error: String(e.message || e), devices: [] }; }
+  } catch (e) { snap = { at: new Date().toISOString(), error: mask_(e.message || e), devices: [] }; }
   if (snap.pois) { saveToGithub_('gps-pois.json', JSON.stringify({ at: snap.at, pois: snap.pois })); snap.poisCount = snap.pois.length; delete snap.pois; }
   saveToGithub_('gps-latest.json', JSON.stringify(snap));
   Logger.log(snap.error ? 'GPS ошибка: ' + snap.error : 'GPS: устройств ' + snap.devices.length + (snap.poisCount != null ? ', клиентов на карте ' + snap.poisCount + ' (' + snap.poisInfo + ')' : ''));
@@ -161,7 +164,7 @@ function extra_() {
   const P = PropertiesService.getScriptProperties();
   if (Date.now() - Number(P.getProperty('extraAt') || 0) < CFG.EXTRA_MIN * 60000) return;
   P.setProperty('extraAt', String(Date.now()));
-  const jobs = JSON.parse(UrlFetchApp.fetch(CFG.CRM_URL + 'linko-jobs.json?t=' + Date.now(), { muteHttpExceptions: true }).getContentText());
+  const jobs = JSON.parse(fetch_(CFG.CRM_URL + 'linko-jobs.json?t=' + Date.now(), { muteHttpExceptions: true }).getContentText());
   const to = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(to), data = {}, errors = {};
   jobs.forEach(j => {
     try {
@@ -169,8 +172,9 @@ function extra_() {
       let rows = [], next = path, n = 0;
       while (next && n++ < 60) { const r = get_(next); if (Array.isArray(r)) { rows = rows.concat(r); next = null; } else if (r && Array.isArray(r.results)) { rows = rows.concat(r.results); next = r.next; } else { rows.push(r); next = null; } }
       data[j.id] = rows.map(r => pick_(r, j.pick));
-    } catch (e) { errors[j.id] = String(e.message || e); if (/ключ/.test(errors[j.id])) throw e; }
+    } catch (e) { errors[j.id] = mask_(e.message || e); if (/ключ/.test(errors[j.id])) throw e; }
   });
+  if (Object.keys(errors).length > jobs.length / 2) { P.deleteProperty('extraAt'); Logger.log('Доп. данные: LINKO не отвечает, попробую через 5 минут'); return; }
   const body = JSON.stringify({ data: data, errors: errors });
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
   if (hash === P.getProperty('extraHash')) { Logger.log('Доп. данные без изменений'); return; }
@@ -181,6 +185,18 @@ function extra_() {
 function get2_(o, k) { if (o == null) return undefined; if (Object.prototype.hasOwnProperty.call(o, k)) return o[k]; return k.split('.').reduce((v, p) => (v == null ? undefined : v[p]), o); }
 function pick_(row, keys) { if (!keys || !keys.length || row == null || typeof row !== 'object') return row; const o = {}; keys.forEach(k => { const v = get2_(row, k); if (v !== undefined && v !== null && v !== '') o[k] = v; }); return o; }
 
+// never let a key get into a message: LINKO key, GPS key and GitHub key are replaced by ***
+function mask_(t) { return String(t).replace(/(token|user_api_hash|hash)=[^&\s]+/gi, '$1=***').replace(/\b[0-9a-f]{40}\b/gi, '***').replace(/github_pat_\w+/g, '***').replace(/Token [^\s"]+/g, 'Token ***'); }
+// a network hiccup ("Address unavailable", timeouts) is retried twice before giving up
+function fetch_(url, opts) {
+  let last;
+  for (let i = 0; i < 3; i++) {
+    try { return UrlFetchApp.fetch(url, opts); }
+    catch (e) { last = e; Utilities.sleep(1500 * (i + 1)); }
+  }
+  throw new Error(mask_((last && last.message) || last));
+}
+
 function planFrom_(d) {
   let y = Number(d.slice(0, 4)), m = Number(d.slice(5, 7));
   if (Number(d.slice(8, 10)) < CFG.PLAN_DAY) { m--; if (!m) { m = 12; y--; } }
@@ -188,7 +204,7 @@ function planFrom_(d) {
 }
 function auth_() { return { Authorization: 'Token ' + CFG.LINKO_TOKEN }; }
 function get_(u) {
-  const r = UrlFetchApp.fetch(u.indexOf('http') === 0 ? u : CFG.LINKO_API + u, { headers: auth_(), muteHttpExceptions: true });
+  const r = fetch_(u.indexOf('http') === 0 ? u : CFG.LINKO_API + u, { headers: auth_(), muteHttpExceptions: true });
   const code = r.getResponseCode();
   if (code === 401) throw new Error('LINKO не принял ключ (401): возьмите новый ключ LINKO и вставьте в скрипт');
   if (code === 403) throw new Error('LINKO: нет доступа к разделу (403)');
@@ -202,11 +218,11 @@ function csv_(rows) { return '﻿' + rows.map(r => r.map(v => '"' + String(v == 
 function saveToGithub_(path, text) {
   const url = 'https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/' + path;
   const h = { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-  const cur = UrlFetchApp.fetch(url, { headers: h, muteHttpExceptions: true });
+  const cur = fetch_(url, { headers: h, muteHttpExceptions: true });
   const sha = cur.getResponseCode() === 200 ? JSON.parse(cur.getContentText()).sha : undefined;
   const body = { message: 'LINKO: автозагрузка', content: Utilities.base64Encode(text, Utilities.Charset.UTF_8) };
   if (sha) body.sha = sha;
-  const r = UrlFetchApp.fetch(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
+  const r = fetch_(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
   if (r.getResponseCode() >= 300) throw new Error('GitHub не принял файл: ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
 }
 function notify_(text) {

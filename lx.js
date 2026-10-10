@@ -27,7 +27,9 @@ const LX = {
   importSnap(snap) {
     if (!snap || !snap.data) return false;
     const x = CRMLocal.ext();
+    const prev = x.lx && x.lx.from === snap.from ? x.lx.d || {} : {};
     x.lx = { at: snap.at, from: snap.from, to: snap.to, src: 'auto', errors: snap.errors || {}, d: {} };
+    for (const id of Object.keys(snap.errors || {})) if (prev[id] && !snap.data[id]) x.lx.d[id] = prev[id]; // a section that failed this time keeps the last good data
     for (const [id, rows] of Object.entries(snap.data)) { const job = LX.jobs.find(j => j.id === id); x.lx.d[id] = (rows || []).map(r => LX.pick(r, job?.pick)); }
     LX.cache = null; CRMLocal.touch(); return true;
   },
@@ -100,7 +102,7 @@ const LX = {
       <nav class="tabs no-print" aria-label="Данные LINKO">${LX.TABS.map(([r, n]) => `<a href="#/${r}" class="${r === tab ? 'on' : ''}">${n}</a>`).join('')}</nav><div id="lxBody"></div>`;
     const body = $('#lxBody', el);
     if (!LX.has()) { body.innerHTML = UI.empty('Данных из LINKO ещё нет', 'Они появятся сами после обновления скрипта автозагрузки (<a href="#/cloud">Данные → Синхронизация и настройки</a> → «Скопировать готовый скрипт» → вставить в script.google.com → setup) или сразу после нажатия закладки «⚡ В MITAL CRM» в LINKO.'); return null; }
-    const errs = Object.entries(s.errors || {}); if (errs.length) body.insertAdjacentHTML('beforebegin', `<p class="mut">Не получено из LINKO: ${errs.map(([id, e]) => `${esc(LX.jobs.find(j => j.id === id)?.title || id)} (${esc(String(e).slice(0, 60))})`).join(', ')}</p>`);
+    const errs = Object.entries(s.errors || {}); if (errs.length) body.insertAdjacentHTML('beforebegin', `<p class="mut">Не получено из LINKO: ${errs.map(([id, e]) => `${esc(LX.jobs.find(j => j.id === id)?.title || id)} (${esc(maskKey(e).slice(0, 60))})`).join(', ')}</p>`);
     return body;
   },
   agentSel(names) { return `<select id="lxAg" aria-label="Агент"><option value="">Все агенты</option>${names.map(n => `<option ${n === LX.agent ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`; },
