@@ -28,11 +28,23 @@ const LX = {
     if (!snap || !snap.data) return false;
     const x = CRMLocal.ext();
     const prev = x.lx && x.lx.from === snap.from ? x.lx.d || {} : {};
-    x.lx = { at: snap.at, from: snap.from, to: snap.to, src: 'auto', errors: snap.errors || {}, d: {} };
-    for (const id of Object.keys(snap.errors || {})) if (prev[id] && !snap.data[id]) x.lx.d[id] = prev[id]; // a section that failed this time keeps the last good data
+    const fastAt = x.lx && x.lx.from === snap.from ? x.lx.fastAt : undefined;
+    x.lx = { at: snap.at, from: snap.from, to: snap.to, src: 'auto', errors: snap.errors || {}, d: {}, fastAt };
+    for (const id of Object.keys(prev)) if (!snap.data[id]) x.lx.d[id] = prev[id]; // a section that failed this time, or comes in its own 5-minute file (payments), keeps its data
     for (const [id, rows] of Object.entries(snap.data)) { const job = LX.jobs.find(j => j.id === id); x.lx.d[id] = (rows || []).map(r => LX.pick(r, job?.pick)); }
     LX.cache = null; CRMLocal.touch(); return true;
   },
+
+  // payments every 5 minutes (linko-fast.json): only these sections are replaced
+  importFast(snap) {
+    if (!snap || !snap.data) return false;
+    const x = CRMLocal.ext();
+    if (!x.lx || x.lx.from !== snap.from) x.lx = { at: snap.at, from: snap.from, to: snap.to, src: 'auto', errors: {}, d: {} };
+    for (const [id, rows] of Object.entries(snap.data)) { const job = LX.jobs.find(j => j.id === id); x.lx.d[id] = (rows || []).map(r => LX.pick(r, job?.pick)); delete x.lx.errors?.[id]; }
+    x.lx.fastAt = snap.at; LX.cache = null; CRMLocal.touch(); return true;
+  },
+  // when the payments were last taken from LINKO
+  payAt() { const s = LX.st(); return s ? s.fastAt || s.at : null; },
 
   // ---------- helpers ----------
   n: v => Number(v) || 0,
@@ -57,7 +69,7 @@ const LX = {
   ORDER_ST: { new: 'новый', requested: 'запрошен', request: 'запрошен', unconfirmed: 'не подтверждён', confirmed: 'подтверждён', accepted: 'принят', ready: 'готов к отгрузке', given: 'отгружен', delivering: 'в пути', on_way: 'в пути', delivered: 'доставлен', finished: 'завершён', done: 'завершён', cancelled: 'отменён', canceled: 'отменён', rejected: 'отклонён', returned: 'возвращён', draft: 'черновик' },
   st2: s => LX.ORDER_ST[String(s).toLowerCase()] || String(s ?? '—'),
   closed: s => /deliver|finish|done|cancel|reject|return|отмен|достав|заверш/i.test(String(s)),
-  PAY_T: { cash: 'наличные', bank: 'перечисление', card: 'карта', transfer: 'перевод', terminal: 'терминал', click: 'Click', payme: 'Payme' },
+  PAY_T: { cash: 'наличные', bank: 'перечисление', card: 'карта / перечисление', transfer: 'перевод', terminal: 'терминал', click: 'Click', payme: 'Payme' },
   pt: s => LX.PAY_T[String(s).toLowerCase()] || String(s || '—'),
 
   // brand of a product: from the warehouse files (by name or article), otherwise the first word of the name
@@ -71,7 +83,7 @@ const LX = {
 
   // ---------- everything the pages need, computed once per data version ----------
   model() {
-    const key = (LX.st()?.at || '') + '|' + (CRMLocal.engine.getState().ag.uploads || []).length + '|' + (CRMLocal.engine.getState().wh.uploads || []).length;
+    const key = (LX.st()?.at || '') + '|' + (LX.st()?.fastAt || '') + '|' + (CRMLocal.engine.getState().ag.uploads || []).length + '|' + (CRMLocal.engine.getState().wh.uploads || []).length;
     if (LX.cache && LX.cacheKey === key) return LX.cache;
     LX._ag = null; LX._br = null; LX.cacheKey = key;
     const orders = LX.d('orders'), items = LX.d('items'), pays = LX.d('pays'), rets = LX.d('returns');
@@ -90,6 +102,22 @@ const LX = {
     const skipped = pays.filter(p => why(p)).map(p => ({ date: LX.day(p.accepted_time || p.created_date), time: String(p.accepted_time || p.created_date || '').slice(11, 16), amount: LX.n(p.amount), real: LX.n(p.real_amount), cur: p['currency.name'] || '', type: p.type, ptype: p.payment_type, client: p['client.name'] || '', by: LX.person(p, 'user'), why: why(p) }));
     const payments = pays.filter(p => !why(p))
       .map(p => ({ date: LX.day(p.accepted_time || p.created_date), time: String(p.accepted_time || p.created_date || '').slice(11, 16), amount: LX.n(p.amount), type: p.type, ptype: p.payment_type, cur: p['currency.name'] || '', client: p['client.name'] || '', agent: p['client.name'] ? LX.clientAgent(p['client.name'], LX.person(p, 'user')) : LX.agentName(LX.person(p, 'user')) || 'Без агента', by: LX.person(p, 'user'), courier: LX.person(p, 'delivery_man') }));
+    // Card / bank payments: LINKO keeps them out of the transactions list (and out of «Сбор денег»), but the client balance counts them.
+    // Per day and client: (paid in the balance on that day) − (paid the day before, same plan period) − (transactions that day) = paid another way.
+    const ups = (CRMLocal.engine.getState().ag.uploads || []).slice().sort((a, b) => (a.taken_at < b.taken_at ? -1 : a.taken_at > b.taken_at ? 1 : a.id - b.id));
+    const byDate = new Map(); for (const u of ups) byDate.set(u.period_from + '|' + u.taken_at, u);
+    const txDay = new Map(); for (const p of payments) { const k = p.date + '|' + p.client; txDay.set(k, (txDay.get(k) || 0) + p.amount); }
+    const payDays = new Set(payments.map(p => p.date)), firstTx = [...payDays].sort()[0] || '';
+    for (const u of byDate.values()) {
+      if (firstTx && u.taken_at < firstTx) continue;
+      const prev = ups.filter(x => x.period_from === u.period_from && x.taken_at < u.taken_at).pop();
+      if (!prev && u.taken_at !== u.period_from) continue; // no snapshot of the day before: can't tell what was paid that day
+      const before = new Map((prev?.rows || []).map(r => [r.client, r.paid || 0]));
+      for (const r of u.rows || []) {
+        const extra = (r.paid || 0) - (before.get(r.client) || 0) - (txDay.get(u.taken_at + '|' + r.client) || 0);
+        if (extra > 0.5) payments.push({ date: u.taken_at, time: '', amount: Math.round(extra * 100) / 100, type: 'по балансу', ptype: 'card', cur: '', client: r.client, agent: LX.clientAgent(r.client, ''), by: '', courier: '', bal: true });
+      }
+    }
     const ords = orders.filter(inCur).map(o => ({ id: o.id, date: LX.day(o.created_date), status: o.status, sum: LX.n(o.total_price), fact: LX.n(o.fact_price), ret: LX.n(o.total_return_price), paid: !!o.is_paid, deliver: LX.day(o.date_delivery), client: o['client.name'] || '', address: o['market.address'] || '', agent: o['client.name'] ? LX.clientAgent(o['client.name'], LX.person(o, 'user')) : LX.agentName(LX.person(o, 'user')) || 'Без агента' }));
     const returns = rets.filter(r => !r['currency.name'] || r['currency.name'] === (LX.curOf(rets) || cur)).map(r => ({ date: LX.day(r.created_date), status: r.status, sum: LX.n(r.total_price), client: r['client.name'] || '', agent: r['client.name'] ? LX.clientAgent(r['client.name'], LX.person(r, 'responsible_agent')) : LX.agentName(LX.person(r, 'responsible_agent')) || 'Без агента', reason: [r.reason, r.comment].filter(Boolean).join(' · ') }));
     return (LX.cache = { cur, payCur, lines, payments, skipped, ords, returns });
@@ -173,12 +201,12 @@ EXT_PAGES.lxpay = async el => {
   const byDay = days.map(d => ({ d, total: sumD(d), ag: new Map(LX.sumBy(P.filter(p => p.date === d), 'agent', p => p.amount)) }));
   const today = P.filter(p => p.date === t0).sort((a, b) => b.time.localeCompare(a.time));
   body.innerHTML = `<div class="bar">${LX.agentSel(LX.agentsOf(M.payments))}</div>
-    <div class="kpis">${UI.tile('Сегодня', $$(sumD(t0)), { sub: `${today.length} оплат · данные на ${LX.st()?.at ? new Date(LX.st().at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—'}`, hero: true })}${UI.tile('Вчера', $$(sumD(y0)))}${UI.tile('За 7 дней', $$(P.filter(p => p.date >= wk).reduce((a, p) => a + p.amount, 0)))}${UI.tile('За период', $$(P.reduce((a, p) => a + p.amount, 0)), { sub: `${P.length} оплат` })}</div>
+    <div class="kpis">${UI.tile('Сегодня', $$(sumD(t0)), { sub: `${today.length} оплат · данные на ${LX.payAt() ? new Date(LX.payAt()).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—'}`, hero: true })}${UI.tile('Вчера', $$(sumD(y0)))}${UI.tile('За 7 дней', $$(P.filter(p => p.date >= wk).reduce((a, p) => a + p.amount, 0)))}${UI.tile('За период', $$(P.reduce((a, p) => a + p.amount, 0)), { sub: `${P.length} оплат` })}</div>
     <div class="grid">
     ${UI.panel('Собрано по дням', days.length > 1 ? CH.columns(byDay.slice(-31).map(x => ({ label: UI.dm(x.d), values: [x.total] })), [{ name: 'Оплаты', color: 'var(--c3)' }], { fmt: f, height: 230 }) : '<p class="mut">Мало дней для графика.</p>', { cls: 'w12' })}
     ${UI.panel('По способу оплаты', CH.hbars(LX.sumBy(P, p => LX.pt(p.ptype), p => p.amount).map(([label, value]) => ({ label, value })), { unit: LX.u(M.payCur), fmt: f, share: true }), { cls: 'w6' })}
     ${UI.panel('По агентам за период', CH.hbars(LX.sumBy(P, 'agent', p => p.amount).map(([label, value]) => ({ label, value })), { unit: LX.u(M.payCur), fmt: f }), { cls: 'w6' })}
-    ${UI.panel(`Оплаты сегодня (${today.length})`, today.length ? LX.table(['Время', 'Клиент', 'Агент', 'Способ', 'Тип', '#Сумма', 'Принял'], today.map(p => `<tr><td>${esc(p.time)}</td><td>${LX.cl(p.client)}</td><td>${esc(p.agent)}</td><td>${esc(LX.pt(p.ptype))}</td><td class="mut">${esc(p.type ?? '')}${p.cur && p.cur !== M.payCur ? ' · ' + esc(p.cur) : ''}</td><td class="n"><b class="pos">${f(p.amount)}</b></td><td>${esc(p.courier || p.by)}</td></tr>`), { max: '360px' }) : '<p class="mut">Сегодня оплат ещё нет.</p>', { cls: 'w12' })}
+    ${UI.panel(`Оплаты сегодня (${today.length})`, today.length ? LX.table(['Время', 'Клиент', 'Агент', 'Способ', 'Тип', '#Сумма', 'Принял'], today.map(p => `<tr><td>${p.time ? esc(p.time) : '<span class="mut">—</span>'}</td><td>${LX.cl(p.client)}</td><td>${esc(p.agent)}</td><td>${esc(LX.pt(p.ptype))}</td><td class="mut">${esc(p.type ?? '')}${p.cur && p.cur !== M.payCur ? ' · ' + esc(p.cur) : ''}</td><td class="n"><b class="pos">${f(p.amount)}</b></td><td>${esc(p.courier || p.by)}</td></tr>`), { max: '360px' }) : '<p class="mut">Сегодня оплат ещё нет.</p>', { cls: 'w12', sub: today.some(p => p.bal) ? 'Строки «по балансу» — оплаты картой или перечислением: в «Сборе денег» LINKO их нет, CRM видит их по росту оплат в балансе клиента. Если там окажется наличная оплата, она через полчаса придёт из LINKO обычной строкой и заменит эту' : '' })}
     ${(() => { const sk = M.skipped.filter(p => p.date === t0 && (!LX.agent || LX.agentName(p.by) === LX.agent || !p.by)); return sk.length ? UI.panel(`⚠ Не вошли в сумму сегодня (${sk.length})`, LX.table(['Время', 'Клиент', 'Тип', 'Способ', 'Валюта', '#Сумма', 'Почему'], sk.map(p => `<tr><td>${esc(p.time)}</td><td>${LX.cl(p.client)}</td><td>${esc(p.type)}</td><td>${esc(LX.pt(p.ptype))}</td><td>${esc(p.cur)}</td><td class="n">${f(p.amount)}</td><td>${esc(p.why)}</td></tr>`)), { cls: 'w12', sub: 'Эти операции LINKO есть, но в «Сегодня» не посчитаны. Если какая-то должна считаться — пришлите скриншот этого блока' }) : ''; })()}
     ${UI.panel('Таблица: дни × агенты', LX.table(['День', ...agents.map(a => '#' + a), '#Всего'], byDay.slice().reverse().map(x => `<tr><td>${UI.dateRu(x.d)}</td>${agents.map(a => `<td class="n">${x.ag.get(a) ? f(x.ag.get(a)) : '<span class="mut">—</span>'}</td>`).join('')}<td class="n"><b>${f(x.total)}</b></td></tr>`), { max: '420px' }), { cls: 'w12' })}
     </div>`;

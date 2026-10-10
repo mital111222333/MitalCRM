@@ -257,9 +257,13 @@ window.LINKO_AUTO = {
   busy: false, lastTry: 0,
   // orders, products, payments, debts by age, agents' day… — written by the script every 30 minutes
   async extra() {
-    const snap = await CLOUD.readJson('linko-extra.json'); if (!snap || !snap.at || !snap.data) return;
-    const cur = CRMLocal.ext().lx; if (cur && cur.at >= snap.at) return;
-    await LX.load(); if (LX.importSnap(snap) && /^#\/lx/.test(location.hash) && !document.querySelector('.modal-bg') && typeof route === 'function') route();
+    let changed = false;
+    const snap = await CLOUD.readJson('linko-extra.json').catch(() => null), cur = CRMLocal.ext().lx;
+    if (snap && snap.at && snap.data && !(cur && cur.at >= snap.at)) { await LX.load(); changed = LX.importSnap(snap) || changed; }
+    // payments: every 5 minutes, in their own file
+    const fast = await CLOUD.readJson('linko-fast.json').catch(() => null), c2 = CRMLocal.ext().lx;
+    if (fast && fast.at && fast.data && !(c2 && c2.from === fast.from && ((c2.fastAt && c2.fastAt >= fast.at) || c2.at >= fast.at))) { await LX.load(); changed = LX.importFast(fast) || changed; }
+    if (changed && /^#\/lx/.test(location.hash) && !document.querySelector('.modal-bg') && typeof route === 'function') route();
   },
   async check() {
     if (LINKO_AUTO.busy || Date.now() - LINKO_AUTO.lastTry < 60000 || !window.CLOUD?.on()) return;

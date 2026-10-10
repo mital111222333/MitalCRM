@@ -2,7 +2,8 @@
  * MITAL CRM — автозагрузка из LINKO (Google Apps Script, бесплатно).
  * Каждые 5 минут (с 7 до 22) берёт из LINKO баланс клиентов (с начала периода плана по сегодня) и остатки всех складов
  * и кладёт их в ваш приватный репозиторий mitalcrm-data (файл linko-latest.json).
- * Раз в 30 минут — заказы, товары, оплаты, возвраты, долги по срокам, работу агентов и др. (файл linko-extra.json).
+ * Оплаты — тоже каждые 5 минут (файл linko-fast.json; какие разделы быстрые, решает CRM: "every": 5 в linko-jobs.json).
+ * Раз в 30 минут — заказы, товары, возвраты, долги по срокам, работу агентов и др. (файл linko-extra.json).
  * CRM на любом устройстве, включая телефон, при открытии сама забирает эти данные.
  *
  * Как поставить: см. CRM → «Данные → Синхронизация и настройки» → «Автозагрузка из LINKO».
@@ -38,7 +39,9 @@ function run() {
   if (hour < 7 || hour > 22) return; // ночью данные не меняются
   base_();
   try { gps_(); } catch (e) { Logger.log('GPS: ' + mask_(e.message || e)); }
-  try { extra_(); } catch (e) { Logger.log('Доп. данные: ' + mask_(e.message || e)); }
+  let jobs = null; try { jobs = jobs_(); } catch (e) { Logger.log('Список разделов: ' + mask_(e.message || e)); }
+  if (jobs) try { fast_(jobs); } catch (e) { Logger.log('Оплаты: ' + mask_(e.message || e)); }
+  if (jobs) try { extra_(jobs); } catch (e) { Logger.log('Доп. данные: ' + mask_(e.message || e)); }
 }
 
 function base_() {
@@ -160,12 +163,8 @@ function pointsOf_(j) {
 }
 
 // the list of LINKO sections comes from the CRM site, so new data needs no new script
-function extra_() {
-  const P = PropertiesService.getScriptProperties();
-  if (Date.now() - Number(P.getProperty('extraAt') || 0) < CFG.EXTRA_MIN * 60000) return;
-  P.setProperty('extraAt', String(Date.now()));
-  const jobs = JSON.parse(fetch_(CFG.CRM_URL + 'linko-jobs.json?t=' + Date.now(), { muteHttpExceptions: true }).getContentText());
-  const to = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(to), data = {}, errors = {};
+function jobs_() { return JSON.parse(fetch_(CFG.CRM_URL + 'linko-jobs.json?t=' + Date.now(), { muteHttpExceptions: true }).getContentText()); }
+function runJobs_(jobs, from, to, data, errors) {
   jobs.forEach(j => {
     try {
       const path = j.path.replace(/\{from\}/g, from).replace(/\{to\}/g, to);
@@ -174,6 +173,28 @@ function extra_() {
       data[j.id] = rows.map(r => pick_(r, j.pick));
     } catch (e) { errors[j.id] = mask_(e.message || e); if (/ключ/.test(errors[j.id])) throw e; }
   });
+}
+// sections marked "every": 5 in linko-jobs.json (payments) — every run, into their own small file
+function fast_(all) {
+  const jobs = all.filter(j => j.every && j.every < CFG.EXTRA_MIN); if (!jobs.length) return;
+  const P = PropertiesService.getScriptProperties();
+  const to = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(to), data = {}, errors = {};
+  runJobs_(jobs, from, to, data, errors);
+  if (!Object.keys(data).length) return;
+  const body = JSON.stringify({ data: data, from: from });
+  const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
+  if (hash === P.getProperty('fastHash')) return;
+  saveToGithub_('linko-fast.json', JSON.stringify({ at: new Date().toISOString(), from: from, to: to, data: data, errors: errors }));
+  P.setProperty('fastHash', hash);
+  Logger.log('Оплаты сохранены: ' + Object.keys(data).map(k => k + ' ' + data[k].length).join(', '));
+}
+function extra_(all) {
+  const P = PropertiesService.getScriptProperties();
+  if (Date.now() - Number(P.getProperty('extraAt') || 0) < CFG.EXTRA_MIN * 60000) return;
+  P.setProperty('extraAt', String(Date.now()));
+  const jobs = all.filter(j => !(j.every && j.every < CFG.EXTRA_MIN));
+  const to = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(to), data = {}, errors = {};
+  runJobs_(jobs, from, to, data, errors);
   if (Object.keys(errors).length > jobs.length / 2) { P.deleteProperty('extraAt'); Logger.log('Доп. данные: LINKO не отвечает, попробую через 5 минут'); return; }
   const body = JSON.stringify({ data: data, errors: errors });
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
