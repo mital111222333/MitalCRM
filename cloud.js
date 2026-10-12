@@ -32,11 +32,11 @@ window.CLOUD = (() => {
   const gunzip = async bytes => new TextDecoder().decode(await pipe(bytes, new DecompressionStream('gzip')));
 
   // ---------- GitHub contents API ----------
-  async function gh(c, method = 'GET', body = null, accept = 'application/vnd.github+json') {
+  async function gh(c, method = 'GET', body = null, accept = 'application/vnd.github+json', extra = {}) {
     const url = `https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/contents/${FILE}`;
     let r;
     try {
-      r = await fetch(url + (method === 'GET' ? `?t=${Date.now()}` : ''), { method, cache: 'no-store', headers: { Authorization: 'Bearer ' + c.token, Accept: accept, 'X-GitHub-Api-Version': '2022-11-28', ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+      r = await fetch(url + (method === 'GET' && !extra['If-None-Match'] ? `?t=${Date.now()}` : ''), { method, cache: 'no-store', headers: { Authorization: 'Bearer ' + c.token, Accept: accept, 'X-GitHub-Api-Version': '2022-11-28', ...(body ? { 'Content-Type': 'application/json' } : {}), ...extra }, body: body ? JSON.stringify(body) : undefined });
     } catch { throw Object.assign(new Error('Нет интернета или GitHub недоступен'), { net: true }); }
     return r;
   }
@@ -49,8 +49,12 @@ window.CLOUD = (() => {
   };
 
   // returns {missing:true} | {sha, savedAt, device, state}
+  // quick check first: if the cloud file is unchanged since we last saw it, GitHub answers 304 with no body — nothing is downloaded or unpacked
+  let etag = null, etagSha = null; const jsonMemo = {};
   async function pull(c = cfg()) {
-    const r = await gh(c);
+    const known = get(LS.sha), useTag = etag && etagSha && etagSha === known;
+    const r = await gh(c, 'GET', null, 'application/vnd.github+json', useTag ? { 'If-None-Match': etag } : {});
+    if (r.status === 304 && useTag) return { sha: etagSha, unchanged: true };
     if (r.status === 404) {
       const repo = await fetch(`https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}`, { headers: { Authorization: 'Bearer ' + c.token } }).catch(() => null);
       if (repo && repo.ok) return { missing: true };
@@ -62,6 +66,7 @@ window.CLOUD = (() => {
     if (meta.content && meta.encoding === 'base64') bytes = unb64(meta.content);
     else { const raw = await gh(c, 'GET', null, 'application/vnd.github.raw'); if (!raw.ok) throw new Error(await explain(raw)); bytes = new Uint8Array(await raw.arrayBuffer()); }
     const data = JSON.parse(await gunzip(bytes));
+    etag = r.headers.get('ETag'); etagSha = meta.sha;
     return { sha: meta.sha, savedAt: data.savedAt, device: data.device, state: data.state };
   }
 
@@ -175,11 +180,16 @@ window.CLOUD = (() => {
   return {
     on: () => !!cfg(),
     // read another (small) file of the data repository, e.g. linko-latest.json written by the auto-loader
+    // remembers each file's ETag: an unchanged file costs one tiny request (304) instead of a full download
     async readJson(path) {
       const c = cfg(); if (!c) return null;
-      let r; try { r = await fetch(`https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/contents/${path}?t=${Date.now()}`, { cache: 'no-store', headers: { Authorization: 'Bearer ' + c.token, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28' } }); } catch { return null; }
+      const memo = jsonMemo, m = memo[path];
+      let r; try { r = await fetch(`https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/contents/${path}${m ? '' : `?t=${Date.now()}`}`, { cache: 'no-store', headers: { Authorization: 'Bearer ' + c.token, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28', ...(m ? { 'If-None-Match': m.etag } : {}) } }); } catch { return null; }
+      if (r.status === 304 && m) return m.json;
       if (!r.ok) return null;
-      try { return await r.json(); } catch { return null; }
+      let json; try { json = await r.json(); } catch { return null; }
+      const tag = r.headers.get('ETag'); if (tag) memo[path] = { etag: tag, json };
+      return json;
     },
     cfg,
     status: () => ({ status, message, at: get(LS.at), dirty: !!get(LS.dirty) }),
