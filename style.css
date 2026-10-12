@@ -392,3 +392,12 @@ a.clink { color: inherit; text-decoration: underline dotted var(--muted); text-u
 html[data-theme="dark"] .newbox { background: #15304d; border-color: #24496f; }
 tr.mguess td { background: var(--st-warn-bg); } tr.mnone td { background: var(--st-crit-bg); }
 @media (max-width: 700px) { .rtbtns .btn.sm[data-up], .rtbtns .btn.sm[data-dn] { display: none; } }
+
+/* «🔄 Обновить» button in the top bar */
+#refreshBtn { display: inline-flex; align-items: center; gap: 6px; background: #ffffff14; border: 1px solid #ffffff30; color: #e3efef; border-radius: 99px; padding: 4px 12px; margin-left: 8px; cursor: pointer; font-size: 13px; font-family: inherit; white-space: nowrap; }
+#refreshBtn:hover { background: #ffffff24; }
+#refreshBtn:disabled { opacity: .7; cursor: progress; }
+#refreshBtn.spin .ri { display: inline-block; animation: refreshSpin .9s linear infinite; }
+@keyframes refreshSpin { to { transform: rotate(360deg); } }
+@media (max-width: 860px) { #refreshBtn .rt { display: none; } #refreshBtn { padding: 4px 9px; font-size: 15px; } }
+@media print { #refreshBtn { display: none !important; } }

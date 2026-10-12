@@ -165,12 +165,11 @@ window.CLOUD = (() => {
     badge();
     new MutationObserver(() => { if (!document.querySelector('nav.top #cloudBadge') && document.querySelector('nav.top')) badge(); }).observe(document.getElementById('app'), { childList: true });
     if (cfg()) await sync({ quiet: false });
+    // no automatic pulling: newer data is fetched on open and by the «🔄 Обновить» button; only unsaved local changes are sent on their own
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && cfg() && Date.now() - lastCheck > 10000) sync({ quiet: true });
       if (document.visibilityState === 'hidden' && get(LS.dirty)) { clearTimeout(timer); sync({ quiet: true }); }
     });
-    addEventListener('online', () => cfg() && sync({ quiet: true }));
-    setInterval(() => { if (cfg() && document.visibilityState === 'visible' && Date.now() - lastCheck > 25000) sync({ quiet: true }); }, 30000);
+    addEventListener('online', () => cfg() && get(LS.dirty) && sync({ quiet: true }));
   })();
 
   return {

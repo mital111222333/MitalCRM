@@ -226,3 +226,6 @@ html.standalone .side { padding-top: env(safe-area-inset-top); }
 .gps-pin.on { outline: 3px solid #f2a516; }
 .gps-lbl { position: absolute; top: 36px; left: 50%; transform: translateX(-50%); background: rgba(255,255,255,.92); color: #14212b; font: 600 11px var(--font); padding: 1px 5px; border-radius: 6px; white-space: nowrap; }
 @media (max-width: 900px) { .gps-wrap { grid-template-columns: 1fr; } .gps-map { height: 55vh; min-height: 300px; } .gps-list { max-height: none; } }
+
+#refreshBtn { border-color: var(--line-2); color: var(--text-2); background: var(--card); }
+@media (max-width: 860px) { #refreshBtn { background: #ffffff14; border-color: #ffffff26; color: #dfe8ef; margin: 0 0 0 6px; } }

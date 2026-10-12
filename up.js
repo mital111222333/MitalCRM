@@ -284,6 +284,5 @@ window.LINKO_AUTO = {
     finally { LINKO_AUTO.busy = false; }
   },
 };
+// no timers: LINKO data is picked up when the CRM opens and when «🔄 Обновить» is pressed (refresh.js)
 addEventListener('load', () => setTimeout(() => LINKO_AUTO.check(), 4000));
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') setTimeout(() => LINKO_AUTO.check(), 1500); });
-setInterval(() => { if (document.visibilityState === 'visible') LINKO_AUTO.check(); }, 2 * 60000); // the script writes every 5 minutes; an open CRM picks it up within ~2 minutes
