@@ -221,7 +221,7 @@ addEventListener('message', async e => {
     const t = UI.localDate(Date.now());
     let probe = false; try { probe = !!localStorage.getItem('crm_linko_probe'); } catch { /* ignore */ }
     const from = PLAN.from(t); await LX.load(); LINKO.run = { from, to: t, at: new Date().toISOString() };
-    e.source.postMessage({ type: 'mital-ready', from, to: t, probe, jobs: (d.v >= 3 ? LX.jobs : []).map(j => ({ id: j.id, title: j.title, path: LX.fill(j.path, from, t) })) }, e.origin);
+    e.source.postMessage({ type: 'mital-ready', from, to: t, probe, branches: Object.keys(CRMLocal.ext().linkoBranch || {}), jobs: (d.v >= 3 ? LX.jobs : []).map(j => ({ id: j.id, title: j.title, path: LX.fill(j.path, from, t) })) }, e.origin);
     if (probe && !(d.v >= 3)) setTimeout(() => toast('Для проверки нужна новая закладка: удалите старую «⚡ В MITAL CRM» и перетащите новую с этой страницы'), 3000);
     if (location.hash !== '#/up') location.hash = '#/up';
     LINKO.show('Получаю данные из LINKO…');
@@ -271,13 +271,15 @@ window.LINKO_AUTO = {
     try {
       const snap = await CLOUD.readJson('linko-latest.json'); if (!snap || !snap.at || !Array.isArray(snap.files)) return await LINKO_AUTO.extra();
       const x = CRMLocal.ext(); x.linkoAuto = { ...(x.linkoAuto || {}), seenAt: snap.at, error: snap.error || '' };
+      x.linkoAuto.checkedAt = new Date().toISOString();
       if (snap.error || (x.linkoAuto.importedAt && x.linkoAuto.importedAt >= snap.at)) return await LINKO_AUTO.extra();
       const bin = b => Uint8Array.from(atob(b), c => c.charCodeAt(0));
       const files = snap.files.map(f => new File([bin(f.b64)], f.name));
       const box = document.createElement('div');
       await UPALL.run(files, box, PLAN.day());
       { const S = CRMLocal.engine.getState(), last = (S.ag.uploads || []).slice().sort((a, b) => b.id - a.id)[0]; if (last && Date.now() - Date.parse(last.uploaded_at || 0) < 10 * 60000) last.snap_at = snap.at; } // when LINKO gave this balance (for card payments by time)
-      x.linkoAuto.importedAt = snap.at; x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
+      for (const u of CRMLocal.engine.getState().wh.uploads || []) if (Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // …and when LINKO gave each warehouse's stock
+      x.linkoAuto.importedAt = snap.at; x.linkoAuto.checkedAt = new Date().toISOString(); x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
       if (box.textContent.includes('✓')) { toast(`Данные из LINKO обновлены (${new Date(snap.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })})`); const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]'); if (!typing && typeof route === 'function') route(); }
       await LINKO_AUTO.extra();
     } catch (e) { console.warn('LINKO auto', e); }

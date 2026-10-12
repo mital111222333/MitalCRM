@@ -7,7 +7,7 @@
    "pick": ["id", "type", "amount", "real_amount", "created_date", "accepted_time", "payment_type", "currency.name", "user.first_name", "user.second_name", "client.id", "client.name", "order_return", "delivery_man.first_name", "delivery_man.second_name"]},
   {"id": "returns", "title": "возвраты", "path": "sales/order_return/?begin_date={from}&end_date={to}&page=1&page_size=500",
    "pick": ["id", "created_date", "status", "total_price", "currency.name", "client.name", "responsible_agent.first_name", "responsible_agent.second_name", "created_by.first_name", "created_by.second_name", "reason", "comment"]},
-  {"id": "debtors", "title": "должники по срокам", "path": "stats/debtors/?page=1&page_size=500",
+  {"id": "debtors", "title": "должники по срокам", "every": 5, "path": "stats/debtors/?page=1&page_size=500",
    "pick": ["client.id", "client.name", "client.phone", "client.address", "client.guide", "client.responsible_agent.first_name", "client.responsible_agent.second_name", "market.phone", "market.address", "currencies"]},
   {"id": "debtcfg", "title": "сроки долга", "path": "stats/debtors_stats/", "pick": ["config"]},
   {"id": "freq", "title": "частота покупок", "path": "market/market/trade_frequency/?begin_date={from}&end_date={to}&page=1&page_size=100",

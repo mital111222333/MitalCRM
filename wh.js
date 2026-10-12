@@ -8,6 +8,9 @@ const whPill = s => UI.pill(WH_STATUS[s][0], WH_STATUS[s][2], WH_STATUS[s][1]);
 const whEnc = encodeURIComponent;
 // "хватит на" makes no sense for items that are already out or fully reserved
 const whDays = i => (i.days_left != null && !['out', 'blocked'].includes(i.status) ? Math.round(i.days_left) + ' дн.' : '—');
+const whTime = u => { const v = u && (u.snap_at || ''); const d = v ? new Date(v) : null; return d && !isNaN(d) ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''; };
+// time (HH:MM) of the freshest warehouse snapshot, with a leading space; '' when unknown
+const whNewest = st => { const t = whTime(st.warehouses.map(w => w.upload).filter(Boolean).sort((a, b) => ((a.snap_at || '') < (b.snap_at || '') ? 1 : -1))[0]); return t ? ' ' + t : ''; };
 const whLatest = st => st.warehouses.map(w => w.upload?.taken_at).filter(Boolean).sort().at(-1) || null;
 
 function whShell(el, tab, sub, actions = '') {
@@ -62,7 +65,7 @@ async function whProductModal(art, name, onChange) {
 EXT_PAGES.wh = async el => {
   const [st, low] = await Promise.all([api('/api/wh/stock'), api('/api/wh/low')]);
   const latest = whLatest(st);
-  const body = whShell(el, 'wh', latest ? `Данные на ${UI.dateRu(latest)} · складов: ${st.warehouses.filter(w => w.upload).length} из ${st.warehouses.length}` : 'Нет загруженных остатков');
+  const body = whShell(el, 'wh', latest ? `Данные на ${UI.dateRu(latest)}${whNewest(st)} · складов: ${st.warehouses.filter(w => w.upload).length} из ${st.warehouses.length}` : 'Нет загруженных остатков');
   if (!latest) return whEmpty(body, st);
   const from = (() => { const d = new Date(latest + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 90); return d.toISOString().slice(0, 10); })();
   const mv = await api(`/api/wh/movement?from=${from}&to=${latest}`);
@@ -86,7 +89,7 @@ EXT_PAGES.wh = async el => {
       ${UI.panel('Состояние запасов', CH.stack([['out', 'var(--st-crit)'], ['blocked', 'var(--st-serious)'], ['low', 'var(--st-warn)'], ['soon', '#f3d27a'], ['ok', 'var(--st-good)']].map(([k, color]) => ({ label: WH_STATUS[k][2], value: c[k] || 0, color }))), { cls: 'w5', sub: 'Позиций каждого статуса' })}
       ${UI.panel('Динамика остатка', moved ? CH.area(mv.series.map(s => UI.dm(s.date)), [{ name: 'Единиц на складах', color: 'var(--c1)', values: mv.series.map(s => s.units) }], { unit: ' шт.' }) : '<div class="empty">Загрузите остатки за ещё одну дату, и здесь появится динамика.</div>', { cls: 'w7', sub: 'Суммарный остаток по снимкам' })}
       ${UI.panel('Приход и расход', moved ? CH.columns(mv.series.slice(1).map(s => ({ label: UI.dm(s.date), values: [s.in, s.out] })), [{ name: 'Приход', color: 'var(--c3)' }, { name: 'Расход', color: 'var(--c2)' }], { height: 220 }) : '<div class="empty">Нужно минимум две загрузки одного склада.</div>', { cls: 'w5', sub: 'Между соседними загрузками' })}
-      ${UI.panel('По складам', CH.hbars(st.warehouses.map(w => w.upload ? { label: w.name, sub: `на ${UI.dateRu(w.upload.taken_at)}`, segs: [{ name: 'Доступно', value: w.upload.available, color: 'var(--c1)' }, { name: 'В резерве', value: w.upload.reserved, color: 'var(--c2)' }], text: UI.fmt0(w.upload.total) } : { label: w.name, sub: 'нет загрузок', value: 0, text: '—' }), { unit: ' шт.' }), { cls: 'w4', sub: 'Доступно и в резерве' })}
+      ${UI.panel('По складам', CH.hbars(st.warehouses.map(w => w.upload ? { label: w.name, sub: `на ${UI.dateRu(w.upload.taken_at)}${whTime(w.upload) ? ' ' + whTime(w.upload) : ''}`, segs: [{ name: 'Доступно', value: w.upload.available, color: 'var(--c1)' }, { name: 'В резерве', value: w.upload.reserved, color: 'var(--c2)' }], text: UI.fmt0(w.upload.total) } : { label: w.name, sub: 'нет загрузок', value: 0, text: '—' }), { unit: ' шт.' }), { cls: 'w4', sub: 'Доступно и в резерве' })}
       ${UI.panel('По типам товара', CH.donut(sorted(typeMap), { unit: ' шт.', center: 'единиц' }), { cls: 'w4' })}
       ${UI.panel('По брендам', CH.hbars(sorted(brandMap), { color: 'var(--c1)', unit: ' шт.', fmt: UI.fmt0, share: true }), { cls: 'w4' })}
     </div>`;
@@ -97,7 +100,7 @@ EXT_PAGES.wh = async el => {
 let whStockState = { q: '', brand: '', type: '', status: '', zero: false };
 EXT_PAGES.whstock = async el => {
   const [st, low] = await Promise.all([api('/api/wh/stock'), api('/api/wh/low')]);
-  const latest = whLatest(st), body = whShell(el, 'whstock', latest ? `Данные на ${UI.dateRu(latest)}` : 'Нет загруженных остатков');
+  const latest = whLatest(st), body = whShell(el, 'whstock', latest ? `Данные на ${UI.dateRu(latest)}${whNewest(st)}` : 'Нет загруженных остатков');
   if (!latest) return whEmpty(body, st);
   const stat = new Map(low.items.map(i => [i.art, i])), uniq = k => [...new Set(st.items.map(i => i[k]).filter(Boolean))].sort();
   const S = whStockState;
@@ -112,7 +115,7 @@ EXT_PAGES.whstock = async el => {
     S.q = $('#q', body).value; S.brand = $('#brand', body).value; S.type = $('#type', body).value; S.status = $('#stt', body).value; S.zero = $('#zero', body).checked;
     const q = S.q.toLowerCase();
     list = st.items.filter(i => (!q || (i.name + i.art).toLowerCase().includes(q)) && (!S.brand || i.brand === S.brand) && (!S.type || i.type === S.type) && (S.zero || i.sum.total > 0 || stat.get(i.art)?.status === 'out') && (!S.status || stat.get(i.art)?.status === S.status));
-    $('#mx', body).innerHTML = `<thead><tr><th>Товар</th>${st.warehouses.map(w => `<th class="n">${esc(w.name)}<br><small>${w.upload ? UI.dateRu(w.upload.taken_at) : 'нет данных'}</small></th>`).join('')}<th class="n">Всего доступно</th><th>Статус</th></tr></thead><tbody>${list.length ? list.map((i, k) => {
+    $('#mx', body).innerHTML = `<thead><tr><th>Товар</th>${st.warehouses.map(w => `<th class="n">${esc(w.name)}<br><small>${w.upload ? UI.dateRu(w.upload.taken_at) + (whTime(w.upload) ? ' ' + whTime(w.upload) : '') : 'нет данных'}</small></th>`).join('')}<th class="n">Всего доступно</th><th>Статус</th></tr></thead><tbody>${list.length ? list.map((i, k) => {
       const s = stat.get(i.art), min = i.min ?? st.settings.low;
       return `<tr class="row" data-k="${k}"><td>${esc(i.name)}<br><small>${esc(i.art)} · ${esc(i.brand)}${i.type ? ' · ' + esc(i.type) : ''}</small></td>${st.warehouses.map(w => {
         const c = i.cells[w.name]; if (!c) return `<td class="n mut">${w.upload ? '0' : '—'}</td>`;

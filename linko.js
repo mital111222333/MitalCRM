@@ -19,7 +19,7 @@
   const csv = rows => '﻿' + rows.map(r => r.map(v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(';')).join('\n');
   const num = v => Number(v) || 0;
 
-  async function run(from, to) {
+  async function run(from, to, known = []) {
     const files = [];
     // 1) client balance: the Excel export of LINKO (it has agents), otherwise the same numbers from the API
     const q = 'only_out_stock=False&is_only_delivered=False&last_status=False&exclude_closed_clients=false&only_payment_with_invoice=false&begin_date=' + from + '&end_date=' + to;
@@ -42,7 +42,8 @@
     say('Беру остатки складов…');
     for (let br = 1; br <= 20; br++) {
       let list; try { list = await all(B + 'stock/all_balances/?in_way=true&page=1&branch=' + br + '&page_size=500&show_in=amount'); } catch (e) { continue; }
-      if (!list.length || !list.some(p => num(p.balance) || num(p.reserved))) continue;
+      // a warehouse the CRM already knows that is now empty in LINKO is reported too (header only = all zeros)
+      if (!known.includes(String(br)) && (!list.length || !list.some(p => num(p.balance) || num(p.reserved)))) continue;
       const rows = [['Продукт', 'Код', 'Aртикул', 'Тип продукта', 'Бренд', 'Ед. изм.', 'Всего товаров', 'В пути', 'Зарезервированный', 'Доступный']];
       for (const p of list) rows.push([p.title, p.product_code || '', p.vendor_code || '', p.type && p.type.name || '', p.brand && p.brand.brand || '', p.measurement && p.measurement.name || '', num(p.balance), num(p.in_way), num(p.reserved), num(p.available)]);
       files.push({ name: 'stock LINKO branch ' + br + '.csv', data: new TextEncoder().encode(csv(rows)).buffer });
@@ -108,7 +109,7 @@
     if (e.source !== w || e.origin !== origin || !e.data || e.data.type !== 'mital-ready' || started) return;
     started = true; clearInterval(knock); removeEventListener('message', on);
     const d = e.data;
-    run(d.from, d.to)
+    run(d.from, d.to, (d.branches || []).map(String))
       .then(() => jobs(d.jobs || []))
       .then(() => d.probe ? probe(d.from, d.to) : null)
       .catch(err => say('✕ ' + err.message, true));

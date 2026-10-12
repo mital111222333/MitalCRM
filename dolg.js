@@ -31,7 +31,7 @@ const DOLG = {
       const c = S.ag.clients[r.client] || {}, pp = PP ? PP[r.client] : null;
       const plan = pp ? pp.plan || 0 : (from === PLAN.from(today) ? c.plan || 0 : 0), pool = pp ? pp.pool || 0 : (from === PLAN.from(today) ? c.pool || 0 : 0);
       const owe = Math.max(0, pool - (r.paid || 0)), w = Math.min(owe, wk.get(r.client) || 0), n = Math.min(owe, now.get(r.client) || 0);
-      return { name: r.client, agent: r.agent || c.agent || 'Без агента', phone: c.phone || '', landmark: c.landmark || '', plan, sold: r.sold || 0, pool, paid: r.paid || 0, b1: debtNow.has(r.client) ? debtNow.get(r.client) : r.b1 || 0, owe, week: w, now: n };
+      return { name: r.client, agent: r.agent || c.agent || 'Без агента', phone: c.phone || '', landmark: c.landmark || '', plan, sold: r.sold || 0, pool, paid: r.paid || 0, b1: debtNow.has(r.client) ? debtNow.get(r.client) : latest ? null : r.b1 || 0, owe, week: w, now: n };
     });
     const agents = new Map();
     for (const c of clients) {

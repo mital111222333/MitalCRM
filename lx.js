@@ -136,7 +136,7 @@ const LX = {
   async shell(el, tab, tools = '') {
     await CRMLocal.ready; await LX.load();
     const s = LX.st(), t = v => new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-    el.innerHTML = `<div class="page-head"><div><h2>Данные LINKO</h2><div class="sub">${s ? `Обновлено <b>${t(s.at)}</b> · период ${UI.dateRu(s.from)} — ${UI.dateRu(s.to)}${s.src === 'auto' ? ' · автозагрузка' : ' · закладка'}` : 'Ещё не загружены'}</div></div><div class="actions no-print">${tools}</div></div>
+    el.innerHTML = `<div class="page-head"><div><h2>Данные LINKO</h2><div class="sub">${s ? `Заказы, оплаты, долги из LINKO на <b>${t(s.fastAt || s.at)}</b>${s.fastAt && s.fastAt !== s.at ? ` · остальные разделы на ${t(s.at)}` : ''} · период ${UI.dateRu(s.from)} — ${UI.dateRu(s.to)}${s.src === 'auto' ? ' · автозагрузка' : ' · закладка'}` : 'Ещё не загружены'}</div></div><div class="actions no-print">${tools}</div></div>
       <nav class="tabs no-print" aria-label="Данные LINKO">${LX.TABS.map(([r, n]) => `<a href="#/${r}" class="${r === tab ? 'on' : ''}">${n}</a>`).join('')}</nav><div id="lxBody"></div>`;
     const body = $('#lxBody', el);
     if (!LX.has()) { body.innerHTML = UI.empty('Данных из LINKO ещё нет', 'Они появятся сами после обновления скрипта автозагрузки (<a href="#/cloud">Данные → Синхронизация и настройки</a> → «Скопировать готовый скрипт» → вставить в script.google.com → setup) или сразу после нажатия закладки «⚡ В MITAL CRM» в LINKO.'); return null; }
@@ -276,15 +276,18 @@ LX.aging = () => {
     const name = r['client.name'] || '';
     return { name, agent: LX.clientAgent(name, LX.person(r, 'client.responsible_agent')), phone: r['client.phone'] || r['market.phone'] || '', address: r['client.address'] || r['market.address'] || '', guide: r['client.guide'] || '', b, total: Math.abs(LX.n(c.debt_total)) || b.reduce((x, y) => x + y, 0), cur: c.name || '' };
   }).filter(r => r.total > 0);
-  return { labels, rows };
+  // one page = one currency: debts in another currency (e.g. so'm) would be summed with dollars; they are counted aside
+  const cur = LX.curOf(rows.map(r => ({ 'currency.name': r.cur }))), same = r => !r.cur || !cur || r.cur === cur || (LX.sym(r.cur) === '$' && LX.sym(cur) === '$');
+  return { labels, rows: rows.filter(same), other: rows.filter(r => !same(r)) };
 };
 EXT_PAGES.lxage = async el => {
   const body = await LX.shell(el, 'lxage', '<button class="btn gray" id="lxCsv">⬇ Excel (CSV)</button>'); if (!body) return;
-  const { labels, rows } = LX.aging(), f = UI.fmt0, R = rows.filter(r => !LX.agent || r.agent === LX.agent);
+  const { labels, rows, other } = LX.aging(), f = UI.fmt0, R = rows.filter(r => !LX.agent || r.agent === LX.agent);
   const cur = R[0]?.cur || '', $$ = v => LX.money(v, cur), tot = [0, 1, 2, 3].map(i => R.reduce((a, r) => a + r.b[i], 0));
   const old = r => r.b[3] * 1e6 + r.b[2] * 1e3 + r.b[1];
   const agents = LX.agentsOf(R);
   body.innerHTML = `<div class="bar">${LX.agentSel(LX.agentsOf(rows))}</div>
+    ${other.length ? `<p class="mut">Не показаны ${other.length} клиентов с долгом в другой валюте (${esc([...new Set(other.map(r => r.cur))].join(', '))}): их нельзя складывать с ${esc(cur || 'основной валютой')}.</p>` : ''}
     <div class="kpis">${labels.map((l, i) => UI.tile(l, $$(tot[i]), { tone: i >= 2 && tot[i] ? 'bad' : i === 1 && tot[i] ? 'warn' : '', sub: `${R.filter(r => r.b[i] > 0).length} клиентов` })).join('')}</div>
     <div class="grid">
     ${UI.panel('Агенты: долг по срокам', LX.table(['Агент', ...labels.map(l => '#' + l), '#Всего'], agents.map(a => { const x = R.filter(r => r.agent === a), s = i => x.reduce((y, r) => y + r.b[i], 0); return `<tr><td>${LX.ag(a)}</td>${[0, 1, 2, 3].map(i => `<td class="n ${i >= 2 && s(i) ? 'neg' : ''}">${s(i) ? f(s(i)) : '—'}</td>`).join('')}<td class="n"><b>${f(x.reduce((y, r) => y + r.total, 0))}</b></td></tr>`; })), { cls: 'w12', sub: 'Чем правее, тем старше долг и тем труднее его собрать' })}

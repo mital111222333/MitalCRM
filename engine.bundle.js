@@ -86,7 +86,7 @@ const KINDS = ['Сбор оплаты', 'Продажа', 'Погашение д
 // АКБ (active client base) rule. Default "paid" = clients who paid in the period, exactly as in the Google sheet ("АКБ (платят)").
 const AKB_RULES = { paid: r => r.paid > 0, sold: r => r.sold > 0, any: r => r.paid > 0 || r.sold > 0 };
 
-function parseStock(sheets) {
+function parseStock(sheets, opts = {}) {
   for (const sheet of sheets) {
     const h = findHeader(sheet.rows, STOCK_SPEC, m => m.name !== undefined && (m.total !== undefined || m.available !== undefined));
     if (h.error) continue;
@@ -104,7 +104,8 @@ function parseStock(sheets) {
       cur.cost = map.cost !== undefined ? N(r[map.cost]) || cur.cost : cur.cost;
       items.set(art, cur);
     }
-    if (!items.size) throw Object.assign(new Error('В файле нет товаров'), { status: 400 });
+    // an empty warehouse reported by the auto-loader (header only) is a real answer: everything is 0 there now
+    if (!items.size && !opts.allowEmpty) throw Object.assign(new Error('В файле нет товаров'), { status: 400 });
     return { items: [...items.values()], skipped };
   }
   throw Object.assign(new Error('Это не выгрузка остатков: нужна колонка «Продукт» и колонка количества («Всего товаров» или «Доступный»)'), { status: 400 });
@@ -333,7 +334,7 @@ function stock(src, q = {}) {
   const whs = [], byArt = new Map();
   for (const name of src.warehouses()) {
     const u = src.latest(name, date), note = src.note(name);
-    whs.push({ name, note, upload: u ? { id: u.id, taken_at: u.taken_at, file: u.file, items: u.items, total: u.total, reserved: u.reserved, available: u.available, value: u.value } : null });
+    whs.push({ name, note, upload: u ? { id: u.id, taken_at: u.taken_at, snap_at: u.snap_at || u.uploaded_at || '', file: u.file, items: u.items, total: u.total, reserved: u.reserved, available: u.available, value: u.value } : null });
     if (!u) continue;
     for (const r of src.rows(u.id)) {
       const it = byArt.get(r.art) || { art: r.art, name: r.name, brand: r.brand, type: r.type, unit: r.unit, min: mins[r.art] ?? null, cells: {} };
@@ -598,7 +599,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
     if (date > addDays(today(), 1)) return err('Дата остатка не может быть в будущем');
     if (!raw || !raw.length) return err('Файл пустой');
     let parsed;
-    try { parsed = parseStock(await readTableAsync(raw, q.file || '')); } catch (e) { return err(e.message, e.status || 400); }
+    try { parsed = parseStock(await readTableAsync(raw, q.file || ''), { allowEmpty: /^stock LINKO branch \d+\.csv$/i.test(q.file || '') }); } catch (e) { return err(e.message, e.status || 400); }
     const { items, skipped } = parsed, sum = k => items.reduce((a, i) => a + i[k], 0);
     const prev = whUploads(wh).filter(u => u.taken_at < date).at(-1);
     const before = S.wh.uploads.length;
