@@ -270,12 +270,21 @@ EXT_PAGES.lxord = async el => {
 LX.aging = () => {
   const cfg = (LX.d('debtcfg')[0] || {}).config || {}, p1 = LX.n(cfg.first_debt_period) || 0, p2 = LX.n(cfg.second_debt_period) || 0, p3 = LX.n(cfg.third_debt_period) || 0;
   const labels = p1 && p2 && p3 ? [`до ${p1} дн.`, `${p1}–${p2} дн.`, `${p2}–${p3} дн.`, `больше ${p3} дн.`] : ['1-й срок', '2-й срок', '3-й срок', 'самый старый'];
+  // the real debt of each client = «Баланс на конец» of the newest LINKO balance (the same number as LINKO's «Баланс клиентов» page)
+  const S = CRMLocal.engine.getState(), lastBal = (S.ag.uploads || []).slice().sort((a, b) => (a.taken_at < b.taken_at ? 1 : a.taken_at > b.taken_at ? -1 : b.id - a.id))[0];
+  const balOf = new Map((lastBal?.rows || []).map(r => [LX.norm(r.client), r.b1 || 0]));
   const rows = LX.d('debtors').map(r => {
     const cs = Array.isArray(r.currencies) ? r.currencies : [], c = cs.find(x => /usd|\$|долл/i.test(x.name || '')) || cs[0] || {};
-    const b = [LX.n(c.debt_first), LX.n(c.debt_second), LX.n(c.debt_third), LX.n(c.debt_fourth)].map(Math.abs);
-    const name = r['client.name'] || '';
-    return { name, agent: LX.clientAgent(name, LX.person(r, 'client.responsible_agent')), phone: r['client.phone'] || r['market.phone'] || '', address: r['client.address'] || r['market.address'] || '', guide: r['client.guide'] || '', b, total: Math.abs(LX.n(c.debt_total)) || b.reduce((x, y) => x + y, 0), cur: c.name || '' };
-  }).filter(r => r.total > 0);
+    const raw = [LX.n(c.debt_first), LX.n(c.debt_second), LX.n(c.debt_third), LX.n(c.debt_fourth)].map(Math.abs);
+    const name = r['client.name'] || '', usd = LX.sym(c.name) === '$', k = LX.norm(name);
+    // LINKO's age buckets can keep an old order that was in fact closed (by a payment not tied to it, or a correction):
+    // e.g. «больше 120 дн.» $100 while the client's balance is 0. Never show more than the client really owes.
+    // Payments close the oldest orders first, so what is still owed sits in the newest buckets.
+    const debt = usd && balOf.has(k) ? Math.max(0, -balOf.get(k)) : Math.abs(LX.n(c.debt_total)) || raw.reduce((x, y) => x + y, 0);
+    let left = debt; const b = raw.map(v => { const t = Math.min(v, left); left -= t; return t; });
+    if (left > 0.5) b[0] += left; // owed but not in any bucket in LINKO: count it as the newest
+    return { name, agent: LX.clientAgent(name, LX.person(r, 'client.responsible_agent')), phone: r['client.phone'] || r['market.phone'] || '', address: r['client.address'] || r['market.address'] || '', guide: r['client.guide'] || '', b, raw, total: debt, cur: c.name || '' };
+  }).filter(r => r.total >= 0.5);
   // one page = one currency: debts in another currency (e.g. so'm) would be summed with dollars; they are counted aside
   const cur = LX.curOf(rows.map(r => ({ 'currency.name': r.cur }))), same = r => !r.cur || !cur || r.cur === cur || (LX.sym(r.cur) === '$' && LX.sym(cur) === '$');
   return { labels, rows: rows.filter(same), other: rows.filter(r => !same(r)) };
