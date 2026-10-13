@@ -283,7 +283,7 @@ EXT_PAGES.rdebt = async el => {
   const sumB = (list, b) => list.filter(c => c.bucket === b).reduce((s, c) => s + c.debt, 0);
   const total = debtors.reduce((s, c) => s + c.debt, 0), old = sumB(debtors, 'b60') + sumB(debtors, 'b99'), never = debtors.filter(c => !c.lastPay).reduce((s, c) => s + c.debt, 0);
   const agents = d.agents.map(a => a.agent);
-  const list = debtors.filter(c => (!S.agent || c.agent === S.agent) && (!S.bucket || c.bucket === S.bucket)).sort((a, b) => b.score - a.score);
+  const list = d.clients.filter(c => (!S.agent || c.agent === S.agent) && (!S.bucket || c.bucket === S.bucket)).sort((a, b) => b.score - a.score);
   // overpayments (client paid ahead) are the other side of the balance
   const ahead = d.clients.filter(c => c.b1 > 0).reduce((s, c) => s + c.b1, 0);
   body.innerHTML = `<div class="kpis">
@@ -306,7 +306,7 @@ EXT_PAGES.rdebt = async el => {
     ${(() => { const t0 = REP.today(), by = new Map(); let cnt = 0; for (const c of list) { const pl = PAYPLAN.of(c.name); if (pl.length) cnt++; for (const x of pl) { const o = by.get(x.d) || { sum: 0, n: 0 }; o.sum += x.s; o.n++; by.set(x.d, o); } }
       const days = [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])), todaySum = by.get(t0)?.sum || 0, all = days.reduce((a, [, o]) => a + o.sum, 0);
       return UI.panel('Ожидаемые оплаты по датам', days.length ? CH.hbars(days.slice(0, 20).map(([dt, o]) => ({ label: UI.dateRu(dt) + (dt === t0 ? ' · сегодня' : dt < t0 ? ' · прошла' : ''), sub: `${o.n} ${UI.plural(o.n, 'клиент', 'клиента', 'клиентов')}`, value: o.sum, color: dt < t0 ? 'var(--c-other, #999)' : 'var(--c3)' })), { unit: ' $', fmt: f }) : '<p class="mut">Пока ничего не вписано. В таблице ниже нажмите «＋» у клиента и напишите, когда и сколько он заплатит.</p>', { cls: 'w12', sub: days.length ? `Вписано по ${cnt} клиентам на $${f(all)}${todaySum ? ` · сегодня ждём $${f(todaySum)}` : ''}` : 'Ваш график оплат по клиентам, сложенный по дням' }); })()}
-    ${UI.panel('Должники', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span id="xgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="xgReset" style="display:none">✕ Снять все фильтры</button></div>
+    ${UI.panel('Все клиенты', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span id="xgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="xgReset" style="display:none">✕ Снять все фильтры</button></div>
       <div class="xg-wrap" id="xgW"></div>
       <p class="mut" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — откроется фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Агент, План продаж, План сбора, Дата оплаты, Ещё оплатит, Заметка</b> — правка прямо в таблице (Enter — сохранить и перейти на строку ниже, Esc — отмена). Красная дата — уже прошла. «Остаток клиента» = план сбора минус собрано. Меню слева сворачивается кнопкой ☰ в верхней панели.</p>`, { cls: 'w12' })}
   </div>`;
@@ -325,6 +325,7 @@ EXT_PAGES.rdebt = async el => {
     { k: 'buy', t: 'Посл. покупка', kind: 'num', v: c => (c.lastBuy ? c.buyDays : null), kfmt: v => `${v} дн. назад`, cell: c => (c.lastBuy ? `${UI.dm(c.lastBuy)}<small class="mut"> · ${c.buyDays} дн.</small>` : `<span class="mut" title="Покупок нет с ${UI.dateRu(d.hist.since)}">нет</span>`) },
     { k: 'plan', t: 'План продаж', kind: 'num', v: c => c.plan || 0, tot: true, edit: 'num', field: 'plan', cell: c => (c.plan ? f(c.plan) : '<span class="ph">—</span>') },
     { k: 'sold', t: 'Продано', kind: 'num', v: c => c.sold || 0, tot: true, cell: c => f(c.sold) },
+    { k: 'ret', t: 'Возврат', kind: 'num', v: c => c.ret || 0, tot: true, cell: c => (c.ret ? `<span class="neg">${f(c.ret)}</span>` : '<span class="ph">—</span>') },
     { k: 'pool', t: 'План сбора', kind: 'num', v: c => c.pool || 0, tot: true, edit: 'num', field: 'pool', cell: c => (c.pool ? f(c.pool) : '<span class="ph">—</span>') },
     { k: 'paid', t: 'Собрано', kind: 'num', v: c => c.paid || 0, tot: true, cell: c => `<b>${f(c.paid)}</b>` },
     { k: 'left', t: 'Остаток клиента', kind: 'num', v: c => (c.pool ? Math.max(0, c.pool - c.paid) : null), tot: true, cell: c => (c.pool ? (Math.max(0, c.pool - c.paid) ? `<b class="neg">${f(Math.max(0, c.pool - c.paid))}</b>` : UI.pill('good', 'закрыт', '✓')) : '—') },
@@ -353,7 +354,7 @@ EXT_PAGES.rdebt = async el => {
   const view = () => {
     const flt = compile(), rows = list.filter(c => rowPass(c, flt)), sc = COLS.find(x => x.k === S.sort.k), dir = S.sort.dir;
     const val = c => (sc ? (sc.sv ? sc.sv(c) : sc.v(c)) : c.score);
-    rows.sort((a, b) => { const x = val(a), y = val(b); if (x === y) return 0; if (x === null) return 1; if (y === null) return -1; return (typeof x === 'string' ? x.localeCompare(y, 'ru') : x - y) * dir; });
+    rows.sort((a, b) => { const x = val(a), y = val(b); if (x === y) return sc ? 0 : (b.sold || 0) - (a.sold || 0); if (x === null) return 1; if (y === null) return -1; return (typeof x === 'string' ? x.localeCompare(y, 'ru') : x - y) * dir; });
     return rows;
   };
 
@@ -461,7 +462,7 @@ EXT_PAGES.rdebt = async el => {
   $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdebt(el); };
   $('#rB', body).onchange = e => { S.bucket = e.target.value; EXT_PAGES.rdebt(el); };
   $('#rPrint', el).onclick = REP.print;
-  $('#rCsv', el).onclick = () => UI.csv(`дебиторка-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Долг $', 'Последняя оплата', 'Дней без оплаты', 'Последняя покупка', 'Срок долга', 'План продаж', 'Продано', 'План сбора', 'Собрано', 'Остаток клиента', 'Дата оплаты → сумма', 'Ещё оплатит всего', 'Заметка'], ...cur.map(c => { const pl = PAYPLAN.of(c.name); return [c.name, c.agent, Math.round(c.debt), c.lastPay ? UI.dateRu(c.lastPay) : 'не платил', c.payDays ?? '', c.lastBuy ? UI.dateRu(c.lastBuy) : '', REP.BUCKETS.find(b => b[0] === c.bucket)?.[1] || '', Math.round(c.plan || 0), Math.round(c.sold), Math.round(c.pool || 0), Math.round(c.paid), c.pool ? Math.round(Math.max(0, c.pool - c.paid)) : '', pl.map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round(pl.reduce((a, x) => a + x.s, 0)), c.note || '']; })]);
+  $('#rCsv', el).onclick = () => UI.csv(`дебиторка-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Долг $', 'Последняя оплата', 'Дней без оплаты', 'Последняя покупка', 'Срок долга', 'План продаж', 'Продано', 'Возврат', 'План сбора', 'Собрано', 'Остаток клиента', 'Дата оплаты → сумма', 'Ещё оплатит всего', 'Заметка'], ...cur.map(c => { const pl = PAYPLAN.of(c.name); return [c.name, c.agent, Math.round(c.debt), c.lastPay ? UI.dateRu(c.lastPay) : 'не платил', c.payDays ?? '', c.lastBuy ? UI.dateRu(c.lastBuy) : '', REP.BUCKETS.find(b => b[0] === c.bucket)?.[1] || '', Math.round(c.plan || 0), Math.round(c.sold), Math.round(c.ret || 0), Math.round(c.pool || 0), Math.round(c.paid), c.pool ? Math.round(Math.max(0, c.pool - c.paid)) : '', pl.map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round(pl.reduce((a, x) => a + x.s, 0)), c.note || '']; })]);
 };
 
 // ---------- Спящие клиенты ----------
