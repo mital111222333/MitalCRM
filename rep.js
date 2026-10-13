@@ -190,6 +190,17 @@ const PAYPLAN = {
     return { ok: ok.sort((a, b) => a.d.localeCompare(b.d)), bad };
   },
   text(list) { const m0 = REP.today().slice(5, 7); return list.map(x => `${x.d.slice(8)}${x.d.slice(5, 7) === m0 ? '' : '.' + x.d.slice(5, 7)}-${x.s}$`).join(', '); },
+  // small popover under a table cell (used by the Excel-like grid)
+  pop(name, anchor, done) {
+    const cur = PAYPLAN.of(name), f = UI.fmt0, pop = document.createElement('div'); pop.className = 'xf-pop'; pop.style.width = '300px';
+    pop.innerHTML = `<div class="xp"><b style="font-size:12px">${esc(name)}</b><div class="mut" style="font-size:11px;margin:2px 0 6px">Когда и сколько заплатит: <b>13-500$, 14-1000$</b> (или 15.11-500). Enter — сохранить, Esc — закрыть.</div><input id="ppT" value="${esc(PAYPLAN.text(cur))}" placeholder="13-500$, 14-1000$"><div id="ppP" style="margin:6px 0;min-height:20px;font-size:12px"></div><div class="xb" style="padding:0">${cur.length ? '<button class="btn gray sm" id="ppDel">Очистить</button>' : ''}<button class="btn sm" id="ppOk">Сохранить</button></div></div>`;
+    xgOpen(pop, anchor);
+    const t = pop.querySelector('#ppT'), pv = () => { const r = PAYPLAN.parse(t.value), tot = r.ok.reduce((a, x) => a + x.s, 0); pop.querySelector('#ppP').innerHTML = (r.ok.length ? `${r.ok.map(x => `<span class="chip">${UI.dm(x.d)} · $${f(x.s)}</span>`).join(' ')} <b>Σ $${f(tot)}</b>` : '<span class="mut">Пока пусто</span>') + (r.bad.length ? `<div class="neg">Не понял: ${esc(r.bad.join('; '))}</div>` : ''); pop.querySelector('#ppOk').disabled = !!r.bad.length; };
+    const save = () => { const r = PAYPLAN.parse(t.value); if (r.bad.length) return; PAYPLAN.set(name, r.ok); xgClose(); done(); };
+    t.oninput = pv; t.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); save(); } }; pv(); t.focus(); t.select();
+    pop.querySelector('#ppOk').onclick = save;
+    const del = pop.querySelector('#ppDel'); if (del) del.onclick = () => { PAYPLAN.set(name, []); xgClose(); done(); };
+  },
   edit(name, done) {
     const cur = PAYPLAN.of(name), f = UI.fmt0;
     const m = modal(`<h3 style="margin:0 0 4px">${esc(name)}</h3><p class="mut" style="margin:0 0 10px">Когда и сколько клиент ещё заплатит. Пишите через запятую: <b>13-500$, 14-1000$, 15-1000$</b>. Число — день этого месяца (или <b>15.11-500</b>, если другой месяц).</p>
@@ -203,36 +214,68 @@ const PAYPLAN = {
   },
 };
 
-// Excel-like grid: frozen header (title + filter row), frozen № and client columns, grid lines, totals row
+// Excel-like grid: frozen header, frozen № and client columns, compact font, grid lines, totals row, Excel-style filter popup
 function injectGridCss() {
   if (document.getElementById('xgCss')) return;
   const st = document.createElement('style'); st.id = 'xgCss';
   st.textContent = `
-.xg-wrap{max-height:calc(100vh - 210px);min-height:340px;overflow:auto;border:1px solid var(--line-2,var(--line));border-radius:8px;background:var(--card)}
-table.xg{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;box-shadow:none;border:0;border-radius:0;overflow:visible;font-size:13px}
-table.xg th,table.xg td{padding:5px 10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:middle;background:var(--card)}
+.xg-wrap{height:calc(100vh - 168px);min-height:320px;overflow:auto;border:1px solid var(--line-2,var(--line));border-radius:6px;background:var(--card)}
+table.xg{border-collapse:separate;border-spacing:0;width:100%;box-shadow:none;border:0;border-radius:0;overflow:visible;font-size:12px}
+table.xg th,table.xg td{padding:2px 6px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:middle;line-height:1.25;background:var(--card)}
 table.xg tbody tr:nth-child(even) td{background:color-mix(in srgb,var(--text) 3.5%,var(--card))}
 table.xg tbody tr:hover td{background:color-mix(in srgb,var(--c1,#2a9d8f) 11%,var(--card))}
 table.xg tbody tr.sel td{background:color-mix(in srgb,var(--c1,#2a9d8f) 20%,var(--card));box-shadow:inset 0 1px 0 var(--c1,#2a9d8f),inset 0 -1px 0 var(--c1,#2a9d8f)}
-table.xg thead th{position:sticky;z-index:4;background:color-mix(in srgb,var(--text) 10%,var(--card));font-size:12px}
-table.xg thead tr.hd th{top:0;height:34px;cursor:pointer;user-select:none}
-table.xg thead tr.hd th:hover{background:color-mix(in srgb,var(--text) 16%,var(--card))}
-table.xg thead tr.ft th{top:34px;padding:3px 4px;border-bottom:2px solid var(--line-2,var(--line));cursor:default}
-table.xg th.n,table.xg td.n{text-align:right;font-variant-numeric:tabular-nums}
-table.xg .rn{position:sticky;left:0;z-index:2;width:38px;min-width:38px;text-align:center;color:var(--muted);font-size:11px;background:color-mix(in srgb,var(--text) 7%,var(--card))!important}
-table.xg .c1{position:sticky;left:38px;z-index:2;min-width:190px;white-space:normal;box-shadow:2px 0 0 var(--line-2,var(--line))}
+table.xg thead th{position:sticky;top:0;z-index:4;background:color-mix(in srgb,var(--text) 10%,var(--card));font-size:11.5px;white-space:normal;vertical-align:bottom;cursor:pointer;user-select:none;padding:3px 4px 3px 6px;border-bottom:2px solid var(--line-2,var(--line))}
+table.xg thead th:hover{background:color-mix(in srgb,var(--text) 17%,var(--card))}
+table.xg .th{display:flex;align-items:flex-end;justify-content:space-between;gap:3px;min-width:44px}
+table.xg .th .tt{line-height:1.15;font-weight:600;word-break:normal}
+table.xg .th .fb{font-style:normal;flex:none;width:16px;height:16px;line-height:15px;text-align:center;border:1px solid var(--line-2,var(--line));border-radius:3px;background:var(--card);font-size:10px;color:var(--text-2)}
+table.xg th.fa .fb{background:var(--c1,#2a9d8f);color:#fff;border-color:var(--c1,#2a9d8f)}
+table.xg th .si{font-size:9px;color:var(--c1,#2a9d8f);margin-left:2px}
+table.xg th.n .th{flex-direction:row}
+table.xg td.n{text-align:right;font-variant-numeric:tabular-nums}
+table.xg .rn{position:sticky;left:0;z-index:2;width:30px;min-width:30px;text-align:center;color:var(--muted);font-size:10.5px;padding:2px 3px;background:color-mix(in srgb,var(--text) 7%,var(--card))!important}
+table.xg .c1{position:sticky;left:30px;z-index:2;min-width:150px;max-width:200px;white-space:normal;box-shadow:2px 0 0 var(--line-2,var(--line))}
 table.xg thead .rn,table.xg thead .c1,table.xg tfoot .rn,table.xg tfoot .c1{z-index:6}
 table.xg tfoot td{position:sticky;bottom:0;z-index:3;font-weight:600;background:color-mix(in srgb,var(--text) 10%,var(--card))!important;border-top:2px solid var(--line-2,var(--line))}
-table.xg td small{font-weight:400}
-table.xg td .btn.sm{padding:2px 8px;min-height:24px;font-size:12px;margin-top:2px}
-table.xg input.fi{width:100%;min-width:76px;padding:3px 6px;font-size:12px;min-height:26px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--text)}
-table.xg input.fi.on{border-color:var(--c1,#2a9d8f);background:color-mix(in srgb,var(--c1,#2a9d8f) 16%,var(--card))}
-@media print{.xg-wrap{max-height:none;overflow:visible}}`;
+table.xg td small{font-weight:400;font-size:10.5px}
+table.xg td.ed{cursor:cell}
+table.xg td.ed:hover{outline:1px solid var(--c1,#2a9d8f);outline-offset:-1px}
+table.xg td .ph{color:var(--muted);opacity:.6}
+table.xg td.ed input,table.xg td.ed select{width:100%;min-width:60px;box-sizing:border-box;font:inherit;padding:1px 4px;min-height:22px;border:2px solid var(--c1,#2a9d8f);border-radius:2px;background:var(--card);color:var(--text)}
+table.xg td.ed input.num{text-align:right}
+.xf-pop{position:fixed;z-index:300;width:262px;background:var(--card);color:var(--text);border:1px solid var(--line-2,var(--line));border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-size:13px;padding:4px 0}
+.xf-pop .xi{padding:5px 12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.xf-pop .xi:hover{background:color-mix(in srgb,var(--c1,#2a9d8f) 16%,var(--card))}
+.xf-pop .xi.dis{opacity:.4;pointer-events:none}
+.xf-pop .xi.sub{padding-left:26px}
+.xf-pop .xs{border-top:1px solid var(--line);margin:4px 0}
+.xf-pop .xq{display:block;width:calc(100% - 20px);margin:4px 10px;box-sizing:border-box;padding:4px 8px;font-size:12px}
+.xf-pop .xl{max-height:200px;overflow:auto;border:1px solid var(--line);margin:4px 10px;padding:2px 0;background:var(--card)}
+.xf-pop .xl label{display:flex;gap:6px;align-items:center;padding:2px 8px;cursor:pointer;font-size:12px}
+.xf-pop .xl label:hover{background:color-mix(in srgb,var(--c1,#2a9d8f) 12%,var(--card))}
+.xf-pop .xl small{margin-left:auto;color:var(--muted)}
+.xf-pop .xb{display:flex;gap:8px;justify-content:flex-end;padding:6px 10px 4px}
+.xf-pop .xp{padding:6px 10px}
+.xf-pop .xp textarea,.xf-pop .xp input{width:100%;box-sizing:border-box;font-size:13px}
+@media print{.xg-wrap{height:auto;overflow:visible}}`;
   document.head.appendChild(st);
 }
+let XPOP = null;
+const xgOutside = e => { if (XPOP && !XPOP.contains(e.target) && !e.target.closest('.modal')) xgClose(); };
+const xgEsc = e => { if (e.key === 'Escape') xgClose(); };
+function xgClose() { if (XPOP) { XPOP.remove(); XPOP = null; } document.removeEventListener('mousedown', xgOutside, true); document.removeEventListener('keydown', xgEsc, true); }
+function xgOpen(pop, anchor) {
+  xgClose(); XPOP = pop; document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  pop.style.left = Math.max(6, Math.min(r.left, innerWidth - w - 8)) + 'px';
+  pop.style.top = Math.max(6, r.bottom + h + 8 > innerHeight ? Math.min(r.top - h - 2, innerHeight - h - 8) : r.bottom + 2) + 'px';
+  document.addEventListener('mousedown', xgOutside, true); document.addEventListener('keydown', xgEsc, true);
+}
+let xgKeep = null, xgNext = null;
 
 // ---------- Дебиторка ----------
-let repDebt = { agent: '', bucket: '', f: {}, sort: { k: 'score', dir: -1 } };
+let repDebt = { agent: '', bucket: '', f: {}, sort: { k: 'score', dir: -1 }, selName: '' };
 EXT_PAGES.rdebt = async el => {
   const d = await REP.load(), body = REP.shell(el, 'rdebt', d, '<button class="btn gray" id="rCsv">⬇ Excel (CSV)</button><button class="btn gray" id="rPrint">Печать / PDF</button>');
   if (d.empty) return REP.empty(body);
@@ -263,73 +306,158 @@ EXT_PAGES.rdebt = async el => {
     ${(() => { const t0 = REP.today(), by = new Map(); let cnt = 0; for (const c of list) { const pl = PAYPLAN.of(c.name); if (pl.length) cnt++; for (const x of pl) { const o = by.get(x.d) || { sum: 0, n: 0 }; o.sum += x.s; o.n++; by.set(x.d, o); } }
       const days = [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])), todaySum = by.get(t0)?.sum || 0, all = days.reduce((a, [, o]) => a + o.sum, 0);
       return UI.panel('Ожидаемые оплаты по датам', days.length ? CH.hbars(days.slice(0, 20).map(([dt, o]) => ({ label: UI.dateRu(dt) + (dt === t0 ? ' · сегодня' : dt < t0 ? ' · прошла' : ''), sub: `${o.n} ${UI.plural(o.n, 'клиент', 'клиента', 'клиентов')}`, value: o.sum, color: dt < t0 ? 'var(--c-other, #999)' : 'var(--c3)' })), { unit: ' $', fmt: f }) : '<p class="mut">Пока ничего не вписано. В таблице ниже нажмите «＋» у клиента и напишите, когда и сколько он заплатит.</p>', { cls: 'w12', sub: days.length ? `Вписано по ${cnt} клиентам на $${f(all)}${todaySum ? ` · сегодня ждём $${f(todaySum)}` : ''}` : 'Ваш график оплат по клиентам, сложенный по дням' }); })()}
-    ${UI.panel('Должники', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span id="xgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="xgReset" style="display:none">✕ Сбросить фильтры</button></div>
+    ${UI.panel('Должники', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span id="xgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="xgReset" style="display:none">✕ Снять все фильтры</button></div>
       <div class="xg-wrap" id="xgW"></div>
-      <p class="mut" style="margin:10px 0 0">Нажмите на название столбца — сортировка. Под названием — фильтр: для текста пишите часть слова; для чисел <b>&gt;1000</b>, <b>&lt;=500</b>, <b>100-500</b>, <b>0</b> (равно) или <b>пусто</b>. У «Последняя оплата / покупка» фильтр считается в днях («&gt;30» = больше 30 дней назад). «Остаток клиента» = план сбора минус собрано. «Дата оплаты» и «Ещё оплатит» вы заполняете сами («＋ Дата» / «✎»). Красная дата — уже прошла. Строка «Итого» внизу считается по тому, что видно после фильтров. Нажмите на строку — она подсветится.</p>`, { cls: 'w12' })}
+      <p class="mut" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — откроется фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Агент, План продаж, План сбора, Дата оплаты, Ещё оплатит, Заметка</b> — правка прямо в таблице (Enter — сохранить и перейти на строку ниже, Esc — отмена). Красная дата — уже прошла. «Остаток клиента» = план сбора минус собрано. Меню слева сворачивается кнопкой ☰ в верхней панели.</p>`, { cls: 'w12' })}
   </div>`;
   injectGridCss();
-  const t0g = REP.today();
+  const t0g = REP.today(), EMPTY = '(Пустые)', agentNames = [...new Set(d.clients.map(c => c.agent).concat(agents))].filter(Boolean).sort((x, y) => x.localeCompare(y));
+  for (const k of Object.keys(S.f)) if (!S.f[k] || typeof S.f[k] !== 'object') delete S.f[k]; // an older saved format
   const sum0 = c => PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0);
   const firstDate = c => PAYPLAN.of(c.name)[0]?.d || '';
+  const kNum = (col, fmt = f) => c => { const v = col.v(c); return v === null ? [[EMPTY, -Infinity]] : [[fmt(v), v]]; };
+  const kText = col => c => { const v = String(col.v(c) ?? '').trim(); return v ? [[v, v.toLowerCase()]] : [[EMPTY, '']]; };
   const COLS = [
     { k: 'name', t: 'Клиент', kind: 'text', v: c => c.name },
-    { k: 'agent', t: 'Агент', kind: 'text', v: c => c.agent },
+    { k: 'agent', t: 'Агент', kind: 'text', v: c => c.agent, edit: 'agent' },
     { k: 'debt', t: 'Долг', kind: 'num', v: c => c.debt, tot: true, cell: c => `<b>${f(c.debt)}</b>` },
-    { k: 'pay', t: 'Последняя оплата', kind: 'num', v: c => (c.lastPay ? c.payDays : null), cell: c => REP.pay(c) },
-    { k: 'buy', t: 'Последняя покупка', kind: 'num', v: c => (c.lastBuy ? c.buyDays : null), cell: c => REP.buy(c) },
-    { k: 'plan', t: 'План продаж', kind: 'num', v: c => c.plan || 0, tot: true, cell: c => (c.plan ? f(c.plan) : '—') },
+    { k: 'pay', t: 'Посл. оплата', kind: 'num', v: c => (c.lastPay ? c.payDays : null), kfmt: v => `${v} дн. назад`, cell: c => (c.lastPay ? `${UI.dm(c.lastPay)}<small class="mut"> · ${c.payDays} дн.</small>` : `<span class="neg" title="Оплат нет с ${UI.dateRu(d.hist.since)}">нет</span>`) },
+    { k: 'buy', t: 'Посл. покупка', kind: 'num', v: c => (c.lastBuy ? c.buyDays : null), kfmt: v => `${v} дн. назад`, cell: c => (c.lastBuy ? `${UI.dm(c.lastBuy)}<small class="mut"> · ${c.buyDays} дн.</small>` : `<span class="mut" title="Покупок нет с ${UI.dateRu(d.hist.since)}">нет</span>`) },
+    { k: 'plan', t: 'План продаж', kind: 'num', v: c => c.plan || 0, tot: true, edit: 'num', field: 'plan', cell: c => (c.plan ? f(c.plan) : '<span class="ph">—</span>') },
     { k: 'sold', t: 'Продано', kind: 'num', v: c => c.sold || 0, tot: true, cell: c => f(c.sold) },
-    { k: 'pool', t: 'План сбора', kind: 'num', v: c => c.pool || 0, tot: true, cell: c => (c.pool ? f(c.pool) : '—') },
+    { k: 'pool', t: 'План сбора', kind: 'num', v: c => c.pool || 0, tot: true, edit: 'num', field: 'pool', cell: c => (c.pool ? f(c.pool) : '<span class="ph">—</span>') },
     { k: 'paid', t: 'Собрано', kind: 'num', v: c => c.paid || 0, tot: true, cell: c => `<b>${f(c.paid)}</b>` },
     { k: 'left', t: 'Остаток клиента', kind: 'num', v: c => (c.pool ? Math.max(0, c.pool - c.paid) : null), tot: true, cell: c => (c.pool ? (Math.max(0, c.pool - c.paid) ? `<b class="neg">${f(Math.max(0, c.pool - c.paid))}</b>` : UI.pill('good', 'закрыт', '✓')) : '—') },
-    { k: 'date', t: 'Дата оплаты', kind: 'text', v: c => PAYPLAN.of(c.name).map(x => UI.dm(x.d)).join(' '), sv: c => firstDate(c) || '9999',
-      cell: c => { const pl = PAYPLAN.of(c.name); return pl.map(x => `<div class="${x.d < t0g ? 'neg' : ''}" title="${x.d < t0g ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('') + `<button class="btn gray sm" data-pp="${esc(c.name)}" title="Когда и сколько клиент ещё заплатит">${pl.length ? '✎' : '＋ Дата'}</button>`; } },
-    { k: 'tot', t: 'Ещё оплатит', kind: 'num', v: c => { const x = sum0(c); return x || null; }, tot: true, vt: c => sum0(c),
-      cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(sum0(c))}</b>` : '') : '—'; } },
-    { k: 'note', t: 'Заметка', kind: 'text', v: c => c.note || '', cell: c => `<small>${esc(c.note || '')}</small>` },
+    { k: 'date', t: 'Дата оплаты', kind: 'text', v: c => PAYPLAN.of(c.name).map(x => UI.dm(x.d)).join(' '), sv: c => firstDate(c) || '9999', edit: 'pay',
+      keys: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => [UI.dm(x.d), x.d]) : [[EMPTY, '']]; },
+      cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div class="${x.d < t0g ? 'neg' : ''}" title="${x.d < t0g ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('') : '<span class="ph">＋</span>'; } },
+    { k: 'tot', t: 'Ещё оплатит', kind: 'num', v: c => sum0(c) || null, vt: c => sum0(c), tot: true, edit: 'pay',
+      cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(sum0(c))}</b>` : '') : '<span class="ph">＋</span>'; } },
+    { k: 'note', t: 'Заметка', kind: 'text', v: c => c.note || '', edit: 'text', field: 'note', cell: c => (c.note ? `<small>${esc(c.note)}</small>` : '<span class="ph">＋</span>') },
   ];
-  // filter: text = contains; number = >N, >=N, <N, <=N, =N, N, A-B, пусто
-  const mk = (col, q) => {
-    q = q.trim(); if (!q) return null;
-    if (col.kind === 'text') { const w = q.toLowerCase(); return c => String(col.v(c) ?? '').toLowerCase().includes(w); }
-    const z = q.replace(/\s+/g, '').replace(',', '.'); let m;
-    if (/^(пусто|нет|-|—)$/i.test(z)) return c => col.v(c) === null;
-    if ((m = z.match(/^(>=|<=|>|<|=|!=)(-?\d+(?:\.\d+)?)$/))) { const n = +m[2]; return c => { const v = col.v(c); if (v === null) return false; return { '>=': v >= n, '<=': v <= n, '>': v > n, '<': v < n, '=': v === n, '!=': v !== n }[m[1]]; }; }
-    if ((m = z.match(/^(-?\d+(?:\.\d+)?)(?:-|\.\.|…)(-?\d+(?:\.\d+)?)$/))) { const lo = Math.min(+m[1], +m[2]), hi = Math.max(+m[1], +m[2]); return c => { const v = col.v(c); return v !== null && v >= lo && v <= hi; }; }
-    if (/^-?\d+(?:\.\d+)?$/.test(z)) return c => col.v(c) === +z;
-    return () => true;
+  for (const col of COLS) if (!col.keys) col.keys = col.kind === 'num' ? kNum(col, col.kfmt || f) : kText(col);
+
+  // ----- filter model: per column a set of ticked values and/or a condition (Excel autofilter) -----
+  const parseN = x => { const n = Number(String(x ?? '').replace(/[\s']/g, '').replace(',', '.')); return Number.isFinite(n) ? n : NaN; };
+  const TXT_OPS = [['eq', 'Равно'], ['ne', 'Не равно'], ['sw', 'Начинается с'], ['ew', 'Заканчивается на'], ['has', 'Содержит'], ['nhas', 'Не содержит']];
+  const NUM_OPS = [['eq', 'Равно'], ['ne', 'Не равно'], ['gt', 'Больше'], ['ge', 'Больше или равно'], ['lt', 'Меньше'], ['le', 'Меньше или равно'], ['bw', 'Между'], ['empty', 'Пусто'], ['nonempty', 'Не пусто']];
+  const opName = (col, op) => (col.kind === 'num' ? NUM_OPS : TXT_OPS).find(x => x[0] === op)?.[1] || op;
+  const passCond = (col, c, cd) => {
+    if (col.kind !== 'num') { const v = String(col.v(c) ?? '').toLowerCase(), a = String(cd.a ?? '').toLowerCase(); return { eq: v === a, ne: v !== a, sw: v.startsWith(a), ew: v.endsWith(a), has: v.includes(a), nhas: !v.includes(a) }[cd.op] ?? true; }
+    const v = col.v(c), a = parseN(cd.a), b = parseN(cd.b);
+    if (cd.op === 'empty') return v === null; if (cd.op === 'nonempty') return v !== null; if (v === null) return false;
+    return { eq: v === a, ne: v !== a, gt: v > a, ge: v >= a, lt: v < a, le: v <= a, bw: v >= Math.min(a, b) && v <= Math.max(a, b) }[cd.op] ?? true;
   };
+  const compile = () => COLS.map(col => { const st = S.f[col.k]; return st ? { col, sel: st.sel ? new Set(st.sel) : null, cond: st.cond || null } : null; }).filter(Boolean);
+  const rowPass = (c, flt, skip) => flt.every(x => x.col.k === skip || ((!x.sel || x.col.keys(c).some(([k]) => x.sel.has(k))) && (!x.cond || passCond(x.col, c, x.cond))));
   const view = () => {
-    const fl = COLS.map(col => mk(col, S.f[col.k] || '')).filter(Boolean);
-    const rows = list.filter(c => COLS.every(col => { const g = mk(col, S.f[col.k] || ''); return !g || g(c); }));
-    const sc = COLS.find(x => x.k === S.sort.k);
+    const flt = compile(), rows = list.filter(c => rowPass(c, flt)), sc = COLS.find(x => x.k === S.sort.k), dir = S.sort.dir;
     const val = c => (sc ? (sc.sv ? sc.sv(c) : sc.v(c)) : c.score);
-    rows.sort((a, b) => { const x = sc ? val(a) : a.score, y = sc ? val(b) : b.score; if (x === y) return 0; if (x === null) return 1; if (y === null) return -1; return (typeof x === 'string' ? x.localeCompare(y) : x - y) * S.sort.dir; });
+    rows.sort((a, b) => { const x = val(a), y = val(b); if (x === y) return 0; if (x === null) return 1; if (y === null) return -1; return (typeof x === 'string' ? x.localeCompare(y, 'ru') : x - y) * dir; });
     return rows;
   };
+
+  // ----- table skeleton -----
   const wrap = $('#xgW', body);
-  wrap.innerHTML = `<table class="xg"><thead><tr class="hd"><th class="rn">№</th>${COLS.map((col, i) => `<th class="${i === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''}" data-s="${col.k}">${col.t}<span class="si"></span></th>`).join('')}</tr>
-    <tr class="ft"><th class="rn"></th>${COLS.map((col, i) => `<th class="${i === 0 ? 'c1' : ''}"><input class="fi" data-f="${col.k}" placeholder="${col.kind === 'num' ? '> 1000' : 'фильтр'}" value="${esc(S.f[col.k] || '')}" aria-label="Фильтр: ${esc(col.t)}"></th>`).join('')}</tr></thead>
+  wrap.innerHTML = `<table class="xg"><thead><tr><th class="rn" style="cursor:default">№</th>${COLS.map((col, i) => `<th class="${i === 0 ? 'c1' : ''}" data-k="${col.k}" title="Нажмите — фильтр и сортировка"><div class="th"><span class="tt">${col.t}<span class="si"></span></span><i class="fb">▾</i></div></th>`).join('')}</tr></thead>
     <tbody></tbody><tfoot><tr><td class="rn"></td>${COLS.map((col, i) => `<td class="${i === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''}" data-t="${col.k}"></td>`).join('')}</tr></tfoot></table>`;
   const tb = $('tbody', wrap);
   let cur = [];
   const draw = () => {
     cur = view(); const MAX = 1000;
-    tb.innerHTML = cur.slice(0, MAX).map((c, i) => `<tr><td class="rn">${i + 1}</td>${COLS.map((col, j) => `<td class="${j === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''}">${j === 0 ? `<a class="clink" data-client="${esc(c.name)}">${esc(c.name)}</a>` : col.cell ? col.cell(c) : esc(String(col.v(c) ?? ''))}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${COLS.length + 1}" class="mut" style="padding:18px;text-align:center">По фильтрам никого нет</td></tr>`;
-    for (const col of COLS) { const td = $(`[data-t="${col.k}"]`, wrap); td.textContent = col.tot ? '$' + f(cur.reduce((a, c) => a + ((col.vt ? col.vt(c) : col.v(c)) || 0), 0)) : ''; }
+    tb.innerHTML = cur.slice(0, MAX).map((c, i) => `<tr data-n="${esc(c.name)}" class="${S.selName === c.name ? 'sel' : ''}"><td class="rn">${i + 1}</td>${COLS.map((col, j) => `<td data-k="${col.k}" class="${j === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''} ${col.edit ? 'ed' : ''}">${j === 0 ? `<a class="clink" data-client="${esc(c.name)}">${esc(c.name)}</a>` : col.cell ? col.cell(c) : esc(String(col.v(c) ?? ''))}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${COLS.length + 1}" class="mut" style="padding:18px;text-align:center">По фильтрам никого нет</td></tr>`;
+    for (const col of COLS) $(`[data-t="${col.k}"]`, wrap).textContent = col.tot ? f(cur.reduce((a, c) => a + ((col.vt ? col.vt(c) : col.v(c)) || 0), 0)) : '';
     $('tfoot td:nth-child(2)', wrap).textContent = `Итого · ${cur.length}`;
-    wrap.querySelectorAll('th[data-s]').forEach(th => { th.querySelector('.si').textContent = S.sort.k === th.dataset.s ? (S.sort.dir > 0 ? ' ▲' : ' ▼') : ''; });
-    const any = COLS.some(col => (S.f[col.k] || '').trim());
+    wrap.querySelectorAll('thead th[data-k]').forEach(th => { const k = th.dataset.k; th.classList.toggle('fa', !!S.f[k]); th.querySelector('.si').textContent = S.sort.k === k ? (S.sort.dir > 0 ? ' ▲' : ' ▼') : ''; });
     $('#xgInfo', body).textContent = `Показано ${cur.length} из ${list.length}${cur.length > MAX ? ` (на экране первые ${MAX})` : ''} · долг $${f(cur.reduce((a, c) => a + c.debt, 0))} · остаток по плану сбора $${f(cur.reduce((a, c) => a + (c.pool ? Math.max(0, c.pool - c.paid) : 0), 0))} · вписано $${f(cur.reduce((a, c) => a + sum0(c), 0))}`;
-    $('#xgReset', body).style.display = any ? '' : 'none';
-    wrap.querySelectorAll('input.fi').forEach(i => i.classList.toggle('on', !!i.value.trim()));
-    wrap.querySelectorAll('[data-pp]').forEach(b => b.onclick = () => PAYPLAN.edit(b.dataset.pp, () => EXT_PAGES.rdebt(el)));
+    $('#xgReset', body).style.display = Object.keys(S.f).length ? '' : 'none';
   };
-  wrap.querySelectorAll('th[data-s]').forEach(th => th.onclick = () => { const k = th.dataset.s; S.sort = S.sort.k === k ? (S.sort.n === 1 ? { k, dir: -S.sort.dir, n: 2 } : { k: 'score', dir: -1 }) : { k, dir: COLS.find(x => x.k === k).kind === 'num' ? -1 : 1, n: 1 }; draw(); });
-  wrap.querySelectorAll('input.fi').forEach(i => i.oninput = () => { S.f[i.dataset.f] = i.value; draw(); });
-  tb.onclick = e => { if (e.target.closest('a,button,input')) return; const tr = e.target.closest('tr'); if (!tr) return; const was = tr.classList.contains('sel'); tb.querySelectorAll('tr.sel').forEach(x => x.classList.remove('sel')); if (!was) tr.classList.add('sel'); };
-  $('#xgReset', body).onclick = () => { S.f = {}; wrap.querySelectorAll('input.fi').forEach(i => { i.value = ''; }); draw(); };
+
+  // ----- Excel-style filter popup -----
+  const setF = (k, patch) => { const st = { sel: null, cond: null, ...(S.f[k] || {}), ...patch }; if (!st.sel && !st.cond) delete S.f[k]; else S.f[k] = st; draw(); };
+  const condDialog = (col, op) => {
+    const ops = col.kind === 'num' ? NUM_OPS : TXT_OPS, old = S.f[col.k]?.cond || {};
+    const m = modal(`<h3 style="margin:0 0 6px">Пользовательский автофильтр</h3><p class="mut" style="margin:0 0 10px">Столбец: <b>${esc(col.t)}</b></p>
+      <div style="display:grid;gap:8px"><select id="coP">${ops.map(([o, n]) => `<option value="${o}" ${o === op ? 'selected' : ''}>${n}</option>`).join('')}</select><input id="coA" placeholder="значение" value="${esc(old.op === op ? old.a ?? '' : '')}"><input id="coB" placeholder="и" value="${esc(old.op === op ? old.b ?? '' : '')}"></div>
+      <div class="bar" style="margin-top:12px"><span class="spacer"></span><button class="btn gray" id="coX">Отмена</button><button class="btn" id="coOk">OK</button></div>`);
+    const sync = () => { const o = $('#coP', m.el).value; $('#coA', m.el).style.display = o === 'empty' || o === 'nonempty' ? 'none' : ''; $('#coB', m.el).style.display = o === 'bw' ? '' : 'none'; };
+    $('#coP', m.el).onchange = sync; sync(); $('#coA', m.el).focus();
+    $('#coX', m.el).onclick = () => m.close();
+    const ok = () => { const o = $('#coP', m.el).value, a = $('#coA', m.el).value.trim(), b2 = $('#coB', m.el).value.trim(); if (!['empty', 'nonempty'].includes(o) && a === '') return toast('Впишите значение'); if (col.kind === 'num' && !['empty', 'nonempty'].includes(o) && (Number.isNaN(parseN(a)) || (o === 'bw' && Number.isNaN(parseN(b2))))) return toast('Для числа впишите цифры'); m.close(); setF(col.k, { cond: { op: o, a, b: b2 } }); };
+    $('#coOk', m.el).onclick = ok; m.el.addEventListener('keydown', e => { if (e.key === 'Enter') ok(); });
+  };
+  const openFilter = th => {
+    const col = COLS.find(x => x.k === th.dataset.k), st = S.f[col.k] || {}, num = col.kind === 'num';
+    const src = list.filter(c => rowPass(c, compile(), col.k)), mp = new Map();
+    for (const c of src) for (const [k, sv] of col.keys(c)) { const o = mp.get(k) || { sv, n: 0 }; o.n++; mp.set(k, o); }
+    const keys = [...mp.entries()].sort((x, y) => (typeof x[1].sv === 'string' ? x[1].sv.localeCompare(y[1].sv, 'ru') : x[1].sv === y[1].sv ? 0 : x[1].sv < y[1].sv ? -1 : 1));
+    const chosen = new Set(st.sel || keys.map(([k]) => k)), pop = document.createElement('div'); pop.className = 'xf-pop';
+    pop.innerHTML = `<div class="xi" data-a="asc">${num ? 'Сортировка по возрастанию' : 'Сортировка от А до Я'}</div><div class="xi" data-a="desc">${num ? 'Сортировка по убыванию' : 'Сортировка от Я до А'}</div><div class="xs"></div>
+      <div class="xi ${S.f[col.k] ? '' : 'dis'}" data-a="clear">Снять фильтр с «${esc(col.t)}»</div><div class="xs"></div>
+      <div class="xi" data-a="cond">${num ? 'Числовые фильтры' : 'Текстовые фильтры'}<span>▸</span></div><div id="xsub" hidden>${(num ? NUM_OPS : TXT_OPS).map(([o, n]) => `<div class="xi sub" data-op="${o}">${n}${['empty', 'nonempty'].includes(o) ? '' : '…'}</div>`).join('')}</div>
+      ${st.cond ? `<div class="xp mut" style="padding-top:2px;font-size:11px">Условие: ${opName(col, st.cond.op)} ${esc(st.cond.a ?? '')}${st.cond.op === 'bw' ? ' и ' + esc(st.cond.b) : ''}</div>` : ''}<div class="xs"></div>
+      <input class="xq" placeholder="Поиск" autocomplete="off"><div class="xl"><label><input type="checkbox" data-all> (Выделить все)</label>${keys.map(([k, o], i) => `<label data-s="${esc(k.toLowerCase())}"><input type="checkbox" data-i="${i}"> <span>${esc(k)}</span><small>${o.n}</small></label>`).join('')}</div>
+      <div class="xb"><button class="btn sm" data-a="ok">OK</button><button class="btn gray sm" data-a="cancel">Отмена</button></div>`;
+    xgOpen(pop, th);
+    const boxes = [...pop.querySelectorAll('input[data-i]')], all = pop.querySelector('input[data-all]'), q = pop.querySelector('.xq'), okb = pop.querySelector('[data-a=ok]');
+    const vis = () => boxes.filter(b => b.closest('label').style.display !== 'none');
+    const refresh = () => { const v = vis(); all.checked = v.length > 0 && v.every(b => b.checked); all.indeterminate = !all.checked && v.some(b => b.checked); okb.disabled = !boxes.some(b => b.checked); };
+    boxes.forEach((b, i) => { b.checked = chosen.has(keys[i][0]); b.onchange = refresh; });
+    all.onchange = () => { vis().forEach(b => { b.checked = all.checked; }); refresh(); };
+    q.oninput = () => { const w = q.value.trim().toLowerCase(); pop.querySelectorAll('label[data-s]').forEach(l => { l.style.display = !w || l.dataset.s.includes(w) ? '' : 'none'; }); refresh(); };
+    refresh(); q.focus();
+    pop.onclick = e => {
+      const it = e.target.closest('[data-a],[data-op]'); if (!it) return;
+      if (it.dataset.op) { xgClose(); if (['empty', 'nonempty'].includes(it.dataset.op)) setF(col.k, { cond: { op: it.dataset.op } }); else condDialog(col, it.dataset.op); return; }
+      const a = it.dataset.a;
+      if (a === 'asc' || a === 'desc') { xgClose(); S.sort = { k: col.k, dir: a === 'asc' ? 1 : -1, n: 2 }; draw(); }
+      else if (a === 'clear') { xgClose(); delete S.f[col.k]; draw(); }
+      else if (a === 'cond') pop.querySelector('#xsub').hidden = !pop.querySelector('#xsub').hidden;
+      else if (a === 'cancel') xgClose();
+      else if (a === 'ok') { const pick = keys.filter((_, i) => boxes[i].checked).map(([k]) => k); xgClose(); setF(col.k, { sel: pick.length === keys.length ? null : pick }); }
+    };
+  };
+  wrap.querySelector('thead').onclick = e => { const th = e.target.closest('th[data-k]'); if (th) { if (XPOP && XPOP.dataset.for === th.dataset.k) return xgClose(); openFilter(th); if (XPOP) XPOP.dataset.for = th.dataset.k; } };
+  $('#xgReset', body).onclick = () => { S.f = {}; draw(); };
+
+  // ----- editing right in the table -----
+  const rerender = () => { xgKeep = { t: wrap.scrollTop, l: wrap.scrollLeft }; return EXT_PAGES.rdebt(el); };
+  const goNext = (c, col) => { const i = cur.indexOf(c); if (i >= 0 && cur[i + 1]) xgNext = { name: cur[i + 1].name, k: col.k }; };
+  const saveField = async (c, field, val) => { const r = await api('/api/ag/client', { method: 'POST', body: { name: c.name, [field]: val } }); if (r.error) { toast(r.error); return false; } c[field] = val; return true; };
+  const startEdit = (td, c, col) => {
+    if (col.edit === 'pay') return PAYPLAN.pop(c.name, td, () => { goNextNone(); draw(); });
+    const old = col.edit === 'agent' ? c.agent : col.edit === 'num' ? (c[col.field] || '') : (c.note || '');
+    let el2;
+    if (col.edit === 'agent') { el2 = document.createElement('select'); el2.innerHTML = agentNames.map(n => `<option ${n === c.agent ? 'selected' : ''}>${esc(n)}</option>`).join(''); }
+    else { el2 = document.createElement('input'); el2.value = old; if (col.edit === 'num') { el2.className = 'num'; el2.inputMode = 'decimal'; } else el2.maxLength = 500; }
+    td.textContent = ''; td.appendChild(el2); el2.focus(); if (el2.select) el2.select();
+    let done = false;
+    const finish = async (commit, move) => {
+      if (done) return; done = true;
+      if (!commit) return draw();
+      let v = el2.value;
+      if (col.edit === 'num') { v = String(v).trim() === '' ? 0 : parseN(v); if (!(v >= 0)) { toast('Число не меньше 0'); return draw(); } }
+      if (String(v) === String(old) || (col.edit === 'num' && v === (Number(old) || 0))) return draw();
+      const field = col.edit === 'agent' ? 'agent' : col.field;
+      if (!(await saveField(c, field, col.edit === 'text' ? String(v).trim() : v))) return draw();
+      if (move) goNext(c, col);
+      if (col.edit === 'text') draw(); else rerender();
+    };
+    el2.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); finish(true, true); } else if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+    el2.onblur = () => finish(true, false);
+    if (col.edit === 'agent') el2.onchange = () => finish(true, false);
+  };
+  const goNextNone = () => { xgNext = null; };
+  tb.onclick = e => {
+    const tr = e.target.closest('tr'); if (!tr || !tr.dataset.n) return;
+    const td = e.target.closest('td.ed');
+    if (td && !td.querySelector('input,select') && !e.target.closest('a')) { const c = cur.find(x => x.name === tr.dataset.n), col = COLS.find(x => x.k === td.dataset.k); if (c && col) { tb.querySelectorAll('tr.sel').forEach(x => x.classList.remove('sel')); tr.classList.add('sel'); S.selName = c.name; startEdit(td, c, col); return; } }
+    if (e.target.closest('a,button,input,select')) return;
+    const was = tr.classList.contains('sel'); tb.querySelectorAll('tr.sel').forEach(x => x.classList.remove('sel')); S.selName = was ? '' : tr.dataset.n; if (!was) tr.classList.add('sel');
+  };
   draw();
+  if (xgKeep) { wrap.scrollTop = xgKeep.t; wrap.scrollLeft = xgKeep.l; xgKeep = null; }
+  if (xgNext) { const nx = xgNext; xgNext = null; const tr = [...tb.rows].find(r => r.dataset.n === nx.name), td = tr && tr.querySelector(`td[data-k="${nx.k}"]`); if (td) { td.scrollIntoView?.({ block: 'nearest' }); td.click(); } }
   $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdebt(el); };
   $('#rB', body).onchange = e => { S.bucket = e.target.value; EXT_PAGES.rdebt(el); };
   $('#rPrint', el).onclick = REP.print;
