@@ -289,21 +289,98 @@ LX.aging = () => {
   const cur = LX.curOf(rows.map(r => ({ 'currency.name': r.cur }))), same = r => !r.cur || !cur || r.cur === cur || (LX.sym(r.cur) === '$' && LX.sym(cur) === '$');
   return { labels, rows: rows.filter(same), other: rows.filter(r => !same(r)) };
 };
+// Правило: клиентов со сроком долга больше последнего периода LINKO (по умолчанию 120 дн.) быть не должно.
+// Если такой клиент всё же есть, его нужно либо собрать, либо осознанно записать в «исключения» с причиной (ext.agedEx).
+LX.ageUi = LX.ageUi || { q: '', f: 'crit' };
+LX.agedEx = () => (CRMLocal.ext().agedEx ||= {});
+LX.AGE_COL = ['var(--c3)', 'var(--c4)', 'var(--st-serious, #e08a1e)', 'var(--st-crit, #cc3a2f)'];
+
 EXT_PAGES.lxage = async el => {
   const body = await LX.shell(el, 'lxage', '<button class="btn gray" id="lxCsv">⬇ Excel (CSV)</button>'); if (!body) return;
-  const { labels, rows, other } = LX.aging(), f = UI.fmt0, R = rows.filter(r => !LX.agent || r.agent === LX.agent);
-  const cur = R[0]?.cur || '', $$ = v => LX.money(v, cur), tot = [0, 1, 2, 3].map(i => R.reduce((a, r) => a + r.b[i], 0));
+  const { labels, rows, other } = LX.aging(), f = UI.fmt0, M = LX.model(), t0 = UI.localDate(Date.now());
+  let rep = null; try { rep = await REP.load(); if (rep.empty) rep = null; } catch { rep = null; }
+  const dayDiff = d => Math.round((Date.parse(t0) - Date.parse(d)) / 864e5);
+
+  // last payment: the newest of LINKO transactions and balance snapshots; promises to pay from client notes
+  const lastPayBy = new Map(); for (const p of M.payments) if (p.client && p.date && (!lastPayBy.has(p.client) || p.date > lastPayBy.get(p.client))) lastPayBy.set(p.client, p.date);
+  const repBy = new Map((rep?.clients || []).map(c => [c.name, c]));
+  const promBy = new Map(); if (rep && typeof NOTES !== 'undefined') for (const p of NOTES.promises(rep)) if (p.status !== 'kept') promBy.set(p.client, p);
+  const ex = LX.agedEx(), tgc = CRMLocal.ext().tg || {};
+  const all = rows.map(r => {
+    const a = lastPayBy.get(r.name), b = repBy.get(r.name)?.lastPay, last = a && b ? (a > b ? a : b) : a || b || null;
+    return { ...r, last, days: last ? dayDiff(last) : null, prom: promBy.get(r.name) || null, ex: ex[r.name] || null, crit: r.b[3] };
+  });
+  const R = all.filter(r => !LX.agent || r.agent === LX.agent);
+  const live = R.filter(r => !r.ex), exc = R.filter(r => r.ex), cur = R[0]?.cur || '', $$ = v => LX.money(v, cur);
+  const crit = live.filter(r => r.crit >= 0.5).sort((a, b) => b.crit - a.crit);
+  const tot = [0, 1, 2, 3].map(i => live.reduce((a, r) => a + r.b[i], 0)), grand = tot.reduce((a, b) => a + b, 0);
+  const critSum = tot[3], noProm = crit.filter(r => !r.prom || r.prom.status === 'overdue'), noPay = crit.filter(r => r.days === null || r.days > 30);
+  const top10 = live.slice().sort((a, b) => b.total - a.total).slice(0, 10).reduce((a, r) => a + r.total, 0);
+  const agents = LX.agentsOf(R), pc = (a, b) => (b > 0 ? Math.round(a / b * 100) : 0);
   const old = r => r.b[3] * 1e6 + r.b[2] * 1e3 + r.b[1];
-  const agents = LX.agentsOf(R);
-  body.innerHTML = `<div class="bar">${LX.agentSel(LX.agentsOf(rows))}</div>
+  const payTxt = r => r.last ? `${UI.dateRu(r.last)}<br><small class="${r.days > 30 ? 'neg' : 'mut'}">${r.days} дн. назад</small>` : `<span class="pill crit">нет оплат с ${UI.dm(LX.st().from)}</span>`;
+  const promTxt = r => !r.prom ? '<span class="mut">нет</span>' : UI.pill(r.prom.status === 'overdue' ? 'crit' : r.prom.status === 'today' ? 'warn' : 'info', `${r.prom.status === 'overdue' ? 'сорвал ' : ''}${UI.dm(r.prom.date)}${r.prom.sum ? ' · $' + f(r.prom.sum) : ''}`);
+  const bar = r => `<div class="s100" style="width:110px;height:9px">${r.b.map((v, i) => v > 0.5 ? `<div style="flex:${v};background:${LX.AGE_COL[i]}" title="${esc(labels[i])}: ${f(v)}"></div>` : '').join('')}</div>`;
+  const phone = r => (r.phone ? `<a href="tel:${esc(r.phone)}">${esc(r.phone)}</a>` : '<span class="mut">—</span>');
+
+  // ----- headline: the rule «nobody older than the last period» -----
+  const banner = !crit.length
+    ? `<section class="panel w12" style="border-left:5px solid var(--st-good,#1e8e4e)"><h4>✓ Клиентов со сроком «${esc(labels[3])}» нет</h4><div class="sub">Правило выполнено${exc.length ? `, исключений в контроле: ${exc.length}` : ''}.</div></section>`
+    : `<section class="panel w12" style="border-left:5px solid var(--st-crit,#cc3a2f)"><h4>⚠ Цель — 0 клиентов «${esc(labels[3])}». Сейчас: ${crit.length} на ${$$(critSum)}</h4>
+        <div class="sub">${noProm.length ? `<b>${noProm.length}</b> из них без обещания оплатить или со сорванным · ` : 'у всех есть обещание оплатить · '}${noPay.length ? `<b>${noPay.length}</b> не платили больше 30 дней или ни разу за период · ` : ''}на ${crit.slice(0, 5).length} крупнейших приходится ${$$(crit.slice(0, 5).reduce((a, r) => a + r.crit, 0))} (${pc(crit.slice(0, 5).reduce((a, r) => a + r.crit, 0), critSum)}%)</div></section>`;
+
+  const kpi = `<div class="kpis">
+    ${UI.tile(`Критично: ${labels[3]}`, $$(critSum), { tone: critSum ? 'bad' : 'good', hero: !!critSum, sub: `${crit.length} клиентов · ${pc(critSum, grand)}% всего долга` })}
+    ${UI.tile('Весь долг', $$(grand), { sub: `${live.length} должников · топ-10 = ${pc(top10, grand)}%` })}
+    ${UI.tile(labels[2], $$(tot[2]), { tone: tot[2] ? 'warn' : '', sub: `${live.filter(r => r.b[2] > 0.5).length} клиентов · скоро станут критичными` })}
+    ${UI.tile(labels[1], $$(tot[1]), { sub: `${live.filter(r => r.b[1] > 0.5).length} клиентов` })}
+    ${UI.tile(labels[0], $$(tot[0]), { sub: `${live.filter(r => r.b[0] > 0.5).length} клиентов · нормальный долг` })}
+    ${exc.length ? UI.tile('Исключения', $$(exc.reduce((a, r) => a + r.total, 0)), { sub: `${exc.length} клиентов с причиной, в итоги не входят` }) : ''}</div>`;
+
+  // ----- critical clients -----
+  const critTable = crit.length ? LX.table(['Клиент', 'Агент', 'Телефон', `#${labels[3]}`, '#Весь долг', 'Последняя оплата', 'Обещание', ''],
+    crit.map(r => `<tr><td>${LX.cl(r.name)}</td><td>${LX.ag(r.agent)}</td><td>${phone(r)}</td><td class="n neg"><b>${f(r.crit)}</b></td><td class="n">${f(r.total)}</td><td>${payTxt(r)}</td><td>${promTxt(r)}</td><td><button class="btn gray sm" data-ex="${esc(r.name)}" title="Оставить клиента в долгу осознанно, с причиной">Исключение</button></td></tr>`), { max: '460px' })
+    : '<p class="mut">Нет клиентов со сроком долга старше последнего периода 👍</p>';
+
+  // ----- agents -----
+  const ag = agents.map(a => { const x = live.filter(r => r.agent === a), s = i => x.reduce((y, r) => y + r.b[i], 0), c = x.filter(r => r.crit >= 0.5); return { a, x, c, tot: s(0) + s(1) + s(2) + s(3), crit: s(3), mid: s(2), segs: [0, 1, 2, 3].map(i => ({ name: labels[i], value: Math.round(s(i)), color: LX.AGE_COL[i] })) }; }).filter(r => r.x.length).sort((a, b) => b.crit - a.crit || b.mid - a.mid);
+  const agTable = LX.table(['Агент', '#Весь долг', `#${labels[3]}`, '#Клиентов', '#Доля старого', 'Структура', ''], ag.map(r => `<tr><td>${LX.ag(r.a)}</td><td class="n">${f(r.tot)}</td><td class="n ${r.crit ? 'neg' : ''}"><b>${r.crit ? f(r.crit) : '—'}</b></td><td class="n">${r.c.length ? `<span class="pill crit">${r.c.length}</span>` : '<span class="pill good">0 ✓</span>'}</td><td class="n ${pc(r.crit + r.mid, r.tot) > 50 ? 'neg' : ''}">${pc(r.crit + r.mid, r.tot)}%</td><td>${bar({ b: r.segs.map(s => s.value) })}</td><td>${r.c.length ? `<button class="btn gray sm" data-copy="${esc(r.a)}">📋 Список</button>${tgc.token && tgc.chats?.[r.a] ? ` <button class="btn gray sm" data-tg="${esc(r.a)}">✈ Агенту</button>` : ''}` : ''}</td></tr>`));
+
+  body.innerHTML = `<div class="bar">${LX.agentSel(LX.agentsOf(all))}</div>
     ${other.length ? `<p class="mut">Не показаны ${other.length} клиентов с долгом в другой валюте (${esc([...new Set(other.map(r => r.cur))].join(', '))}): их нельзя складывать с ${esc(cur || 'основной валютой')}.</p>` : ''}
-    <div class="kpis">${labels.map((l, i) => UI.tile(l, $$(tot[i]), { tone: i >= 2 && tot[i] ? 'bad' : i === 1 && tot[i] ? 'warn' : '', sub: `${R.filter(r => r.b[i] > 0).length} клиентов` })).join('')}</div>
+    ${kpi}
     <div class="grid">
-    ${UI.panel('Агенты: долг по срокам', LX.table(['Агент', ...labels.map(l => '#' + l), '#Всего'], agents.map(a => { const x = R.filter(r => r.agent === a), s = i => x.reduce((y, r) => y + r.b[i], 0); return `<tr><td>${LX.ag(a)}</td>${[0, 1, 2, 3].map(i => `<td class="n ${i >= 2 && s(i) ? 'neg' : ''}">${s(i) ? f(s(i)) : '—'}</td>`).join('')}<td class="n"><b>${f(x.reduce((y, r) => y + r.total, 0))}</b></td></tr>`; })), { cls: 'w12', sub: 'Чем правее, тем старше долг и тем труднее его собрать' })}
-    ${UI.panel(`Должники (${R.length}) — сначала самые старые долги`, LX.table(['Клиент', 'Агент', 'Телефон', ...labels.map(l => '#' + l), '#Всего', 'Адрес'], R.sort((a, b) => old(b) - old(a)).map(r => `<tr><td>${LX.cl(r.name)}</td><td>${esc(r.agent)}</td><td>${r.phone ? `<a href="tel:${esc(r.phone)}">${esc(r.phone)}</a>` : '—'}</td>${r.b.map((v, i) => `<td class="n ${i >= 2 && v ? 'neg' : ''}">${v ? f(v) : '—'}</td>`).join('')}<td class="n"><b>${f(r.total)}</b></td><td><small>${esc([r.address, r.guide].filter(Boolean).join(' · '))}</small></td></tr>`), { max: '600px' }), { cls: 'w12' })}
+    ${banner}
+    ${UI.panel(`Клиенты «${esc(labels[3])}» — собрать или объяснить (${crit.length})`, critTable, { cls: 'w12', sub: 'Крупнейшие сверху. «Исключение» убирает клиента из критичных, но с записанной причиной: он остаётся в списке исключений ниже' })}
+    ${UI.panel('Агенты: кто держит старый долг', agTable, { cls: 'w7', sub: 'Сначала агенты с самым большим критичным долгом. «Доля старого» = старше 30 дней от всего долга агента' })}
+    ${UI.panel('Структура долга агента', CH.stack100(ag.map(r => ({ label: r.a, segs: r.segs }))), { cls: 'w5', sub: 'Чем больше красного и оранжевого — тем старше долг' })}
+    ${UI.panel('Все должники', `<div class="bar" id="ageBar"></div><div id="ageList"></div>`, { cls: 'w12' })}
+    ${exc.length ? UI.panel(`Исключения (${exc.length})`, LX.table(['Клиент', 'Агент', '#Долг', `#${labels[3]}`, 'Причина', 'С даты', ''], exc.map(r => `<tr><td>${LX.cl(r.name)}</td><td>${esc(r.agent)}</td><td class="n">${f(r.total)}</td><td class="n">${r.crit ? f(r.crit) : '—'}</td><td>${esc(r.ex.reason || '—')}</td><td>${r.ex.at ? UI.dateRu(r.ex.at.slice(0, 10)) : '—'}</td><td><button class="btn gray sm" data-unex="${esc(r.name)}">Вернуть в контроль</button></td></tr>`)), { cls: 'w12', sub: 'Осознанные исключения. Раз в месяц просматривайте: причина ещё актуальна?' }) : ''}
     </div>`;
+
+  // ----- all debtors with filters (only this block redraws, so typing in search keeps focus) -----
+  const FIL = [['crit', `${labels[3]}`], ['mid', labels[2]], ['w', labels[1]], ['all', 'Все']];
+  const bar0 = $('#ageBar', body);
+  bar0.innerHTML = `${FIL.map(([k, n]) => `<button class="btn ${LX.ageUi.f === k ? '' : 'gray'} sm" data-f="${k}">${esc(n)}</button>`).join(' ')}<input type="search" id="ageQ" placeholder="Клиент, агент, телефон…" value="${esc(LX.ageUi.q)}" style="flex:1 1 180px">`;
+  const drawList = () => {
+    const q = LX.ageUi.q.trim().toLowerCase(), k = LX.ageUi.f;
+    const L = live.filter(r => (k === 'all' || (k === 'crit' ? r.b[3] > 0.5 : k === 'mid' ? r.b[2] > 0.5 : r.b[1] > 0.5)) && (!q || [r.name, r.agent, r.phone, r.address].join(' ').toLowerCase().includes(q))).sort((a, b) => old(b) - old(a));
+    $('#ageList', body).innerHTML = L.length ? LX.table(['Клиент', 'Агент', 'Телефон', 'Структура', ...labels.map(l => '#' + l), '#Всего', 'Последняя оплата', 'Обещание', 'Адрес'],
+      L.map(r => `<tr><td>${LX.cl(r.name)}</td><td>${esc(r.agent)}</td><td>${phone(r)}</td><td>${bar(r)}</td>${r.b.map((v, i) => `<td class="n ${i >= 2 && v ? 'neg' : ''}">${v ? f(v) : '—'}</td>`).join('')}<td class="n"><b>${f(r.total)}</b></td><td>${payTxt(r)}</td><td>${promTxt(r)}</td><td><small>${esc([r.address, r.guide].filter(Boolean).join(' · '))}</small></td></tr>`), { max: '560px' }) + `<p class="mut" style="margin-top:8px">Показано ${L.length} из ${live.length} · на сумму ${$$(L.reduce((a, r) => a + r.total, 0))}</p>` : '<p class="mut">По фильтру никого нет.</p>';
+  };
+  drawList();
+  bar0.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { LX.ageUi.f = b.dataset.f; bar0.querySelectorAll('[data-f]').forEach(x => x.classList.toggle('gray', x !== b)); drawList(); });
+  $('#ageQ', body).oninput = e => { LX.ageUi.q = e.target.value; drawList(); };
+
+  // ----- actions -----
+  const redraw = () => { CRMLocal.touch(); EXT_PAGES.lxage(el); };
+  const msgFor = a => { const c = crit.filter(r => r.agent === a); return `<b>Просрочка больше ${esc(labels[3].replace(/\D/g, '') || '120')} дней — ${esc(a)}</b>\nНужно собрать или дать обещание оплатить:\n` + c.map((r, i) => `${i + 1}. ${esc(r.name)} — ${f(r.crit)} из ${f(r.total)}${r.phone ? ' · ' + esc(r.phone) : ''}${r.last ? ` · оплата ${r.days} дн. назад` : ' · оплат нет'}`).join('\n') + `\nИтого: ${f(c.reduce((s, r) => s + r.crit, 0))}`; };
+  body.querySelectorAll('[data-ex]').forEach(b => b.onclick = () => { const reason = prompt(`Почему «${b.dataset.ex}» остаётся в долгу больше ${labels[3].replace(/\D/g, '') || '120'} дней?\nНапример: суд, акт сверки, реструктуризация`); if (reason === null) return; if (!reason.trim()) return toast('Причина обязательна'); ex[b.dataset.ex] = { reason: reason.trim(), at: new Date().toISOString() }; redraw(); });
+  body.querySelectorAll('[data-unex]').forEach(b => b.onclick = () => { delete ex[b.dataset.unex]; redraw(); });
+  body.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { try { await navigator.clipboard.writeText(msgFor(b.dataset.copy).replace(/<\/?b>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')); toast('Список скопирован'); } catch { toast('Не удалось скопировать'); } });
+  body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const a = b.dataset.tg; if (!confirm(`Отправить агенту ${a} список из ${crit.filter(r => r.agent === a).length} клиентов в Telegram?`)) return; try { await TG.send(tgc.chats[a].id, msgFor(a)); toast('Отправлено агенту'); } catch (e) { toast('Telegram: ' + e.message); } });
   LX.bindAgent(body);
-  $('#lxCsv', el).onclick = () => UI.csv('просрочка-' + UI.localDate(Date.now()), [['Клиент', 'Агент', 'Телефон', ...labels, 'Всего', 'Адрес'], ...R.map(r => [r.name, r.agent, r.phone, ...r.b.map(Math.round), Math.round(r.total), r.address])]);
+  $('#lxCsv', el).onclick = () => UI.csv('просрочка-' + t0, [['Клиент', 'Агент', 'Телефон', ...labels, 'Всего', 'Последняя оплата', 'Дней без оплаты', 'Обещание', 'Исключение', 'Адрес'], ...R.sort((a, b) => old(b) - old(a)).map(r => [r.name, r.agent, r.phone, ...r.b.map(Math.round), Math.round(r.total), r.last ? UI.dateRu(r.last) : 'нет', r.days ?? '', r.prom ? UI.dateRu(r.prom.date) : '', r.ex ? r.ex.reason : '', r.address])]);
 };
 
 // ---------- Работа агентов (working day, visits, refusals) ----------
