@@ -1,9 +1,10 @@
 // Shared UI building blocks for the data sections (warehouse and agents).
 // Uses globals from app.js at call time: api, token, branch, modal, toast, signOut, esc, can.
 const UI = {
-  fmt0: n => Math.round(Number(n) || 0).toLocaleString('ru-RU'),
+  c2: n => Math.round(((Number(n) || 0) + Number.EPSILON) * 100) / 100, // exact to the cent
+  fmt0: n => { const v = UI.c2(n); return v.toLocaleString('ru-RU', { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 }); }, // cents are shown when there are any
   fmt1: n => (Math.round((Number(n) || 0) * 10) / 10).toLocaleString('ru-RU'),
-  sign: n => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(Math.round(n)).toLocaleString('ru-RU'),
+  sign: n => (n > 0 ? '+' : n < 0 ? '−' : '') + UI.fmt0(Math.abs(n)),
   pct: (a, b) => (b > 0 ? Math.round(a / b * 100) : null),
   dateRu: d => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : '—'),
   dm: d => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}` : ''),

@@ -7,7 +7,11 @@ const defs = {
 // Number from a cell: accepts numbers and strings like "1 234,5".
 const N = v => {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-  const n = Number(String(v ?? '').replace(/\s/g, '').replace(',', '.'));
+  let t = String(v ?? '').replace(/[\s\u00a0\u202f']/g, '');
+  const lc = t.lastIndexOf(','), ld = t.lastIndexOf('.');
+  if (lc >= 0 && ld >= 0) t = lc > ld ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, ''); // 1.234,56 or 1,234.56
+  else if (lc >= 0) t = t.split(',').length > 2 ? t.replace(/,/g, '') : t.replace(',', '.'); // 12,5 or 1,234,567
+  const n = Number(t);
   return Number.isFinite(n) ? n : 0;
 };
 

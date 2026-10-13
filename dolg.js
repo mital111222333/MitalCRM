@@ -36,7 +36,7 @@ const DOLG = {
     const agents = new Map();
     for (const c of clients) {
       const a = agents.get(c.agent) || { agent: c.agent, plan: 0, sold: 0, pool: 0, paid: 0, owe: 0, debtors: 0, week: 0, now: 0 };
-      a.plan += c.plan; a.sold += c.sold; a.pool += c.pool; a.paid += c.paid; a.owe += c.owe; a.week += c.week; a.now += c.now; if (c.owe > 0.5) a.debtors++;
+      a.plan += c.plan; a.sold += c.sold; a.pool += c.pool; a.paid += c.paid; a.owe += c.owe; a.week += c.week; a.now += c.now; if (c.owe > 0.005) a.debtors++;
       agents.set(c.agent, a);
     }
     const stage = !closed ? 'open' : today <= wEnd ? 'week' : 'done';
@@ -46,13 +46,13 @@ const DOLG = {
   // text for one agent (Telegram / copy)
   text(D, agent) {
     const f = UI.fmt0, a = D.agents.find(x => x.agent === agent); if (!a) return '';
-    const list = D.clients.filter(c => c.agent === agent && c.owe > 0.5).sort((x, y) => (y.owe - y.week) - (x.owe - x.week));
+    const list = D.clients.filter(c => c.agent === agent && c.owe > 0.005).sort((x, y) => (y.owe - y.week) - (x.owe - x.week));
     const L = [`<b>${esc(agent)}</b> — долги за период ${UI.dm(D.from)}–${UI.dm(D.end)}`,
       `План продаж: $${f(a.plan)} · продано $${f(a.sold)}${a.plan ? ` (${UI.pct(a.sold, a.plan)}%)` : ''}`,
       `План сбора: $${f(a.pool)} · собрано $${f(a.paid)}${a.pool ? ` (${UI.pct(a.paid, a.pool)}%)` : ''}`,
       `Не собрано у клиентов: <b>$${f(a.owe)}</b>${D.closed ? ` · собрано с ${UI.dm(D.nFrom)}: $${f(D.stage === 'done' ? a.week : a.now)}` : ''}`,
       D.closed ? `Собрать до ${UI.dateRu(D.wEnd)}:` : 'Кто недоплатил:'];
-    list.forEach((c, i) => { const left = c.owe - (D.stage === 'done' ? c.week : c.now); L.push(`${i + 1}. ${esc(c.name)} — ${left <= 0.5 ? '✅ собрано' : `<b>$${f(left)}</b>${left < c.owe - 0.5 ? ` (из $${f(c.owe)})` : ''}`}`); });
+    list.forEach((c, i) => { const left = c.owe - (D.stage === 'done' ? c.week : c.now); L.push(`${i + 1}. ${esc(c.name)} — ${left <= 0.005 ? '✅ собрано' : `<b>$${f(left)}</b>${left < c.owe - 0.005 ? ` (из $${f(c.owe)})` : ''}`}`); });
     return L.join('\n');
   },
 };
@@ -69,8 +69,8 @@ EXT_PAGES.debtprev = async el => {
   if (!D) { body.innerHTML = UI.empty('Данных пока нет', 'Нужен баланс клиентов из LINKO за период плана (он загружается автоматически).'); return; }
   const A = D.agents.filter(a => !DOLG.agent || a.agent === DOLG.agent), T = A.reduce((s, a) => { for (const k of ['plan', 'sold', 'pool', 'paid', 'owe', 'week', 'now', 'debtors']) s[k] = (s[k] || 0) + a[k]; return s; }, {});
   const got = c => (D.stage === 'done' ? c.week : c.now), left = c => Math.max(0, c.owe - got(c));
-  const list = D.clients.filter(c => c.owe > 0.5 && (!DOLG.agent || c.agent === DOLG.agent))
-    .filter(c => DOLG.show === 'all' || (DOLG.show === 'left' ? left(c) > 0.5 : left(c) <= 0.5))
+  const list = D.clients.filter(c => c.owe > 0.005 && (!DOLG.agent || c.agent === DOLG.agent))
+    .filter(c => DOLG.show === 'all' || (DOLG.show === 'left' ? left(c) > 0.005 : left(c) <= 0.005))
     .sort((a, b) => a.agent.localeCompare(b.agent) || left(b) - left(a) || b.owe - a.owe);
   const gotT = D.stage === 'done' ? T.week : T.now, daysLeft = Math.max(0, Math.round((Date.parse(D.wEnd) - Date.parse(today)) / 864e5) + 1);
   const stageTxt = D.stage === 'open' ? UI.pill('info', `период ещё идёт — до ${UI.dateRu(D.end)}`) : D.stage === 'week' ? UI.pill('warn', `первая неделя: сбор до ${UI.dateRu(D.wEnd)} · осталось ${daysLeft} дн.`) : UI.pill('good', `итоги первой недели (${UI.dm(D.nFrom)}–${UI.dm(D.wEnd)})`);
@@ -82,7 +82,7 @@ EXT_PAGES.debtprev = async el => {
       ${UI.tile('План продаж', '$' + f(T.plan || 0), { sub: `продано $${f(T.sold || 0)} · ${UI.pct(T.sold, T.plan) ?? 0}% · не хватило $${f(Math.max(0, (T.plan || 0) - (T.sold || 0)))}` })}
       ${UI.tile('План сбора (пул)', '$' + f(T.pool || 0), { sub: `собрано $${f(T.paid || 0)} · ${UI.pct(T.paid, T.pool) ?? 0}%` })}
       ${UI.tile('Недоплатили клиенты', '$' + f(T.owe || 0), { sub: `${T.debtors || 0} клиентов`, tone: T.owe ? 'warn' : 'good' })}
-      ${D.closed ? UI.tile(D.stage === 'done' ? 'Собрано за 1-ю неделю' : `Собрано с ${UI.dm(D.nFrom)}`, '$' + f(gotT), { sub: `${UI.pct(gotT, T.owe) ?? 0}% · осталось $${f(Math.max(0, (T.owe || 0) - gotT))}`, tone: T.owe && gotT >= T.owe - 0.5 ? 'good' : '' }) : UI.tile('Сбор начнётся', UI.dm(D.nFrom), { sub: `первая неделя: ${UI.dm(D.nFrom)}–${UI.dm(D.wEnd)}` })}
+      ${D.closed ? UI.tile(D.stage === 'done' ? 'Собрано за 1-ю неделю' : `Собрано с ${UI.dm(D.nFrom)}`, '$' + f(gotT), { sub: `${UI.pct(gotT, T.owe) ?? 0}% · осталось $${f(Math.max(0, (T.owe || 0) - gotT))}`, tone: T.owe && gotT >= T.owe - 0.005 ? 'good' : '' }) : UI.tile('Сбор начнётся', UI.dm(D.nFrom), { sub: `первая неделя: ${UI.dm(D.nFrom)}–${UI.dm(D.wEnd)}` })}
     </div>
     <div class="grid">
     ${UI.panel('По агентам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th><th class="n">План продаж</th><th class="n">Продано</th><th class="n">%</th><th class="n">План сбора</th><th class="n">Собрано</th><th class="n">%</th><th class="n">Недоплатили</th><th class="n">Клиентов</th>${D.closed ? `<th class="n">Собрано с ${UI.dm(D.nFrom)}</th><th class="n">Осталось</th>` : ''}<th></th></tr></thead><tbody>
@@ -90,7 +90,7 @@ EXT_PAGES.debtprev = async el => {
       </tbody></table></div><p class="mut" style="margin:10px 0 0">«Недоплатили» — сумма по клиентам, которые оплатили меньше своего Пула. Она может быть больше, чем «план сбора − собрано»: клиенты, которые заплатили сверх Пула, долг других не закрывают.</p>`, { cls: 'w12' })}
     ${UI.panel(`Кто недоплатил (${list.length})`, `<div class="bar no-print"><select id="dShow" aria-label="Показать"><option value="left" ${DOLG.show === 'left' ? 'selected' : ''}>Ещё не собрано</option><option value="done" ${DOLG.show === 'done' ? 'selected' : ''}>Уже собрано</option><option value="all" ${DOLG.show === 'all' ? 'selected' : ''}>Все</option></select></div>
       ${list.length ? `<div class="scroll" style="max-height:640px"><table><thead><tr><th>Клиент</th><th>Агент</th><th class="n">Пул</th><th class="n">Оплатил за период</th><th class="n">Недоплатил</th>${D.closed ? `<th class="n">Собрано с ${UI.dm(D.nFrom)}</th><th class="n">Осталось собрать</th>` : ''}<th class="n">Долг сейчас</th><th>Телефон</th></tr></thead><tbody>
-      ${list.map(c => `<tr><td>${window.LX ? LX.cl(c.name) : esc(c.name)}${c.landmark ? `<br><small class="mut">${esc(c.landmark)}</small>` : ''}</td><td>${esc(c.agent)}</td><td class="n">${f(c.pool)}</td><td class="n">${f(c.paid)}</td><td class="n"><b>${f(c.owe)}</b></td>${D.closed ? `<td class="n pos">${got(c) ? f(got(c)) : '<span class="mut">—</span>'}</td><td class="n">${left(c) > 0.5 ? `<b class="neg">${f(left(c))}</b>` : UI.pill('good', 'собрано')}</td>` : ''}<td class="n">${c.b1 < 0 ? f(-c.b1) : '—'}</td><td>${c.phone ? `<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>` : ''}</td></tr>`).join('')}
+      ${list.map(c => `<tr><td>${window.LX ? LX.cl(c.name) : esc(c.name)}${c.landmark ? `<br><small class="mut">${esc(c.landmark)}</small>` : ''}</td><td>${esc(c.agent)}</td><td class="n">${f(c.pool)}</td><td class="n">${f(c.paid)}</td><td class="n"><b>${f(c.owe)}</b></td>${D.closed ? `<td class="n pos">${got(c) ? f(got(c)) : '<span class="mut">—</span>'}</td><td class="n">${left(c) > 0.005 ? `<b class="neg">${f(left(c))}</b>` : UI.pill('good', 'собрано')}</td>` : ''}<td class="n">${c.b1 < 0 ? f(-c.b1) : '—'}</td><td>${c.phone ? `<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>` : ''}</td></tr>`).join('')}
       </tbody></table></div>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
     </div>`;
   const re = () => EXT_PAGES.debtprev(el);
@@ -102,5 +102,5 @@ EXT_PAGES.debtprev = async el => {
   body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const n = b.dataset.tg; if (!confirm(`Отправить ${n} его список должников в Telegram?`)) return; try { await TG.send(TG.conf().chats[n].id, DOLG.text(D, n)); toast('Отправлено'); } catch (e) { toast(e.message); } });
   $('#dPrint', el).onclick = () => print();
   $('#dCsv', el).onclick = () => UI.csv('долги-' + D.from, [['Клиент', 'Агент', 'План продаж', 'Продано', 'Пул', 'Оплатил за период', 'Недоплатил', 'Собрано с ' + D.nFrom, 'Осталось собрать', 'Долг сейчас', 'Телефон'],
-    ...D.clients.filter(c => c.owe > 0.5 && (!DOLG.agent || c.agent === DOLG.agent)).map(c => [c.name, c.agent, c.plan, c.sold, c.pool, c.paid, Math.round(c.owe * 100) / 100, Math.round(got(c) * 100) / 100, Math.round(left(c) * 100) / 100, c.b1 < 0 ? -c.b1 : 0, c.phone])]);
+    ...D.clients.filter(c => c.owe > 0.005 && (!DOLG.agent || c.agent === DOLG.agent)).map(c => [c.name, c.agent, c.plan, c.sold, c.pool, c.paid, Math.round(c.owe * 100) / 100, Math.round(got(c) * 100) / 100, Math.round(left(c) * 100) / 100, c.b1 < 0 ? -c.b1 : 0, c.phone])]);
 };

@@ -117,10 +117,10 @@ const LX = {
       const t1 = prev ? at(prev) : Date.parse(u.period_from + 'T00:00:00'), t2 = at(u);
       const before = new Map((prev?.rows || []).map(r => [r.client, r.paid || 0]));
       for (const r of u.rows || []) {
-        const grew = (r.paid || 0) - (before.get(r.client) || 0); if (grew <= 0.5) continue;
+        const grew = (r.paid || 0) - (before.get(r.client) || 0); if (grew <= 0.005) continue;
         const tx = (byClient.get(r.client) || []).filter(p => p.ts > t1 && p.ts <= t2).reduce((a, p) => a + p.amount, 0);
         const extra = grew - tx;
-        if (extra > 0.5) payments.push({ date: u.taken_at, time: '', ts: t2, amount: Math.round(extra * 1000) / 1000, type: 'по балансу', ptype: 'card', cur: '', client: r.client, agent: LX.clientAgent(r.client, ''), by: '', courier: '', bal: true });
+        if (extra > 0.005) payments.push({ date: u.taken_at, time: '', ts: t2, amount: Math.round(extra * 100) / 100, type: 'по балансу', ptype: 'card', cur: '', client: r.client, agent: LX.clientAgent(r.client, ''), by: '', courier: '', bal: true });
       }
     }
     const ords = orders.filter(inCur).map(o => ({ id: o.id, date: LX.day(o.created_date), time: String(o.created_date || '').slice(11, 16), status: o.status, ptype: o.payment_type, sum: LX.n(o.total_price), fact: LX.n(o.fact_price), ret: LX.n(o.total_return_price), paid: !!o.is_paid, deliver: LX.day(o.date_delivery), client: o['client.name'] || '', address: o['market.address'] || '', agent: o['client.name'] ? LX.clientAgent(o['client.name'], LX.person(o, 'user')) : LX.agentName(LX.person(o, 'user')) || 'Без агента' }));
@@ -172,7 +172,7 @@ EXT_PAGES.lxbrand = async el => {
     ${UI.panel(`Товары (${P.length})`, LX.table(['Товар', 'Бренд', '#Шт.', '#Возврат', '#Сумма', '#Клиентов', '#Ср. цена', '#Бонус шт.'], P.map(p => `<tr><td>${esc(p.name)}</td><td>${esc(p.brand)}</td><td class="n">${f(p.qty)}</td><td class="n">${p.ret ? `<span class="neg">${f(p.ret)}</span>` : '—'}</td><td class="n"><b>${f(p.sum)}</b></td><td class="n">${p.clients.size}</td><td class="n">${p.qty - p.ret > 0 ? UI.fmt0(p.sum / (p.qty - p.ret)) : '—'}</td><td class="n">${p.bonus ? f(p.bonus) : '—'}</td></tr>`), { max: '520px' }), { cls: 'w12' })}
     </div>`;
   LX.bindAgent(body);
-  $('#lxCsv', el).onclick = () => UI.csv('товары-' + (LX.st().to || ''), [['Товар', 'Бренд', 'Шт', 'Возврат', 'Сумма', 'Клиентов'], ...P.map(p => [p.name, p.brand, p.qty, p.ret, Math.round(p.sum), p.clients.size])]);
+  $('#lxCsv', el).onclick = () => UI.csv('товары-' + (LX.st().to || ''), [['Товар', 'Бренд', 'Шт', 'Возврат', 'Сумма', 'Клиентов'], ...P.map(p => [p.name, p.brand, p.qty, p.ret, UI.c2(p.sum), p.clients.size])]);
 };
 
 // ---------- Кому что предложить: brands a client does not take + clients who are late for their usual order ----------
@@ -282,9 +282,15 @@ LX.aging = () => {
     // Payments close the oldest orders first, so what is still owed sits in the newest buckets.
     const debt = usd && balOf.has(k) ? Math.max(0, -balOf.get(k)) : Math.abs(LX.n(c.debt_total)) || raw.reduce((x, y) => x + y, 0);
     let left = debt; const b = raw.map(v => { const t = Math.min(v, left); left -= t; return t; });
-    if (left > 0.5) b[0] += left; // owed but not in any bucket in LINKO: count it as the newest
+    if (left > 1e-9) b[0] += left; // owed but not in any bucket in LINKO: count it as the newest
     return { name, agent: LX.clientAgent(name, LX.person(r, 'client.responsible_agent')), phone: r['client.phone'] || r['market.phone'] || '', address: r['client.address'] || r['market.address'] || '', guide: r['client.guide'] || '', b, raw, total: debt, cur: c.name || '' };
-  }).filter(r => r.total >= 0.5);
+  }).filter(r => r.total > 1e-6);
+  // a client who owes according to the newest balance but is missing from LINKO's debtors list must not vanish from this page
+  const have = new Set(rows.map(r => LX.norm(r.name)));
+  for (const r of lastBal?.rows || []) {
+    const d = r.b1 < 0 ? -r.b1 : 0; if (d < 1e-6 || have.has(LX.norm(r.client))) continue;
+    rows.push({ name: r.client, agent: LX.clientAgent(r.client, ''), phone: S.ag.clients?.[r.client]?.phone || '', address: '', guide: '', b: [d, 0, 0, 0], raw: [d, 0, 0, 0], total: d, cur: '', fromBal: true });
+  }
   // one page = one currency: debts in another currency (e.g. so'm) would be summed with dollars; they are counted aside
   const cur = LX.curOf(rows.map(r => ({ 'currency.name': r.cur }))), same = r => !r.cur || !cur || r.cur === cur || (LX.sym(r.cur) === '$' && LX.sym(cur) === '$');
   return { labels, rows: rows.filter(same), other: rows.filter(r => !same(r)) };
@@ -314,7 +320,7 @@ EXT_PAGES.lxage = async el => {
   });
   const R = all.filter(r => !LX.agent || r.agent === LX.agent);
   const live = R.filter(r => !r.ex), exc = R.filter(r => r.ex), cur = R[0]?.cur || '', $$ = v => LX.money(v, cur);
-  const crit = live.filter(r => r.crit >= 0.5).sort((a, b) => b.crit - a.crit);
+  const crit = live.filter(r => r.crit >= 0.005).sort((a, b) => b.crit - a.crit);
   const tot = [0, 1, 2, 3].map(i => live.reduce((a, r) => a + r.b[i], 0)), grand = tot.reduce((a, b) => a + b, 0);
   const critSum = tot[3], noProm = crit.filter(r => !r.prom || r.prom.status === 'overdue'), noPay = crit.filter(r => r.days === null || r.days > 30);
   const top10 = live.slice().sort((a, b) => b.total - a.total).slice(0, 10).reduce((a, r) => a + r.total, 0);
@@ -322,8 +328,8 @@ EXT_PAGES.lxage = async el => {
   const old = r => r.b[3] * 1e6 + r.b[2] * 1e3 + r.b[1];
   const payTxt = r => r.last ? `${UI.dateRu(r.last)}<br><small class="${r.days > 30 ? 'neg' : 'mut'}">${r.days} дн. назад</small>` : `<span class="pill crit">нет оплат с ${UI.dm(LX.st().from)}</span>`;
   const promTxt = r => !r.prom ? '<span class="mut">нет</span>' : UI.pill(r.prom.status === 'overdue' ? 'crit' : r.prom.status === 'today' ? 'warn' : 'info', `${r.prom.status === 'overdue' ? 'сорвал ' : ''}${UI.dm(r.prom.date)}${r.prom.sum ? ' · $' + f(r.prom.sum) : ''}`);
-  const bar = r => `<div class="s100" style="width:110px;height:9px">${r.b.map((v, i) => v > 0.5 ? `<div style="flex:${v};background:${LX.AGE_COL[i]}" title="${esc(labels[i])}: ${f(v)}"></div>` : '').join('')}</div>`;
-  const ordTxt = r => r.ords.length ? r.ords.slice(0, 3).map(o => `<div title="${esc(UI.dateRu(o.date) + ' · ' + LX.st2(o.status))}">№${esc(o.id)} <small class="mut">${UI.dm(o.date)} · $${f(o.sum)}</small></div>`).join('') + (r.ords.length > 3 ? `<small class="mut">и ещё ${r.ords.length - 3}</small>` : '') : r.b[2] + r.b[3] > 0.5 ? `<small class="mut" title="Заказ старше периода, который загружается из LINKO (с ${UI.dateRu(LX.st().from)}), его номера в данных нет">заказ до ${UI.dm(LX.st().from)}</small>` : '<span class="mut">—</span>';
+  const bar = r => `<div class="s100" style="width:110px;height:9px">${r.b.map((v, i) => v > 0.005 ? `<div style="flex:${v};background:${LX.AGE_COL[i]}" title="${esc(labels[i])}: ${f(v)}"></div>` : '').join('')}</div>`;
+  const ordTxt = r => r.ords.length ? r.ords.slice(0, 3).map(o => `<div title="${esc(UI.dateRu(o.date) + ' · ' + LX.st2(o.status))}">№${esc(o.id)} <small class="mut">${UI.dm(o.date)} · $${f(o.sum)}</small></div>`).join('') + (r.ords.length > 3 ? `<small class="mut">и ещё ${r.ords.length - 3}</small>` : '') : r.b[2] + r.b[3] > 0.005 ? `<small class="mut" title="Заказ старше периода, который загружается из LINKO (с ${UI.dateRu(LX.st().from)}), его номера в данных нет">заказ до ${UI.dm(LX.st().from)}</small>` : '<span class="mut">—</span>';
   const phone = r => (r.phone ? `<a href="tel:${esc(r.phone)}">${esc(r.phone)}</a>` : '<span class="mut">—</span>');
 
   // ----- headline: the rule «nobody older than the last period» -----
@@ -335,9 +341,9 @@ EXT_PAGES.lxage = async el => {
   const kpi = `<div class="kpis">
     ${UI.tile(`Критично: ${labels[3]}`, $$(critSum), { tone: critSum ? 'bad' : 'good', hero: !!critSum, sub: `${crit.length} клиентов · ${pc(critSum, grand)}% всего долга` })}
     ${UI.tile('Весь долг', $$(grand), { sub: `${live.length} должников · топ-10 = ${pc(top10, grand)}%` })}
-    ${UI.tile(labels[2], $$(tot[2]), { tone: tot[2] ? 'warn' : '', sub: `${live.filter(r => r.b[2] > 0.5).length} клиентов · скоро станут критичными` })}
-    ${UI.tile(labels[1], $$(tot[1]), { sub: `${live.filter(r => r.b[1] > 0.5).length} клиентов` })}
-    ${UI.tile(labels[0], $$(tot[0]), { sub: `${live.filter(r => r.b[0] > 0.5).length} клиентов · нормальный долг` })}
+    ${UI.tile(labels[2], $$(tot[2]), { tone: tot[2] ? 'warn' : '', sub: `${live.filter(r => r.b[2] > 0.005).length} клиентов · скоро станут критичными` })}
+    ${UI.tile(labels[1], $$(tot[1]), { sub: `${live.filter(r => r.b[1] > 0.005).length} клиентов` })}
+    ${UI.tile(labels[0], $$(tot[0]), { sub: `${live.filter(r => r.b[0] > 0.005).length} клиентов · нормальный долг` })}
     ${exc.length ? UI.tile('Исключения', $$(exc.reduce((a, r) => a + r.total, 0)), { sub: `${exc.length} клиентов с причиной, в итоги не входят` }) : ''}</div>`;
 
   // ----- critical clients -----
@@ -346,7 +352,7 @@ EXT_PAGES.lxage = async el => {
     : '<p class="mut">Нет клиентов со сроком долга старше последнего периода 👍</p>';
 
   // ----- agents -----
-  const ag = agents.map(a => { const x = live.filter(r => r.agent === a), s = i => x.reduce((y, r) => y + r.b[i], 0), c = x.filter(r => r.crit >= 0.5); return { a, x, c, tot: s(0) + s(1) + s(2) + s(3), crit: s(3), mid: s(2), segs: [0, 1, 2, 3].map(i => ({ name: labels[i], value: Math.round(s(i)), color: LX.AGE_COL[i] })) }; }).filter(r => r.x.length).sort((a, b) => b.crit - a.crit || b.mid - a.mid);
+  const ag = agents.map(a => { const x = live.filter(r => r.agent === a), s = i => x.reduce((y, r) => y + r.b[i], 0), c = x.filter(r => r.crit >= 0.005); return { a, x, c, tot: s(0) + s(1) + s(2) + s(3), crit: s(3), mid: s(2), segs: [0, 1, 2, 3].map(i => ({ name: labels[i], value: Math.round(s(i)), color: LX.AGE_COL[i] })) }; }).filter(r => r.x.length).sort((a, b) => b.crit - a.crit || b.mid - a.mid);
   const agTable = LX.table(['Агент', '#Весь долг', `#${labels[3]}`, '#Клиентов', '#Доля старого', 'Структура', ''], ag.map(r => `<tr><td>${LX.ag(r.a)}</td><td class="n">${f(r.tot)}</td><td class="n ${r.crit ? 'neg' : ''}"><b>${r.crit ? f(r.crit) : '—'}</b></td><td class="n">${r.c.length ? `<span class="pill crit">${r.c.length}</span>` : '<span class="pill good">0 ✓</span>'}</td><td class="n ${pc(r.crit + r.mid, r.tot) > 50 ? 'neg' : ''}">${pc(r.crit + r.mid, r.tot)}%</td><td>${bar({ b: r.segs.map(s => s.value) })}</td><td>${r.c.length ? `<button class="btn gray sm" data-copy="${esc(r.a)}">📋 Список</button>${tgc.token && tgc.chats?.[r.a] ? ` <button class="btn gray sm" data-tg="${esc(r.a)}">✈ Агенту</button>` : ''}` : ''}</td></tr>`));
 
   body.innerHTML = `<div class="bar">${LX.agentSel(LX.agentsOf(all))}</div>
@@ -367,7 +373,7 @@ EXT_PAGES.lxage = async el => {
   bar0.innerHTML = `${FIL.map(([k, n]) => `<button class="btn ${LX.ageUi.f === k ? '' : 'gray'} sm" data-f="${k}">${esc(n)}</button>`).join(' ')}<input type="search" id="ageQ" placeholder="Клиент, агент, телефон…" value="${esc(LX.ageUi.q)}" style="flex:1 1 180px">`;
   const drawList = () => {
     const q = LX.ageUi.q.trim().toLowerCase(), k = LX.ageUi.f;
-    const L = live.filter(r => (k === 'all' || (k === 'crit' ? r.b[3] > 0.5 : k === 'mid' ? r.b[2] > 0.5 : r.b[1] > 0.5)) && (!q || [r.name, r.agent, r.phone, r.address].join(' ').toLowerCase().includes(q))).sort((a, b) => old(b) - old(a));
+    const L = live.filter(r => (k === 'all' || (k === 'crit' ? r.b[3] > 0.005 : k === 'mid' ? r.b[2] > 0.005 : r.b[1] > 0.005)) && (!q || [r.name, r.agent, r.phone, r.address].join(' ').toLowerCase().includes(q))).sort((a, b) => old(b) - old(a));
     $('#ageList', body).innerHTML = L.length ? LX.table(['Клиент', 'Агент', 'Телефон', 'Структура', ...labels.map(l => '#' + l), '#Всего', 'Последняя оплата', 'Обещание', 'Неоплаченные заказы', 'Адрес'],
       L.map(r => `<tr><td>${LX.cl(r.name)}</td><td>${esc(r.agent)}</td><td>${phone(r)}</td><td>${bar(r)}</td>${r.b.map((v, i) => `<td class="n ${i >= 2 && v ? 'neg' : ''}">${v ? f(v) : '—'}</td>`).join('')}<td class="n"><b>${f(r.total)}</b></td><td>${payTxt(r)}</td><td>${promTxt(r)}</td><td>${ordTxt(r)}</td><td><small>${esc([r.address, r.guide].filter(Boolean).join(' · '))}</small></td></tr>`), { max: '560px' }) + `<p class="mut" style="margin-top:8px">Показано ${L.length} из ${live.length} · на сумму ${$$(L.reduce((a, r) => a + r.total, 0))}</p>` : '<p class="mut">По фильтру никого нет.</p>';
   };
@@ -383,7 +389,7 @@ EXT_PAGES.lxage = async el => {
   body.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { try { await navigator.clipboard.writeText(msgFor(b.dataset.copy).replace(/<\/?b>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')); toast('Список скопирован'); } catch { toast('Не удалось скопировать'); } });
   body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const a = b.dataset.tg; if (!confirm(`Отправить агенту ${a} список из ${crit.filter(r => r.agent === a).length} клиентов в Telegram?`)) return; try { await TG.send(tgc.chats[a].id, msgFor(a)); toast('Отправлено агенту'); } catch (e) { toast('Telegram: ' + e.message); } });
   LX.bindAgent(body);
-  $('#lxCsv', el).onclick = () => UI.csv('просрочка-' + t0, [['Клиент', 'Агент', 'Телефон', ...labels, 'Всего', 'Последняя оплата', 'Дней без оплаты', 'Обещание', 'Неоплаченные заказы', 'Исключение', 'Адрес'], ...R.sort((a, b) => old(b) - old(a)).map(r => [r.name, r.agent, r.phone, ...r.b.map(Math.round), Math.round(r.total), r.last ? UI.dateRu(r.last) : 'нет', r.days ?? '', r.prom ? UI.dateRu(r.prom.date) : '', r.ords.map(o => '№' + o.id + ' ' + UI.dm(o.date) + ' $' + Math.round(o.sum)).join('; '), r.ex ? r.ex.reason : '', r.address])]);
+  $('#lxCsv', el).onclick = () => UI.csv('просрочка-' + t0, [['Клиент', 'Агент', 'Телефон', ...labels, 'Всего', 'Последняя оплата', 'Дней без оплаты', 'Обещание', 'Неоплаченные заказы', 'Исключение', 'Адрес'], ...R.sort((a, b) => old(b) - old(a)).map(r => [r.name, r.agent, r.phone, ...r.b.map(x => UI.c2(x)), UI.c2(r.total), r.last ? UI.dateRu(r.last) : 'нет', r.days ?? '', r.prom ? UI.dateRu(r.prom.date) : '', r.ords.map(o => '№' + o.id + ' ' + UI.dm(o.date) + ' $' + UI.c2(o.sum)).join('; '), r.ex ? r.ex.reason : '', r.address])]);
 };
 
 // ---------- Работа агентов (working day, visits, refusals) ----------

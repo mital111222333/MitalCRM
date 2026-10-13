@@ -140,7 +140,7 @@ const RT = {
     const file = $('#rtFile', box);
     $('#rtImp', box).onclick = () => file.click();
     file.onchange = async () => { const fl = file.files[0]; file.value = ''; if (fl) RT.importDialog(fl, d, agent, redraw); };
-    $('#rtExp', box).onclick = () => { const rows = [['День', 'Зона', '№', 'Клиент', 'Долг', 'Пул', 'План']]; for (let w = 1; w <= 6; w++) R.days[w].clients.forEach((n, i) => { const c = by.get(n); rows.push([ROUTE.DAYS[w], i ? '' : R.days[w].zone, i + 1, n, c ? Math.round(c.debt) : '', c?.pool || '', c?.plan || '']); }); UI.csv(`маршрут-${agent}.csv`, rows); };
+    $('#rtExp', box).onclick = () => { const rows = [['День', 'Зона', '№', 'Клиент', 'Долг', 'Пул', 'План']]; for (let w = 1; w <= 6; w++) R.days[w].clients.forEach((n, i) => { const c = by.get(n); rows.push([ROUTE.DAYS[w], i ? '' : R.days[w].zone, i + 1, n, c ? UI.c2(c.debt) : '', c?.pool || '', c?.plan || '']); }); UI.csv(`маршрут-${agent}.csv`, rows); };
     $('#rtTg', box).onclick = async () => {
       const conf = CRMLocal.ext().tg || {}; if (!conf.token || !conf.chats?.[agent]) return toast('Агент не привязан к Telegram (Отчёты → Telegram агентам)');
       const text = [`<b>🗺 Ваш маршрут на неделю, ${esc(agent)}</b>`, ...[1, 2, 3, 4, 5, 6].filter(w => R.days[w].clients.length).map(w => `\n<b>${ROUTE.DAYS[w]}${R.days[w].zone ? ' — ' + esc(R.days[w].zone) : ''}</b>\n` + R.days[w].clients.map((n, i) => `${i + 1}. ${esc(n)}`).join('\n'))].join('\n');

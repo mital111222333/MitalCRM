@@ -21,8 +21,8 @@ const REP = {
       for (const r of u.rows) {
         const key = u.period_from + '|' + r.client, p = prev.get(key) || { paid: 0, sold: 0 };
         const c = out.get(r.client) || { lastPay: null, lastBuy: null, firstSeen: u.taken_at };
-        if (r.paid > p.paid + 0.5) c.lastPay = u.taken_at;
-        if (r.sold > p.sold + 0.5) c.lastBuy = u.taken_at;
+        if (r.paid > p.paid + 0.005) c.lastPay = u.taken_at;
+        if (r.sold > p.sold + 0.005) c.lastBuy = u.taken_at;
         prev.set(key, { paid: r.paid, sold: r.sold }); out.set(r.client, c);
       }
     }
@@ -381,7 +381,7 @@ REP.debt = async (el, mode) => {
     for (const col of COLS) $(`[data-t="${col.k}"]`, wrap).textContent = col.tot ? f(cur.reduce((a, c) => a + ((col.vt ? col.vt(c) : col.v(c)) || 0), 0)) : '';
     $('tfoot td:nth-child(2)', wrap).textContent = `Итого · ${cur.length}`;
     wrap.querySelectorAll('thead th[data-k]').forEach(th => { const k = th.dataset.k; th.classList.toggle('fa', !!S.f[k]); th.querySelector('.si').textContent = S.sort.k === k ? (S.sort.dir > 0 ? ' ▲' : ' ▼') : ''; });
-    $('#xgInfo', body).textContent = `Показано ${cur.length} из ${list.length}${cur.length > MAX ? ` (на экране первые ${MAX})` : ''} · долг $${f(cur.reduce((a, c) => a + c.debt, 0))} · остаток по плану сбора $${f(cur.reduce((a, c) => a + (c.pool ? Math.max(0, c.pool - c.paid) : 0), 0))} · вписано $${f(cur.reduce((a, c) => a + sum0(c), 0))}`;
+    $('#xgInfo', body).textContent = `Показано ${cur.length} из ${list.length}${cur.length > MAX ? ` (на экране первые ${MAX})` : ''} · долг $${f(cur.reduce((a, c) => a + c.debt, 0))} · остаток клиентов $${f(cur.reduce((a, c) => a + (c.pool ? Math.max(0, c.pool - c.paid) : 0), 0))} (пул − собрано = $${f(cur.reduce((a, c) => a + (c.pool || 0) - (c.paid || 0), 0))}: разница — переплаты и оплаты вне плана) · вписано $${f(cur.reduce((a, c) => a + sum0(c), 0))}`;
     $('#xgReset', body).style.display = Object.keys(S.f).length ? '' : 'none';
   };
 
@@ -515,7 +515,7 @@ EXT_PAGES.rsleep = async el => {
     for (const c of chosen) await CRMLocal.request('POST', '/api/ag/tasks', { client: c.name, kind: 'Продажа', text, target: 0, due: dueS });
     await CRMLocal.flush(); toast(`Создано заданий: ${chosen.length}`); re();
   };
-  $('#rCsv', el).onclick = () => UI.csv(`спящие-клиенты-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Телефон', 'Последняя покупка', 'Дней без покупок', 'Последняя оплата', 'Долг $'], ...list.map(c => [c.name, c.agent, c.phone || '', c.lastBuy ? UI.dateRu(c.lastBuy) : 'нет', c.lastBuy ? c.buyDays : '', c.lastPay ? UI.dateRu(c.lastPay) : 'нет', Math.round(c.debt)])]);
+  $('#rCsv', el).onclick = () => UI.csv(`спящие-клиенты-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Телефон', 'Последняя покупка', 'Дней без покупок', 'Последняя оплата', 'Долг $'], ...list.map(c => [c.name, c.agent, c.phone || '', c.lastBuy ? UI.dateRu(c.lastBuy) : 'нет', c.lastBuy ? c.buyDays : '', c.lastPay ? UI.dateRu(c.lastPay) : 'нет', UI.c2(c.debt)])]);
 };
 
 // ---------- Динамика по месяцам ----------
@@ -594,5 +594,5 @@ EXT_PAGES.rdays = async el => {
     </div>`;
   $('#dBy', body).onchange = e => { S.by = e.target.value; EXT_PAGES.rdays(el); };
   $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdays(el); };
-  $('#rCsv', el).onclick = () => UI.csv(`продажи-и-сбор-${S.by}.csv`, [['Период', 'Продано', 'Возвраты', 'Собрано', ...agents.flatMap(a => [a + ' продано', a + ' собрано'])], ...G.map(g => [label(g.k), Math.round(g.sold), Math.round(g.ret), Math.round(g.paid), ...agents.flatMap(a => [Math.round(g.agents[a]?.sold || 0), Math.round(g.agents[a]?.paid || 0)])])]);
+  $('#rCsv', el).onclick = () => UI.csv(`продажи-и-сбор-${S.by}.csv`, [['Период', 'Продано', 'Возвраты', 'Собрано', ...agents.flatMap(a => [a + ' продано', a + ' собрано'])], ...G.map(g => [label(g.k), UI.c2(g.sold), UI.c2(g.ret), UI.c2(g.paid), ...agents.flatMap(a => [UI.c2(g.agents[a]?.sold || 0), UI.c2(g.agents[a]?.paid || 0)])])]);
 };
