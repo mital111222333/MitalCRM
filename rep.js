@@ -167,6 +167,42 @@ EXT_PAGES.rday = async el => {
   $('#rSend', el).onclick = () => { location.hash = '#/tg'; };
 };
 
+// ---------- График оплат клиентов: «13-500$, 14-1000$» (ext.payPlan) ----------
+const PAYPLAN = {
+  all: () => (CRMLocal.ext().payPlan ||= {}),
+  of: name => (PAYPLAN.all()[name] || []).slice().sort((a, b) => a.d.localeCompare(b.d)),
+  set(name, list) { if (list.length) PAYPLAN.all()[name] = list; else delete PAYPLAN.all()[name]; CRMLocal.touch(); },
+  // "13-500$, 14-1000$" or "15.10-3500" → [{d:'2026-10-13', s:500}]; a bare day is this month (next month if it is far in the past)
+  parse(text) {
+    const t0 = REP.today(), [Y, M] = t0.split('-').map(Number), ok = [], bad = [];
+    const parts = String(text || '').split(/\s*[;\n]+\s*|,\s+(?=\d{1,2}(?:[.\/]\d{1,2})?\s*[-–—:=])/).map(x => x.trim()).filter(Boolean);
+    for (const part of parts) {
+      const m = part.match(/^(\d{1,2})(?:[.\/](\d{1,2}))?\s*[-–—:=]\s*\$?\s*([\d\s.,']+?)\s*\$?$/);
+      if (!m) { bad.push(part); continue; }
+      let amt = m[3].replace(/[\s']/g, ''); amt = /^\d{1,3}(,\d{3})+$/.test(amt) ? amt.replace(/,/g, '') : amt.replace(',', '.');
+      const sum = Number(amt), day = +m[1], mon = m[2] ? +m[2] : M;
+      const mk = (y, mo) => { const dt = new Date(y, mo - 1, day); return dt.getMonth() === mo - 1 && dt.getDate() === day ? UI.localDate(dt.getTime()) : null; };
+      let d = mon >= 1 && mon <= 12 ? mk(Y, mon) : null;
+      if (d && !m[2] && REP.days(d, t0) > 15) d = mk(M === 12 ? Y + 1 : Y, M === 12 ? 1 : M + 1);
+      if (!d || !(sum > 0)) { bad.push(part); continue; }
+      ok.push({ d, s: Math.round(sum * 100) / 100 });
+    }
+    return { ok: ok.sort((a, b) => a.d.localeCompare(b.d)), bad };
+  },
+  text(list) { const m0 = REP.today().slice(5, 7); return list.map(x => `${x.d.slice(8)}${x.d.slice(5, 7) === m0 ? '' : '.' + x.d.slice(5, 7)}-${x.s}$`).join(', '); },
+  edit(name, done) {
+    const cur = PAYPLAN.of(name), f = UI.fmt0;
+    const m = modal(`<h3 style="margin:0 0 4px">${esc(name)}</h3><p class="mut" style="margin:0 0 10px">Когда и сколько клиент ещё заплатит. Пишите через запятую: <b>13-500$, 14-1000$, 15-1000$</b>. Число — день этого месяца (или <b>15.11-500</b>, если другой месяц).</p>
+      <textarea id="ppT" rows="3" style="width:100%" placeholder="13-500$, 14-1000$">${esc(PAYPLAN.text(cur))}</textarea><div id="ppP" style="margin:8px 0;min-height:22px"></div>
+      <div class="bar"><span class="spacer"></span>${cur.length ? '<button class="btn gray" id="ppDel">Очистить</button>' : ''}<button class="btn gray" id="ppX">Отмена</button><button class="btn" id="ppOk">Сохранить</button></div>`);
+    const t = $('#ppT', m.el), pv = () => { const r = PAYPLAN.parse(t.value), tot = r.ok.reduce((a, x) => a + x.s, 0); $('#ppP', m.el).innerHTML = (r.ok.length ? `${r.ok.map(x => `<span class="chip">${UI.dateRu(x.d)} · $${f(x.s)}</span>`).join(' ')} <b>Итого $${f(tot)}</b>` : '<span class="mut">Пока пусто</span>') + (r.bad.length ? `<div class="neg" style="margin-top:4px">Не понял: ${esc(r.bad.join('; '))}. Пример: 13-500$</div>` : ''); $('#ppOk', m.el).disabled = !!r.bad.length; };
+    t.oninput = pv; pv(); t.focus();
+    $('#ppX', m.el).onclick = () => m.close();
+    if ($('#ppDel', m.el)) $('#ppDel', m.el).onclick = () => { PAYPLAN.set(name, []); m.close(); done(); };
+    $('#ppOk', m.el).onclick = () => { PAYPLAN.set(name, PAYPLAN.parse(t.value).ok); m.close(); done(); };
+  },
+};
+
 // ---------- Дебиторка ----------
 let repDebt = { agent: '', bucket: '' };
 EXT_PAGES.rdebt = async el => {
@@ -196,14 +232,18 @@ EXT_PAGES.rdebt = async el => {
     ${UI.panel('План сбора по агентам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th><th class="n">Пул</th><th class="n">Собрано</th><th class="n">%</th><th class="n">Осталось собрать</th><th class="n">Ещё соберёт</th><th class="n">Итого к ${UI.dm(d.forecast.period_end || d.upload.period_to)}</th><th class="n">Не хватает</th><th class="n">Долг клиентов</th></tr></thead><tbody>${d.agents.map(a => { const mp = a.more_pool || 0, tot = a.paid + mp, gap = Math.max(0, a.pool - tot); return `<tr><td><a class="clink" data-agent="${esc(a.agent)}">${esc(a.agent)}</a></td><td class="n">${a.pool ? f(a.pool) : '—'}</td><td class="n"><b>${f(a.paid)}</b></td><td class="n">${a.pool ? UI.pct(a.paid, a.pool) + '%' : '—'}</td><td class="n">${a.pool ? f(Math.max(0, a.pool - a.paid)) : '—'}</td><td class="n">${mp ? f(mp) : '—'}</td><td class="n"><b>${f(tot)}</b>${a.pool ? `<br><small>${UI.pct(tot, a.pool)}%</small>` : ''}</td><td class="n">${a.pool ? (gap ? `<b class="neg">${f(gap)}</b>` : UI.pill('good', 'закрыт', '✓')) : '—'}</td><td class="n">${f(a.debt)}</td></tr>`; }).join('')}</tbody></table></div>`, { cls: 'w12', sub: 'Сколько ещё нужно собрать до конца периода и сколько закроется с учётом ваших ожиданий' })}
     ${UI.panel('Возраст долга по агентам', CH.stack100(d.agents.filter(a => a.debt > 0).map(a => ({ label: `${a.agent} · $${f(a.debt)}`, segs: REP.BUCKETS.map(([k, n, color]) => ({ name: n, value: sumB(debtors.filter(c => c.agent === a.agent), k), color })) }))), { cls: 'w7', sub: 'Сколько дней прошло с последней оплаты клиента' })}
     ${UI.panel('Весь долг по сроку', CH.hbars(REP.BUCKETS.map(([k, n, color]) => ({ label: n, value: sumB(debtors, k), color, sub: `${debtors.filter(c => c.bucket === k).length} кл.` })), { fmt: UI.fmt0 }), { cls: 'w5' })}
-    ${UI.panel('Должники', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="mut">${list.length} клиентов · $${f(list.reduce((s, c) => s + c.debt, 0))}</span></div>
-      <div class="scroll"><table><thead><tr><th>Клиент</th><th>Агент</th><th class="n">Долг</th><th class="n">Последняя оплата</th><th class="n">Последняя покупка</th><th class="n">Продано / оплачено за период</th><th class="n">Пул / ещё соберёт</th><th>Заметка</th></tr></thead><tbody>${list.slice(0, 400).map(c => `<tr><td><a class="clink" data-client="${esc(c.name)}">${esc(c.name)}</a>${c.phone ? `<br><small><a href="tel:${esc(c.phone)}">${esc(c.phone)}</a></small>` : ''}</td><td>${esc(c.agent)}</td><td class="n"><b>${f(c.debt)}</b></td><td class="n">${REP.pay(c)}</td><td class="n">${REP.buy(c)}</td><td class="n">${f(c.sold)} / ${f(c.paid)}</td><td class="n">${c.pool ? f(c.pool) : '—'} / ${c.more_pool ? f(c.more_pool) : '—'}${c.pool ? `<br><small>осталось ${f(Math.max(0, c.pool - c.paid))}</small>` : ''}</td><td><small>${esc(c.note || '')}</small></td></tr>`).join('')}</tbody></table></div>
-      <p class="mut" style="margin:10px 0 0">«Последняя оплата» — дата загрузки, в которой у клиента выросла сумма оплат. Загружайте выгрузку каждый день — даты будут точными. Самые срочные (большой долг и давно не платил) — вверху.</p>`, { cls: 'w12' })}
+    ${(() => { const t0 = REP.today(), by = new Map(); let cnt = 0; for (const c of list) { const pl = PAYPLAN.of(c.name); if (pl.length) cnt++; for (const x of pl) { const o = by.get(x.d) || { sum: 0, n: 0 }; o.sum += x.s; o.n++; by.set(x.d, o); } }
+      const days = [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])), todaySum = by.get(t0)?.sum || 0, all = days.reduce((a, [, o]) => a + o.sum, 0);
+      return UI.panel('Ожидаемые оплаты по датам', days.length ? CH.hbars(days.slice(0, 20).map(([dt, o]) => ({ label: UI.dateRu(dt) + (dt === t0 ? ' · сегодня' : dt < t0 ? ' · прошла' : ''), sub: `${o.n} ${UI.plural(o.n, 'клиент', 'клиента', 'клиентов')}`, value: o.sum, color: dt < t0 ? 'var(--c-other, #999)' : 'var(--c3)' })), { unit: ' $', fmt: f }) : '<p class="mut">Пока ничего не вписано. В таблице ниже нажмите «＋» у клиента и напишите, когда и сколько он заплатит.</p>', { cls: 'w12', sub: days.length ? `Вписано по ${cnt} клиентам на $${f(all)}${todaySum ? ` · сегодня ждём $${f(todaySum)}` : ''}` : 'Ваш график оплат по клиентам, сложенный по дням' }); })()}
+    ${UI.panel('Должники', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="mut">${list.length} клиентов · долг $${f(list.reduce((s, c) => s + c.debt, 0))} · остаток по плану сбора $${f(list.reduce((s, c) => s + Math.max(0, (c.pool || 0) - c.paid), 0))} · вписано $${f(list.reduce((s, c) => s + PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0), 0))}</span></div>
+      <div class="scroll"><table><thead><tr><th>Клиент</th><th>Агент</th><th class="n">Долг</th><th class="n">Последняя оплата</th><th class="n">Последняя покупка</th><th class="n">План продаж</th><th class="n">Продано</th><th class="n">План сбора</th><th class="n">Собрано</th><th class="n">Остаток клиента</th><th>Дата оплаты</th><th class="n">Ещё оплатит</th><th>Заметка</th></tr></thead><tbody>${list.slice(0, 400).map(c => { const pl = PAYPLAN.of(c.name), left = Math.max(0, (c.pool || 0) - c.paid), t0 = REP.today(), tot = pl.reduce((a, x) => a + x.s, 0); return `<tr><td><a class="clink" data-client="${esc(c.name)}">${esc(c.name)}</a></td><td>${esc(c.agent)}</td><td class="n"><b>${f(c.debt)}</b></td><td class="n">${REP.pay(c)}</td><td class="n">${REP.buy(c)}</td><td class="n">${c.plan ? f(c.plan) : '—'}</td><td class="n">${f(c.sold)}</td><td class="n">${c.pool ? f(c.pool) : '—'}</td><td class="n"><b>${f(c.paid)}</b></td><td class="n">${c.pool ? (left ? `<b class="neg">${f(left)}</b>` : UI.pill('good', 'закрыт', '✓')) : '—'}</td><td>${pl.map(x => `<div class="${x.d < t0 ? 'neg' : ''}" title="${x.d < t0 ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('')}<button class="btn gray sm" data-pp="${esc(c.name)}" title="Когда и сколько клиент ещё заплатит">${pl.length ? '✎' : '＋ Дата'}</button></td><td class="n">${pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(tot)}</b>` : '') : '—'}</td><td><small>${esc(c.note || '')}</small></td></tr>`; }).join('')}</tbody></table></div>
+      <p class="mut" style="margin:10px 0 0">«Остаток клиента» = план сбора минус собрано. «Дата оплаты» и «Ещё оплатит» вы заполняете сами: нажмите «＋ Дата» / «✎» и впишите, например, 13-500$, 14-1000$. Красная дата — уже прошла. «Последняя оплата» — дата загрузки, в которой выросла сумма оплат; загружайте выгрузку каждый день, чтобы даты были точными. Самые срочные (большой долг и давно не платил) — вверху.</p>`, { cls: 'w12' })}
   </div>`;
   $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdebt(el); };
   $('#rB', body).onchange = e => { S.bucket = e.target.value; EXT_PAGES.rdebt(el); };
+  body.querySelectorAll('[data-pp]').forEach(b => b.onclick = () => PAYPLAN.edit(b.dataset.pp, () => EXT_PAGES.rdebt(el)));
   $('#rPrint', el).onclick = REP.print;
-  $('#rCsv', el).onclick = () => UI.csv(`дебиторка-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Телефон', 'Долг $', 'Последняя оплата', 'Дней без оплаты', 'Последняя покупка', 'Срок долга', 'Заметка'], ...list.map(c => [c.name, c.agent, c.phone || '', Math.round(c.debt), c.lastPay ? UI.dateRu(c.lastPay) : 'не платил', c.payDays ?? '', c.lastBuy ? UI.dateRu(c.lastBuy) : '', REP.BUCKETS.find(b => b[0] === c.bucket)?.[1] || '', c.note || ''])]);
+  $('#rCsv', el).onclick = () => UI.csv(`дебиторка-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Долг $', 'Последняя оплата', 'Дней без оплаты', 'Последняя покупка', 'Срок долга', 'План продаж', 'Продано', 'План сбора', 'Собрано', 'Остаток клиента', 'Дата оплаты → сумма', 'Ещё оплатит всего', 'Заметка'], ...list.map(c => { const pl = PAYPLAN.of(c.name); return [c.name, c.agent, Math.round(c.debt), c.lastPay ? UI.dateRu(c.lastPay) : 'не платил', c.payDays ?? '', c.lastBuy ? UI.dateRu(c.lastBuy) : '', REP.BUCKETS.find(b => b[0] === c.bucket)?.[1] || '', Math.round(c.plan || 0), Math.round(c.sold), Math.round(c.pool || 0), Math.round(c.paid), c.pool ? Math.round(Math.max(0, c.pool - c.paid)) : '', pl.map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round(pl.reduce((a, x) => a + x.s, 0)), c.note || '']; })]);
 };
 
 // ---------- Спящие клиенты ----------
