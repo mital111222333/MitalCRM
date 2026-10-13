@@ -203,8 +203,36 @@ const PAYPLAN = {
   },
 };
 
+// Excel-like grid: frozen header (title + filter row), frozen № and client columns, grid lines, totals row
+function injectGridCss() {
+  if (document.getElementById('xgCss')) return;
+  const st = document.createElement('style'); st.id = 'xgCss';
+  st.textContent = `
+.xg-wrap{max-height:calc(100vh - 210px);min-height:340px;overflow:auto;border:1px solid var(--line-2,var(--line));border-radius:8px;background:var(--card)}
+table.xg{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;box-shadow:none;border:0;border-radius:0;overflow:visible;font-size:13px}
+table.xg th,table.xg td{padding:5px 10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:middle;background:var(--card)}
+table.xg tbody tr:nth-child(even) td{background:color-mix(in srgb,var(--text) 3.5%,var(--card))}
+table.xg tbody tr:hover td{background:color-mix(in srgb,var(--c1,#2a9d8f) 11%,var(--card))}
+table.xg tbody tr.sel td{background:color-mix(in srgb,var(--c1,#2a9d8f) 20%,var(--card));box-shadow:inset 0 1px 0 var(--c1,#2a9d8f),inset 0 -1px 0 var(--c1,#2a9d8f)}
+table.xg thead th{position:sticky;z-index:4;background:color-mix(in srgb,var(--text) 10%,var(--card));font-size:12px}
+table.xg thead tr.hd th{top:0;height:34px;cursor:pointer;user-select:none}
+table.xg thead tr.hd th:hover{background:color-mix(in srgb,var(--text) 16%,var(--card))}
+table.xg thead tr.ft th{top:34px;padding:3px 4px;border-bottom:2px solid var(--line-2,var(--line));cursor:default}
+table.xg th.n,table.xg td.n{text-align:right;font-variant-numeric:tabular-nums}
+table.xg .rn{position:sticky;left:0;z-index:2;width:38px;min-width:38px;text-align:center;color:var(--muted);font-size:11px;background:color-mix(in srgb,var(--text) 7%,var(--card))!important}
+table.xg .c1{position:sticky;left:38px;z-index:2;min-width:190px;white-space:normal;box-shadow:2px 0 0 var(--line-2,var(--line))}
+table.xg thead .rn,table.xg thead .c1,table.xg tfoot .rn,table.xg tfoot .c1{z-index:6}
+table.xg tfoot td{position:sticky;bottom:0;z-index:3;font-weight:600;background:color-mix(in srgb,var(--text) 10%,var(--card))!important;border-top:2px solid var(--line-2,var(--line))}
+table.xg td small{font-weight:400}
+table.xg td .btn.sm{padding:2px 8px;min-height:24px;font-size:12px;margin-top:2px}
+table.xg input.fi{width:100%;min-width:76px;padding:3px 6px;font-size:12px;min-height:26px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--text)}
+table.xg input.fi.on{border-color:var(--c1,#2a9d8f);background:color-mix(in srgb,var(--c1,#2a9d8f) 16%,var(--card))}
+@media print{.xg-wrap{max-height:none;overflow:visible}}`;
+  document.head.appendChild(st);
+}
+
 // ---------- Дебиторка ----------
-let repDebt = { agent: '', bucket: '' };
+let repDebt = { agent: '', bucket: '', f: {}, sort: { k: 'score', dir: -1 } };
 EXT_PAGES.rdebt = async el => {
   const d = await REP.load(), body = REP.shell(el, 'rdebt', d, '<button class="btn gray" id="rCsv">⬇ Excel (CSV)</button><button class="btn gray" id="rPrint">Печать / PDF</button>');
   if (d.empty) return REP.empty(body);
@@ -235,15 +263,77 @@ EXT_PAGES.rdebt = async el => {
     ${(() => { const t0 = REP.today(), by = new Map(); let cnt = 0; for (const c of list) { const pl = PAYPLAN.of(c.name); if (pl.length) cnt++; for (const x of pl) { const o = by.get(x.d) || { sum: 0, n: 0 }; o.sum += x.s; o.n++; by.set(x.d, o); } }
       const days = [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])), todaySum = by.get(t0)?.sum || 0, all = days.reduce((a, [, o]) => a + o.sum, 0);
       return UI.panel('Ожидаемые оплаты по датам', days.length ? CH.hbars(days.slice(0, 20).map(([dt, o]) => ({ label: UI.dateRu(dt) + (dt === t0 ? ' · сегодня' : dt < t0 ? ' · прошла' : ''), sub: `${o.n} ${UI.plural(o.n, 'клиент', 'клиента', 'клиентов')}`, value: o.sum, color: dt < t0 ? 'var(--c-other, #999)' : 'var(--c3)' })), { unit: ' $', fmt: f }) : '<p class="mut">Пока ничего не вписано. В таблице ниже нажмите «＋» у клиента и напишите, когда и сколько он заплатит.</p>', { cls: 'w12', sub: days.length ? `Вписано по ${cnt} клиентам на $${f(all)}${todaySum ? ` · сегодня ждём $${f(todaySum)}` : ''}` : 'Ваш график оплат по клиентам, сложенный по дням' }); })()}
-    ${UI.panel('Должники', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="mut">${list.length} клиентов · долг $${f(list.reduce((s, c) => s + c.debt, 0))} · остаток по плану сбора $${f(list.reduce((s, c) => s + Math.max(0, (c.pool || 0) - c.paid), 0))} · вписано $${f(list.reduce((s, c) => s + PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0), 0))}</span></div>
-      <div class="scroll"><table><thead><tr><th>Клиент</th><th>Агент</th><th class="n">Долг</th><th class="n">Последняя оплата</th><th class="n">Последняя покупка</th><th class="n">План продаж</th><th class="n">Продано</th><th class="n">План сбора</th><th class="n">Собрано</th><th class="n">Остаток клиента</th><th>Дата оплаты</th><th class="n">Ещё оплатит</th><th>Заметка</th></tr></thead><tbody>${list.slice(0, 400).map(c => { const pl = PAYPLAN.of(c.name), left = Math.max(0, (c.pool || 0) - c.paid), t0 = REP.today(), tot = pl.reduce((a, x) => a + x.s, 0); return `<tr><td><a class="clink" data-client="${esc(c.name)}">${esc(c.name)}</a></td><td>${esc(c.agent)}</td><td class="n"><b>${f(c.debt)}</b></td><td class="n">${REP.pay(c)}</td><td class="n">${REP.buy(c)}</td><td class="n">${c.plan ? f(c.plan) : '—'}</td><td class="n">${f(c.sold)}</td><td class="n">${c.pool ? f(c.pool) : '—'}</td><td class="n"><b>${f(c.paid)}</b></td><td class="n">${c.pool ? (left ? `<b class="neg">${f(left)}</b>` : UI.pill('good', 'закрыт', '✓')) : '—'}</td><td>${pl.map(x => `<div class="${x.d < t0 ? 'neg' : ''}" title="${x.d < t0 ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('')}<button class="btn gray sm" data-pp="${esc(c.name)}" title="Когда и сколько клиент ещё заплатит">${pl.length ? '✎' : '＋ Дата'}</button></td><td class="n">${pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(tot)}</b>` : '') : '—'}</td><td><small>${esc(c.note || '')}</small></td></tr>`; }).join('')}</tbody></table></div>
-      <p class="mut" style="margin:10px 0 0">«Остаток клиента» = план сбора минус собрано. «Дата оплаты» и «Ещё оплатит» вы заполняете сами: нажмите «＋ Дата» / «✎» и впишите, например, 13-500$, 14-1000$. Красная дата — уже прошла. «Последняя оплата» — дата загрузки, в которой выросла сумма оплат; загружайте выгрузку каждый день, чтобы даты были точными. Самые срочные (большой долг и давно не платил) — вверху.</p>`, { cls: 'w12' })}
+    ${UI.panel('Должники', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span id="xgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="xgReset" style="display:none">✕ Сбросить фильтры</button></div>
+      <div class="xg-wrap" id="xgW"></div>
+      <p class="mut" style="margin:10px 0 0">Нажмите на название столбца — сортировка. Под названием — фильтр: для текста пишите часть слова; для чисел <b>&gt;1000</b>, <b>&lt;=500</b>, <b>100-500</b>, <b>0</b> (равно) или <b>пусто</b>. У «Последняя оплата / покупка» фильтр считается в днях («&gt;30» = больше 30 дней назад). «Остаток клиента» = план сбора минус собрано. «Дата оплаты» и «Ещё оплатит» вы заполняете сами («＋ Дата» / «✎»). Красная дата — уже прошла. Строка «Итого» внизу считается по тому, что видно после фильтров. Нажмите на строку — она подсветится.</p>`, { cls: 'w12' })}
   </div>`;
+  injectGridCss();
+  const t0g = REP.today();
+  const sum0 = c => PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0);
+  const firstDate = c => PAYPLAN.of(c.name)[0]?.d || '';
+  const COLS = [
+    { k: 'name', t: 'Клиент', kind: 'text', v: c => c.name },
+    { k: 'agent', t: 'Агент', kind: 'text', v: c => c.agent },
+    { k: 'debt', t: 'Долг', kind: 'num', v: c => c.debt, tot: true, cell: c => `<b>${f(c.debt)}</b>` },
+    { k: 'pay', t: 'Последняя оплата', kind: 'num', v: c => (c.lastPay ? c.payDays : null), cell: c => REP.pay(c) },
+    { k: 'buy', t: 'Последняя покупка', kind: 'num', v: c => (c.lastBuy ? c.buyDays : null), cell: c => REP.buy(c) },
+    { k: 'plan', t: 'План продаж', kind: 'num', v: c => c.plan || 0, tot: true, cell: c => (c.plan ? f(c.plan) : '—') },
+    { k: 'sold', t: 'Продано', kind: 'num', v: c => c.sold || 0, tot: true, cell: c => f(c.sold) },
+    { k: 'pool', t: 'План сбора', kind: 'num', v: c => c.pool || 0, tot: true, cell: c => (c.pool ? f(c.pool) : '—') },
+    { k: 'paid', t: 'Собрано', kind: 'num', v: c => c.paid || 0, tot: true, cell: c => `<b>${f(c.paid)}</b>` },
+    { k: 'left', t: 'Остаток клиента', kind: 'num', v: c => (c.pool ? Math.max(0, c.pool - c.paid) : null), tot: true, cell: c => (c.pool ? (Math.max(0, c.pool - c.paid) ? `<b class="neg">${f(Math.max(0, c.pool - c.paid))}</b>` : UI.pill('good', 'закрыт', '✓')) : '—') },
+    { k: 'date', t: 'Дата оплаты', kind: 'text', v: c => PAYPLAN.of(c.name).map(x => UI.dm(x.d)).join(' '), sv: c => firstDate(c) || '9999',
+      cell: c => { const pl = PAYPLAN.of(c.name); return pl.map(x => `<div class="${x.d < t0g ? 'neg' : ''}" title="${x.d < t0g ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('') + `<button class="btn gray sm" data-pp="${esc(c.name)}" title="Когда и сколько клиент ещё заплатит">${pl.length ? '✎' : '＋ Дата'}</button>`; } },
+    { k: 'tot', t: 'Ещё оплатит', kind: 'num', v: c => { const x = sum0(c); return x || null; }, tot: true, vt: c => sum0(c),
+      cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(sum0(c))}</b>` : '') : '—'; } },
+    { k: 'note', t: 'Заметка', kind: 'text', v: c => c.note || '', cell: c => `<small>${esc(c.note || '')}</small>` },
+  ];
+  // filter: text = contains; number = >N, >=N, <N, <=N, =N, N, A-B, пусто
+  const mk = (col, q) => {
+    q = q.trim(); if (!q) return null;
+    if (col.kind === 'text') { const w = q.toLowerCase(); return c => String(col.v(c) ?? '').toLowerCase().includes(w); }
+    const z = q.replace(/\s+/g, '').replace(',', '.'); let m;
+    if (/^(пусто|нет|-|—)$/i.test(z)) return c => col.v(c) === null;
+    if ((m = z.match(/^(>=|<=|>|<|=|!=)(-?\d+(?:\.\d+)?)$/))) { const n = +m[2]; return c => { const v = col.v(c); if (v === null) return false; return { '>=': v >= n, '<=': v <= n, '>': v > n, '<': v < n, '=': v === n, '!=': v !== n }[m[1]]; }; }
+    if ((m = z.match(/^(-?\d+(?:\.\d+)?)(?:-|\.\.|…)(-?\d+(?:\.\d+)?)$/))) { const lo = Math.min(+m[1], +m[2]), hi = Math.max(+m[1], +m[2]); return c => { const v = col.v(c); return v !== null && v >= lo && v <= hi; }; }
+    if (/^-?\d+(?:\.\d+)?$/.test(z)) return c => col.v(c) === +z;
+    return () => true;
+  };
+  const view = () => {
+    const fl = COLS.map(col => mk(col, S.f[col.k] || '')).filter(Boolean);
+    const rows = list.filter(c => COLS.every(col => { const g = mk(col, S.f[col.k] || ''); return !g || g(c); }));
+    const sc = COLS.find(x => x.k === S.sort.k);
+    const val = c => (sc ? (sc.sv ? sc.sv(c) : sc.v(c)) : c.score);
+    rows.sort((a, b) => { const x = sc ? val(a) : a.score, y = sc ? val(b) : b.score; if (x === y) return 0; if (x === null) return 1; if (y === null) return -1; return (typeof x === 'string' ? x.localeCompare(y) : x - y) * S.sort.dir; });
+    return rows;
+  };
+  const wrap = $('#xgW', body);
+  wrap.innerHTML = `<table class="xg"><thead><tr class="hd"><th class="rn">№</th>${COLS.map((col, i) => `<th class="${i === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''}" data-s="${col.k}">${col.t}<span class="si"></span></th>`).join('')}</tr>
+    <tr class="ft"><th class="rn"></th>${COLS.map((col, i) => `<th class="${i === 0 ? 'c1' : ''}"><input class="fi" data-f="${col.k}" placeholder="${col.kind === 'num' ? '> 1000' : 'фильтр'}" value="${esc(S.f[col.k] || '')}" aria-label="Фильтр: ${esc(col.t)}"></th>`).join('')}</tr></thead>
+    <tbody></tbody><tfoot><tr><td class="rn"></td>${COLS.map((col, i) => `<td class="${i === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''}" data-t="${col.k}"></td>`).join('')}</tr></tfoot></table>`;
+  const tb = $('tbody', wrap);
+  let cur = [];
+  const draw = () => {
+    cur = view(); const MAX = 1000;
+    tb.innerHTML = cur.slice(0, MAX).map((c, i) => `<tr><td class="rn">${i + 1}</td>${COLS.map((col, j) => `<td class="${j === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''}">${j === 0 ? `<a class="clink" data-client="${esc(c.name)}">${esc(c.name)}</a>` : col.cell ? col.cell(c) : esc(String(col.v(c) ?? ''))}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${COLS.length + 1}" class="mut" style="padding:18px;text-align:center">По фильтрам никого нет</td></tr>`;
+    for (const col of COLS) { const td = $(`[data-t="${col.k}"]`, wrap); td.textContent = col.tot ? '$' + f(cur.reduce((a, c) => a + ((col.vt ? col.vt(c) : col.v(c)) || 0), 0)) : ''; }
+    $('tfoot td:nth-child(2)', wrap).textContent = `Итого · ${cur.length}`;
+    wrap.querySelectorAll('th[data-s]').forEach(th => { th.querySelector('.si').textContent = S.sort.k === th.dataset.s ? (S.sort.dir > 0 ? ' ▲' : ' ▼') : ''; });
+    const any = COLS.some(col => (S.f[col.k] || '').trim());
+    $('#xgInfo', body).textContent = `Показано ${cur.length} из ${list.length}${cur.length > MAX ? ` (на экране первые ${MAX})` : ''} · долг $${f(cur.reduce((a, c) => a + c.debt, 0))} · остаток по плану сбора $${f(cur.reduce((a, c) => a + (c.pool ? Math.max(0, c.pool - c.paid) : 0), 0))} · вписано $${f(cur.reduce((a, c) => a + sum0(c), 0))}`;
+    $('#xgReset', body).style.display = any ? '' : 'none';
+    wrap.querySelectorAll('input.fi').forEach(i => i.classList.toggle('on', !!i.value.trim()));
+    wrap.querySelectorAll('[data-pp]').forEach(b => b.onclick = () => PAYPLAN.edit(b.dataset.pp, () => EXT_PAGES.rdebt(el)));
+  };
+  wrap.querySelectorAll('th[data-s]').forEach(th => th.onclick = () => { const k = th.dataset.s; S.sort = S.sort.k === k ? (S.sort.n === 1 ? { k, dir: -S.sort.dir, n: 2 } : { k: 'score', dir: -1 }) : { k, dir: COLS.find(x => x.k === k).kind === 'num' ? -1 : 1, n: 1 }; draw(); });
+  wrap.querySelectorAll('input.fi').forEach(i => i.oninput = () => { S.f[i.dataset.f] = i.value; draw(); });
+  tb.onclick = e => { if (e.target.closest('a,button,input')) return; const tr = e.target.closest('tr'); if (!tr) return; const was = tr.classList.contains('sel'); tb.querySelectorAll('tr.sel').forEach(x => x.classList.remove('sel')); if (!was) tr.classList.add('sel'); };
+  $('#xgReset', body).onclick = () => { S.f = {}; wrap.querySelectorAll('input.fi').forEach(i => { i.value = ''; }); draw(); };
+  draw();
   $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdebt(el); };
   $('#rB', body).onchange = e => { S.bucket = e.target.value; EXT_PAGES.rdebt(el); };
-  body.querySelectorAll('[data-pp]').forEach(b => b.onclick = () => PAYPLAN.edit(b.dataset.pp, () => EXT_PAGES.rdebt(el)));
   $('#rPrint', el).onclick = REP.print;
-  $('#rCsv', el).onclick = () => UI.csv(`дебиторка-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Долг $', 'Последняя оплата', 'Дней без оплаты', 'Последняя покупка', 'Срок долга', 'План продаж', 'Продано', 'План сбора', 'Собрано', 'Остаток клиента', 'Дата оплаты → сумма', 'Ещё оплатит всего', 'Заметка'], ...list.map(c => { const pl = PAYPLAN.of(c.name); return [c.name, c.agent, Math.round(c.debt), c.lastPay ? UI.dateRu(c.lastPay) : 'не платил', c.payDays ?? '', c.lastBuy ? UI.dateRu(c.lastBuy) : '', REP.BUCKETS.find(b => b[0] === c.bucket)?.[1] || '', Math.round(c.plan || 0), Math.round(c.sold), Math.round(c.pool || 0), Math.round(c.paid), c.pool ? Math.round(Math.max(0, c.pool - c.paid)) : '', pl.map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round(pl.reduce((a, x) => a + x.s, 0)), c.note || '']; })]);
+  $('#rCsv', el).onclick = () => UI.csv(`дебиторка-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Долг $', 'Последняя оплата', 'Дней без оплаты', 'Последняя покупка', 'Срок долга', 'План продаж', 'Продано', 'План сбора', 'Собрано', 'Остаток клиента', 'Дата оплаты → сумма', 'Ещё оплатит всего', 'Заметка'], ...cur.map(c => { const pl = PAYPLAN.of(c.name); return [c.name, c.agent, Math.round(c.debt), c.lastPay ? UI.dateRu(c.lastPay) : 'не платил', c.payDays ?? '', c.lastBuy ? UI.dateRu(c.lastBuy) : '', REP.BUCKETS.find(b => b[0] === c.bucket)?.[1] || '', Math.round(c.plan || 0), Math.round(c.sold), Math.round(c.pool || 0), Math.round(c.paid), c.pool ? Math.round(Math.max(0, c.pool - c.paid)) : '', pl.map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round(pl.reduce((a, x) => a + x.s, 0)), c.note || '']; })]);
 };
 
 // ---------- Спящие клиенты ----------
