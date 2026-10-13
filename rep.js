@@ -219,7 +219,7 @@ function injectGridCss() {
   if (document.getElementById('xgCss')) return;
   const st = document.createElement('style'); st.id = 'xgCss';
   st.textContent = `
-.xg-wrap{height:calc(100vh - 168px);min-height:320px;overflow:auto;border:1px solid var(--line-2,var(--line));border-radius:6px;background:var(--card)}
+.xg-wrap{height:calc(100vh - 215px);min-height:320px;overflow:auto;border:1px solid var(--line-2,var(--line));border-radius:6px;background:var(--card)}
 table.xg{border-collapse:separate;border-spacing:0;width:100%;box-shadow:none;border:0;border-radius:0;overflow:visible;font-size:12px}
 table.xg th,table.xg td{padding:2px 6px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:middle;line-height:1.25;background:var(--card)}
 table.xg tbody tr:nth-child(even) td{background:color-mix(in srgb,var(--text) 3.5%,var(--card))}
@@ -276,8 +276,15 @@ let xgKeep = null, xgNext = null;
 
 // ---------- Дебиторка ----------
 let repDebt = { agent: '', bucket: '', f: {}, sort: { k: 'score', dir: -1 }, selName: '' };
-EXT_PAGES.rdebt = async el => {
-  const d = await REP.load(), body = REP.shell(el, 'rdebt', d, '<button class="btn gray" id="rCsv">⬇ Excel (CSV)</button><button class="btn gray" id="rPrint">Печать / PDF</button>');
+// «Аналитика» (Деньги → Аналитика): все клиенты в одной таблице с фильтрами и правкой
+REP.anShell = (el, d) => {
+  el.innerHTML = `<div class="page-head"><div><h2>Аналитика</h2><div class="sub">${d.empty ? 'Нет загруженных данных' : `Все клиенты в одной таблице · данные на <b>${UI.dateRu(d.upload.taken_at)}</b> · период ${UI.dateRu(d.upload.period_from)} — ${UI.dateRu(d.upload.period_to)} · суммы в долларах`}</div></div><div class="actions no-print"><button class="btn gray" id="rCsv">⬇ Excel (CSV)</button></div></div><div id="repBody"></div>`;
+  return $('#repBody', el);
+};
+EXT_PAGES.rdebt = el => REP.debt(el, 'plan');
+EXT_PAGES.ranalytics = el => REP.debt(el, 'grid');
+REP.debt = async (el, mode) => {
+  const d = await REP.load(), body = mode === 'grid' ? REP.anShell(el, d) : REP.shell(el, 'rdebt', d, '<button class="btn gray" id="rPrint">Печать / PDF</button>');
   if (d.empty) return REP.empty(body);
   const S = repDebt, f = UI.fmt0, debtors = d.clients.filter(c => c.debt > 0);
   const sumB = (list, b) => list.filter(c => c.bucket === b).reduce((s, c) => s + c.debt, 0);
@@ -286,7 +293,7 @@ EXT_PAGES.rdebt = async el => {
   const list = d.clients.filter(c => (!S.agent || c.agent === S.agent) && (!S.bucket || c.bucket === S.bucket)).sort((a, b) => b.score - a.score);
   // overpayments (client paid ahead) are the other side of the balance
   const ahead = d.clients.filter(c => c.b1 > 0).reduce((s, c) => s + c.b1, 0);
-  body.innerHTML = `<div class="kpis">
+  const planHtml = () => `<div class="kpis">
     ${UI.tile('Долг клиентов', '$' + f(total), { sub: `${debtors.length} должников`, tone: 'warn' })}
     ${UI.tile('Просрочено больше 30 дней', '$' + f(sumB(debtors, 'b60') + sumB(debtors, 'b99')), { sub: `${UI.pct(old, total) ?? 0}% всего долга`, tone: old ? 'bad' : '' })}
     ${UI.tile('Нет ни одной оплаты', '$' + f(never), { sub: `${debtors.filter(c => !c.lastPay).length} должников не платили с ${UI.dateRu(d.hist.since)} (начало загрузок)` })}
@@ -303,13 +310,17 @@ EXT_PAGES.rdebt = async el => {
     ${UI.panel('План сбора по агентам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th><th class="n">Пул</th><th class="n">Собрано</th><th class="n">%</th><th class="n">Осталось собрать</th><th class="n">Ещё соберёт</th><th class="n">Итого к ${UI.dm(d.forecast.period_end || d.upload.period_to)}</th><th class="n">Не хватает</th><th class="n">Долг клиентов</th></tr></thead><tbody>${d.agents.map(a => { const mp = a.more_pool || 0, tot = a.paid + mp, gap = Math.max(0, a.pool - tot); return `<tr><td><a class="clink" data-agent="${esc(a.agent)}">${esc(a.agent)}</a></td><td class="n">${a.pool ? f(a.pool) : '—'}</td><td class="n"><b>${f(a.paid)}</b></td><td class="n">${a.pool ? UI.pct(a.paid, a.pool) + '%' : '—'}</td><td class="n">${a.pool ? f(Math.max(0, a.pool - a.paid)) : '—'}</td><td class="n">${mp ? f(mp) : '—'}</td><td class="n"><b>${f(tot)}</b>${a.pool ? `<br><small>${UI.pct(tot, a.pool)}%</small>` : ''}</td><td class="n">${a.pool ? (gap ? `<b class="neg">${f(gap)}</b>` : UI.pill('good', 'закрыт', '✓')) : '—'}</td><td class="n">${f(a.debt)}</td></tr>`; }).join('')}</tbody></table></div>`, { cls: 'w12', sub: 'Сколько ещё нужно собрать до конца периода и сколько закроется с учётом ваших ожиданий' })}
     ${UI.panel('Возраст долга по агентам', CH.stack100(d.agents.filter(a => a.debt > 0).map(a => ({ label: `${a.agent} · $${f(a.debt)}`, segs: REP.BUCKETS.map(([k, n, color]) => ({ name: n, value: sumB(debtors.filter(c => c.agent === a.agent), k), color })) }))), { cls: 'w7', sub: 'Сколько дней прошло с последней оплаты клиента' })}
     ${UI.panel('Весь долг по сроку', CH.hbars(REP.BUCKETS.map(([k, n, color]) => ({ label: n, value: sumB(debtors, k), color, sub: `${debtors.filter(c => c.bucket === k).length} кл.` })), { fmt: UI.fmt0 }), { cls: 'w5' })}
-    ${(() => { const t0 = REP.today(), by = new Map(); let cnt = 0; for (const c of list) { const pl = PAYPLAN.of(c.name); if (pl.length) cnt++; for (const x of pl) { const o = by.get(x.d) || { sum: 0, n: 0 }; o.sum += x.s; o.n++; by.set(x.d, o); } }
+  </div>`;
+  const calHtml = () => `    ${(() => { const t0 = REP.today(), by = new Map(); let cnt = 0; for (const c of list) { const pl = PAYPLAN.of(c.name); if (pl.length) cnt++; for (const x of pl) { const o = by.get(x.d) || { sum: 0, n: 0 }; o.sum += x.s; o.n++; by.set(x.d, o); } }
       const days = [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])), todaySum = by.get(t0)?.sum || 0, all = days.reduce((a, [, o]) => a + o.sum, 0);
       return UI.panel('Ожидаемые оплаты по датам', days.length ? CH.hbars(days.slice(0, 20).map(([dt, o]) => ({ label: UI.dateRu(dt) + (dt === t0 ? ' · сегодня' : dt < t0 ? ' · прошла' : ''), sub: `${o.n} ${UI.plural(o.n, 'клиент', 'клиента', 'клиентов')}`, value: o.sum, color: dt < t0 ? 'var(--c-other, #999)' : 'var(--c3)' })), { unit: ' $', fmt: f }) : '<p class="mut">Пока ничего не вписано. В таблице ниже нажмите «＋» у клиента и напишите, когда и сколько он заплатит.</p>', { cls: 'w12', sub: days.length ? `Вписано по ${cnt} клиентам на $${f(all)}${todaySum ? ` · сегодня ждём $${f(todaySum)}` : ''}` : 'Ваш график оплат по клиентам, сложенный по дням' }); })()}
-    ${UI.panel('Все клиенты', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span id="xgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="xgReset" style="display:none">✕ Снять все фильтры</button></div>
+`;
+  const gridHtml = () => `    ${UI.panel('Все клиенты', `<div class="bar">${REP.agentFilter(d, S.agent)}<select id="rB" aria-label="Срок"><option value="">Любой срок</option>${REP.BUCKETS.map(([k, n]) => `<option value="${k}" ${k === S.bucket ? 'selected' : ''}>${n}</option>`).join('')}</select><span id="xgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="xgReset" style="display:none">✕ Снять все фильтры</button></div>
       <div class="xg-wrap" id="xgW"></div>
       <p class="mut" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — откроется фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Агент, План продаж, План сбора, Дата оплаты, Ещё оплатит, Заметка</b> — правка прямо в таблице (Enter — сохранить и перейти на строку ниже, Esc — отмена). Красная дата — уже прошла. «Остаток клиента» = план сбора минус собрано. Меню слева сворачивается кнопкой ☰ в верхней панели.</p>`, { cls: 'w12' })}
-  </div>`;
+`;
+  body.innerHTML = mode === 'plan' ? planHtml() : `<div class="grid">${gridHtml()}${calHtml()}</div>`;
+  if (mode === 'plan') { $('#rPrint', el).onclick = REP.print; return; }
   injectGridCss();
   const t0g = REP.today(), EMPTY = '(Пустые)', agentNames = [...new Set(d.clients.map(c => c.agent).concat(agents))].filter(Boolean).sort((x, y) => x.localeCompare(y));
   for (const k of Object.keys(S.f)) if (!S.f[k] || typeof S.f[k] !== 'object') delete S.f[k]; // an older saved format
@@ -422,7 +433,7 @@ EXT_PAGES.rdebt = async el => {
   $('#xgReset', body).onclick = () => { S.f = {}; draw(); };
 
   // ----- editing right in the table -----
-  const rerender = () => { xgKeep = { t: wrap.scrollTop, l: wrap.scrollLeft }; return EXT_PAGES.rdebt(el); };
+  const rerender = () => { xgKeep = { t: wrap.scrollTop, l: wrap.scrollLeft }; return REP.debt(el, 'grid'); };
   const goNext = (c, col) => { const i = cur.indexOf(c); if (i >= 0 && cur[i + 1]) xgNext = { name: cur[i + 1].name, k: col.k }; };
   const saveField = async (c, field, val) => { const r = await api('/api/ag/client', { method: 'POST', body: { name: c.name, [field]: val } }); if (r.error) { toast(r.error); return false; } c[field] = val; return true; };
   const startEdit = (td, c, col) => {
@@ -459,10 +470,9 @@ EXT_PAGES.rdebt = async el => {
   draw();
   if (xgKeep) { wrap.scrollTop = xgKeep.t; wrap.scrollLeft = xgKeep.l; xgKeep = null; }
   if (xgNext) { const nx = xgNext; xgNext = null; const tr = [...tb.rows].find(r => r.dataset.n === nx.name), td = tr && tr.querySelector(`td[data-k="${nx.k}"]`); if (td) { td.scrollIntoView?.({ block: 'nearest' }); td.click(); } }
-  $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdebt(el); };
-  $('#rB', body).onchange = e => { S.bucket = e.target.value; EXT_PAGES.rdebt(el); };
-  $('#rPrint', el).onclick = REP.print;
-  $('#rCsv', el).onclick = () => UI.csv(`дебиторка-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Долг $', 'Последняя оплата', 'Дней без оплаты', 'Последняя покупка', 'Срок долга', 'План продаж', 'Продано', 'Возврат', 'План сбора', 'Собрано', 'Остаток клиента', 'Дата оплаты → сумма', 'Ещё оплатит всего', 'Заметка'], ...cur.map(c => { const pl = PAYPLAN.of(c.name); return [c.name, c.agent, Math.round(c.debt), c.lastPay ? UI.dateRu(c.lastPay) : 'не платил', c.payDays ?? '', c.lastBuy ? UI.dateRu(c.lastBuy) : '', REP.BUCKETS.find(b => b[0] === c.bucket)?.[1] || '', Math.round(c.plan || 0), Math.round(c.sold), Math.round(c.ret || 0), Math.round(c.pool || 0), Math.round(c.paid), c.pool ? Math.round(Math.max(0, c.pool - c.paid)) : '', pl.map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round(pl.reduce((a, x) => a + x.s, 0)), c.note || '']; })]);
+  $('#repAg', body).onchange = e => { S.agent = e.target.value; REP.debt(el, 'grid'); };
+  $('#rB', body).onchange = e => { S.bucket = e.target.value; REP.debt(el, 'grid'); };
+  $('#rCsv', el).onclick = () => UI.csv(`аналитика-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Долг $', 'Последняя оплата', 'Дней без оплаты', 'Последняя покупка', 'Срок долга', 'План продаж', 'Продано', 'Возврат', 'План сбора', 'Собрано', 'Остаток клиента', 'Дата оплаты → сумма', 'Ещё оплатит всего', 'Заметка'], ...cur.map(c => { const pl = PAYPLAN.of(c.name); return [c.name, c.agent, Math.round(c.debt), c.lastPay ? UI.dateRu(c.lastPay) : 'не платил', c.payDays ?? '', c.lastBuy ? UI.dateRu(c.lastBuy) : '', REP.BUCKETS.find(b => b[0] === c.bucket)?.[1] || '', Math.round(c.plan || 0), Math.round(c.sold), Math.round(c.ret || 0), Math.round(c.pool || 0), Math.round(c.paid), c.pool ? Math.round(Math.max(0, c.pool - c.paid)) : '', pl.map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round(pl.reduce((a, x) => a + x.s, 0)), c.note || '']; })]);
 };
 
 // ---------- Спящие клиенты ----------
