@@ -90,7 +90,8 @@ function collect_() {
   const probe = fresh ? known : Array.from({ length: 20 }, (_, i) => i + 1), found = [];
   for (const br of probe) {
     let list; try { list = all_('stock/all_balances/?in_way=true&page=1&branch=' + br + '&page_size=500&show_in=amount'); } catch (e) { if (/ключ/.test(e.message)) throw e; continue; }
-    if (!list.length || !list.some(p => n_(p.balance) || n_(p.reserved))) continue;
+    const wasKnown = !!(known && known.indexOf(br) >= 0);
+    if (!wasKnown && (!list.length || !list.some(p => n_(p.balance) || n_(p.reserved)))) continue;
     found.push(br);
     const rows = [['Продукт', 'Код', 'Aртикул', 'Тип продукта', 'Бренд', 'Ед. изм.', 'Всего товаров', 'В пути', 'Зарезервированный', 'Доступный']];
     list.forEach(p => rows.push([p.title, p.product_code || '', p.vendor_code || '', (p.type || {}).name || '', (p.brand || {}).brand || '', (p.measurement || {}).name || '', n_(p.balance), n_(p.in_way), n_(p.reserved), n_(p.available)]));
@@ -183,9 +184,9 @@ function fast_(all) {
   if (!Object.keys(data).length) return;
   const body = JSON.stringify({ data: data, from: from });
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
-  if (hash === P.getProperty('fastHash')) return;
+  if (hash === P.getProperty('fastHash') && Date.now() - Number(P.getProperty('fastSavedAt') || 0) < 15 * 60000) return;
   saveToGithub_('linko-fast.json', JSON.stringify({ at: new Date().toISOString(), from: from, to: to, data: data, errors: errors }));
-  P.setProperty('fastHash', hash);
+  P.setProperties({ fastHash: hash, fastSavedAt: String(Date.now()) });
   Logger.log('Оплаты сохранены: ' + Object.keys(data).map(k => k + ' ' + data[k].length).join(', '));
 }
 function extra_(all) {
