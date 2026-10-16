@@ -90,7 +90,7 @@ EXT_PAGES.debtprev = async el => {
       </tbody></table></div><p class="mut" style="margin:10px 0 0">«Недоплатили» — сумма по клиентам, которые оплатили меньше своего Пула. Она может быть больше, чем «план сбора − собрано»: клиенты, которые заплатили сверх Пула, долг других не закрывают.</p>`, { cls: 'w12' })}
     ${UI.panel(`Кто недоплатил (${list.length})`, `<div class="bar no-print"><select id="dShow" aria-label="Показать"><option value="left" ${DOLG.show === 'left' ? 'selected' : ''}>Ещё не собрано</option><option value="done" ${DOLG.show === 'done' ? 'selected' : ''}>Уже собрано</option><option value="all" ${DOLG.show === 'all' ? 'selected' : ''}>Все</option></select><span id="dgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="dgReset" style="display:none">✕ Снять все фильтры</button></div>
       ${list.length ? `<div class="xg-wrap" id="dgW" style="height:auto;max-height:calc(100vh - 160px)"></div>
-      <p class="mut no-print" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Пул, Дата оплаты, Ещё оплатит, Заметка</b> — правка прямо в таблице (<b>Enter</b> — сохранить и вниз, <b>Tab</b> — вправо, <b>Esc</b> — отмена). Изменённый Пул отмечен «было …». Нажмите на имя клиента — откроется его карточка. «Дата оплаты» и «Заметка» — те же, что в Деньги → Аналитика.</p>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
+      <p class="mut no-print" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Пул, Ещё оплатит, Заметка</b> — правка прямо в таблице (<b>Enter</b> — сохранить и вниз, <b>Tab</b> — вправо, <b>Esc</b> — отмена). Изменённый Пул отмечен «было …». Нажмите на имя клиента — откроется его карточка. «Посл. заказ» и «Сумма заказов» — за прошлый период; если заказов несколько, нажмите на ячейку — откроется список всех заказов с датами и суммами. «Ещё оплатит» и «Заметка» — те же, что в Деньги → Аналитика.</p>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
     </div>`;
   const re = () => EXT_PAGES.debtprev(el);
   $('#dPer', body).onchange = e => { DOLG.period = e.target.value; re(); };
@@ -101,8 +101,9 @@ EXT_PAGES.debtprev = async el => {
   body.querySelectorAll('[data-cp]').forEach(b => b.onclick = async () => { const t = DOLG.text(D, b.dataset.cp).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'"); try { await navigator.clipboard.writeText(t); toast('Список скопирован — вставьте агенту'); } catch { prompt('Скопируйте текст', t); } });
   body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const n = b.dataset.tg; if (!confirm(`Отправить ${n} его список должников в Telegram?`)) return; try { await TG.send(TG.conf().chats[n].id, DOLG.text(D, n)); toast('Отправлено'); } catch (e) { toast(e.message); } });
   $('#dPrint', el).onclick = () => print();
-  $('#dCsv', el).onclick = () => UI.csv('долги-' + D.from, [['Клиент', 'Агент', 'План продаж', 'Продано', 'Пул', 'Оплатил за период', 'Недоплатил', 'Собрано с ' + D.nFrom, 'Осталось собрать', 'Долг на ' + D.end, 'Долг сейчас', 'Дата оплаты → сумма', 'Заметка', 'Телефон'],
-    ...D.clients.filter(c => c.owe > 0.005 && (!DOLG.agent || c.agent === DOLG.agent)).map(c => [c.name, c.agent, c.plan, c.sold, c.pool, c.paid, Math.round(c.owe * 100) / 100, Math.round(got(c) * 100) / 100, Math.round(left(c) * 100) / 100, Math.round(c.debtEnd * 100) / 100, c.b1 < 0 ? -c.b1 : 0, PAYPLAN.of(c.name).map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), CRMLocal.engine.getState().ag.clients[c.name]?.note || '', c.phone])]);
+  const ORD = DOLG.orders(D);
+  $('#dCsv', el).onclick = () => UI.csv('долги-' + D.from, [['Клиент', 'Агент', 'План продаж', 'Продано', 'Пул', 'Оплатил за период', 'Недоплатил', 'Собрано с ' + D.nFrom, 'Осталось собрать', 'Долг сейчас', 'Заказы за период (дата - сумма)', 'Сумма заказов', 'Ещё оплатит (дата - сумма)', 'Заметка', 'Телефон'],
+    ...D.clients.filter(c => c.owe > 0.005 && (!DOLG.agent || c.agent === DOLG.agent)).map(c => [c.name, c.agent, c.plan, c.sold, c.pool, c.paid, Math.round(c.owe * 100) / 100, Math.round(got(c) * 100) / 100, Math.round(left(c) * 100) / 100, c.b1 < 0 ? -c.b1 : 0, (ORD.get(c.name) || []).map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round((ORD.get(c.name) || []).reduce((a, x) => a + x.s, 0)), PAYPLAN.of(c.name).map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), CRMLocal.engine.getState().ag.clients[c.name]?.note || '', c.phone])]);
 };
 
 // ---------- «Кто недоплатил» as an Excel-like grid (same look and filters as Деньги → Аналитика) ----------
@@ -127,10 +128,10 @@ DOLG.saveNote = async (name, note) => {
 
 DOLG.grid = (wrap, body, D, list, got, left, re) => {
   injectGridCss();
-  const f = UI.fmt0, S = DOLG, EMPTY = '(Пустые)', t0 = UI.localDate(Date.now()), St = CRMLocal.engine.getState(), H = REP.history(St).clients;
+  const f = UI.fmt0, S = DOLG, EMPTY = '(Пустые)', t0 = UI.localDate(Date.now()), St = CRMLocal.engine.getState();
   const note = c => St.ag.clients[c.name]?.note || '';
-  const lastPay = c => H.get(c.name)?.lastPay || null;
-  const sum0 = c => PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0);
+  const ORD = DOLG.orders(D), ordOf = c => ORD.get(c.name) || [];
+    const sum0 = c => PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0);
   const debtNow = c => (c.b1 == null ? null : c.b1 < 0 ? -c.b1 : 0);
   const kNum = (col, fmt = f) => c => { const v = col.v(c); return v === null ? [[EMPTY, -Infinity]] : [[fmt(v), v]]; };
   const kText = col => c => { const v = String(col.v(c) ?? '').trim(); return v ? [[v, v.toLowerCase()]] : [[EMPTY, '']]; };
@@ -144,12 +145,11 @@ DOLG.grid = (wrap, body, D, list, got, left, re) => {
       { k: 'got', t: `Собрано с ${UI.dm(D.nFrom)}`, kind: 'num', v: c => got(c), tot: true, cell: c => (got(c) ? `<span class="pos">${f(got(c))}</span>` : '<span class="ph">—</span>') },
       { k: 'left', t: 'Осталось собрать', kind: 'num', v: c => left(c), tot: true, cell: c => (left(c) > 0.005 ? `<b class="neg">${f(left(c))}</b>` : UI.pill('good', 'собрано', '✓')) },
     ] : []),
-    { k: 'debtEnd', t: `Долг на ${UI.dm(D.end)}`, kind: 'num', v: c => c.debtEnd, tot: true, cell: c => (c.debtEnd ? f(c.debtEnd) : '<span class="ph">—</span>') },
-    { k: 'debt', t: 'Долг сейчас', kind: 'num', v: debtNow, tot: true, cell: c => { const v = debtNow(c); return v == null ? '<span class="ph">нет данных</span>' : v ? `<b>${f(v)}</b>${v > c.debtEnd + 0.5 ? ' <small class="neg" title="Долг вырос после конца периода">▲</small>' : v < c.debtEnd - 0.5 ? ' <small class="pos" title="Долг уменьшился">▼</small>' : ''}` : UI.pill('good', '0', '✓'); } },
-    { k: 'pay', t: 'Посл. оплата', kind: 'num', v: c => (lastPay(c) ? REP.days(lastPay(c), t0) : null), kfmt: v => `${v} дн. назад`, cell: c => { const lp = lastPay(c); if (!lp) return '<span class="neg">нет</span>'; const n = REP.days(lp, t0); return `${UI.dm(lp)}<small class="${n > 30 ? 'neg' : 'mut'}"> · ${n} дн.</small>`; } },
-    { k: 'date', t: 'Дата оплаты', kind: 'text', v: c => PAYPLAN.of(c.name).map(x => UI.dm(x.d)).join(' '), sv: c => PAYPLAN.of(c.name)[0]?.d || '9999', edit: 'pay',
-      keys: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => [UI.dm(x.d), x.d]) : [[EMPTY, '']]; },
-      cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div class="${x.d < t0 ? 'neg' : ''}" title="${x.d < t0 ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('') : '<span class="ph">＋</span>'; } },
+    { k: 'debt', t: 'Долг сейчас', kind: 'num', v: debtNow, tot: true, cell: c => { const v = debtNow(c); return v == null ? '<span class="ph">нет данных</span>' : v ? `<b>${f(v)}</b>` : UI.pill('good', '0', '✓'); } },
+    { k: 'ord', t: 'Посл. заказ', kind: 'num', v: c => (ordOf(c).length ? REP.days(ordOf(c).at(-1).d, t0) : null), kfmt: v => `${v} дн. назад`, pop: true,
+      cell: c => { const o = ordOf(c); if (!o.length) return '<span class="neg" title="За период заказов не было">нет</span>'; const l = o.at(-1), n = REP.days(l.d, t0); return `${UI.dm(l.d)}<small class="mut"> · ${n} дн.</small>`; } },
+    { k: 'ordSum', t: 'Сумма заказов', kind: 'num', v: c => (ordOf(c).length ? ordOf(c).reduce((a, x) => a + x.s, 0) : null), tot: true, pop: true,
+      cell: c => { const o = ordOf(c); if (!o.length) return '<span class="ph">—</span>'; const t = o.reduce((a, x) => a + x.s, 0); return o.length === 1 ? f(t) : `<b>${f(t)}</b><br><small class="mut">${o.length} ${UI.plural(o.length, 'заказ', 'заказа', 'заказов')} · посл. $${f(o.at(-1).s)}</small>`; } },
     { k: 'tot', t: 'Ещё оплатит', kind: 'num', v: c => sum0(c) || null, vt: c => sum0(c), tot: true, edit: 'pay',
       cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(sum0(c))}</b>` : '') : '<span class="ph">＋</span>'; } },
     { k: 'note', t: 'Заметка', kind: 'text', v: note, edit: 'note', cell: c => (note(c) ? `<small>${esc(note(c))}</small>` : '<span class="ph">＋</span>') },
@@ -269,8 +269,39 @@ DOLG.grid = (wrap, body, D, list, got, left, re) => {
     const td = e.target.closest('td.ed');
     if (td && !td.querySelector('input') && !e.target.closest('a')) { const c = cur.find(x => x.name === tr.dataset.n), col = COLS.find(x => x.k === td.dataset.k); if (c && col) { tb.querySelectorAll('tr.sel').forEach(x => x.classList.remove('sel')); tr.classList.add('sel'); S.sel = c.name; startEdit(td, c, col); return; } }
     if (e.target.closest('a,button,input,select')) return;
+    const tdo = e.target.closest('td[data-k=ord],td[data-k=ordSum]'), co = tdo && cur.find(x => x.name === tr.dataset.n);
+    if (co && ordOf(co).length) { DOLG.ordPop(co.name, ordOf(co), tdo, D); return; }
     const was = tr.classList.contains('sel'); tb.querySelectorAll('tr.sel').forEach(x => x.classList.remove('sel')); S.sel = was ? '' : tr.dataset.n; if (!was) tr.classList.add('sel');
   };
   draw();
   if (S.keep) { const k = S.keep; S.keep = null; wrap.scrollTop = k.t; wrap.scrollLeft = k.l; if (k.next) clickCell(k.next); }
+};
+
+// orders of each client in the plan period: [{d, s}] oldest first.
+// Exact orders from LINKO when the loaded LINKO data covers that period, otherwise from the balance snapshots:
+// growth of «Продано» between two snapshots of the period = what the client ordered that day.
+DOLG.orders = D => {
+  const out = new Map(), add = (n, d, s) => { const a = out.get(n) || []; const x = a.find(y => y.d === d); if (x) x.s += s; else a.push({ d, s }); out.set(n, a); };
+  let lx = [];
+  try { if (typeof LX !== 'undefined' && LX.has()) lx = LX.model().ords.filter(o => o.date >= D.from && o.date <= D.end && o.client && !/cancel|отмен/i.test(String(o.status))); } catch { lx = []; }
+  if (lx.length) for (const o of lx) add(o.client, o.date, o.fact || o.sum);
+  else {
+    const ups = (CRMLocal.engine.getState().ag.uploads || []).filter(u => u.period_from === D.from)
+      .sort((a, b) => (a.taken_at < b.taken_at ? -1 : a.taken_at > b.taken_at ? 1 : a.id - b.id));
+    let prev = new Map();
+    for (const u of ups) {
+      for (const r of u.rows || []) { const g = (r.sold || 0) - (prev.get(r.client) || 0); if (g > 0.005) add(r.client, u.taken_at, g); }
+      prev = new Map((u.rows || []).map(r => [r.client, r.sold || 0]));
+    }
+  }
+  for (const a of out.values()) { a.sort((x, y) => x.d.localeCompare(y.d)); for (const x of a) x.s = Math.round(x.s * 100) / 100; }
+  return out;
+};
+DOLG.ordPop = (name, list, anchor, D) => {
+  const f = UI.fmt0, t0 = UI.localDate(Date.now()), tot = list.reduce((a, x) => a + x.s, 0), pop = document.createElement('div');
+  pop.className = 'xf-pop'; pop.style.width = '260px';
+  pop.innerHTML = `<div class="xp"><b style="font-size:12px">${esc(name)}</b><div class="mut" style="font-size:11px;margin:2px 0 6px">Заказы за ${UI.dm(D.from)}–${UI.dm(D.end)}</div>
+    <table style="width:100%;font-size:12px;box-shadow:none;border:0">${list.map(x => `<tr><td>${UI.dm(x.d)} <small class="mut">· ${REP.days(x.d, t0)} дн.</small></td><td class="n" style="text-align:right">$${f(x.s)}</td></tr>`).join('')}
+    <tr><td><b>Итого · ${list.length}</b></td><td style="text-align:right"><b>$${f(tot)}</b></td></tr></table></div>`;
+  xgOpen(pop, anchor);
 };
