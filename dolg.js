@@ -70,7 +70,7 @@ EXT_PAGES.debtprev = async el => {
   // default: the last closed period (the one to collect now); before any period has closed — the current one
   if (!DOLG.period || !pers.includes(DOLG.period)) DOLG.period = pers.find(p => PLAN.end(p) < today) || pers[0] || '';
   const head = `<div class="page-head"><div><h2>Долги прошлого периода</h2><div class="sub">Недобор по плану продаж и сбора — и кто из клиентов сколько недоплатил</div></div>
-    <div class="actions no-print"><button class="btn gray" id="dCsv">⬇ Excel (CSV)</button><button class="btn gray" id="dPrint">Печать / PDF</button></div></div><div id="dBody"></div>`;
+    <div class="actions no-print"><button class="btn gray" id="dRem">🔔 Напоминания</button><button class="btn gray" id="dCsv">⬇ Excel (CSV)</button><button class="btn gray" id="dPrint">Печать / PDF</button></div></div><div id="dBody"></div>`;
   el.innerHTML = head; const body = $('#dBody', el);
   const D = DOLG.period ? DOLG.build(DOLG.period) : null;
   if (!D) { body.innerHTML = UI.empty('Данных пока нет', 'Нужен баланс клиентов из LINKO за период плана (он загружается автоматически).'); return; }
@@ -87,6 +87,7 @@ EXT_PAGES.debtprev = async el => {
   const chats = (window.TG && TG.conf().chats) || {};
   body.innerHTML = `<div class="bar"><select id="dPer" aria-label="Период">${DOLG.periods().map(p => `<option value="${p}" ${p === D.from ? 'selected' : ''}>${PLAN.label(p)}${PLAN.end(p) >= today ? ' (идёт)' : ''}</option>`).join('')}</select>
       <select id="dAg" aria-label="Агент"><option value="">Все агенты</option>${D.agents.map(a => `<option ${a.agent === DOLG.agent ? 'selected' : ''}>${esc(a.agent)}</option>`).join('')}</select> ${termSel} ${stageTxt}</div>
+    ${(() => { const L = REMIND.lists(), pick = a => a.filter(x => !DOLG.agent || x.agent === DOLG.agent), T = pick(L.today), M = pick(L.tomorrow), Lt = pick(L.late), s = a => f(a.reduce((x, y) => x + y.s, 0)); return T.length || M.length || Lt.length ? `<div class="no-print" style="margin:4px 0 12px;padding:10px 14px;border-radius:8px;background:color-mix(in srgb,var(--c4,#e9a23b) 14%,var(--card));font-size:14px">🔔 Обещали оплатить: ${T.length ? `<b>сегодня ${T.length} — $${s(T)}</b>` : 'сегодня никто'}${M.length ? ` · завтра ${M.length} — $${s(M)}` : ''}${Lt.length ? ` · <span class="neg">не заплатили в обещанный день: ${Lt.length} — $${s(Lt)}</span>` : ''} <a href="#" id="dRem2" style="margin-left:6px">настроить напоминания</a></div>` : ''; })()}
     ${!D.hasPlans && D.from !== PLAN.from(today) ? `<p class="mut">На этот период не загружен файл плана (План/Пул по клиентам), поэтому недобор посчитать нельзя.</p>` : ''}
     <div class="kpis">
       ${UI.tile('План продаж', '$' + f(T.plan || 0), { sub: `продано $${f(T.sold || 0)} · ${UI.pct(T.sold, T.plan) ?? 0}% · не хватило $${f(Math.max(0, (T.plan || 0) - (T.sold || 0)))}` })}
@@ -101,7 +102,7 @@ EXT_PAGES.debtprev = async el => {
       </tbody></table></div><p class="mut" style="margin:10px 0 0">«Недоплатили» — сумма по клиентам, которые оплатили меньше своего Пула. Она может быть больше, чем «план сбора − собрано»: клиенты, которые заплатили сверх Пула, долг других не закрывают.</p>`, { cls: 'w12' })}
     ${UI.panel(`Кто недоплатил (${list.length})`, `<div class="bar no-print"><select id="dShow" aria-label="Показать"><option value="left" ${DOLG.show === 'left' ? 'selected' : ''}>Ещё не собрано</option><option value="done" ${DOLG.show === 'done' ? 'selected' : ''}>Уже собрано</option><option value="all" ${DOLG.show === 'all' ? 'selected' : ''}>Все</option></select><span id="dgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="dgReset" style="display:none">✕ Снять все фильтры</button></div>
       ${list.length ? `<div class="xg-wrap" id="dgW" style="height:auto;max-height:calc(100vh - 160px)"></div>
-      <p class="mut no-print" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Пул, Осталось собрать, Ещё оплатит, Заметка</b> — правка прямо в таблице (<b>Enter</b> — сохранить и вниз, <b>Tab</b> — вправо, <b>Esc</b> — отмена). «Осталось собрать» — впишите, сколько агент реально соберёт с клиента до конца срока: Пул не меняется, под суммой видно «из …» — весь остаток долга, ✎ — изменено вами. Чтобы вернуть весь остаток, очистите ячейку. Изменённый Пул отмечен «было …». Нажмите на имя клиента — откроется его карточка. «Посл. заказ» и «Сумма заказов» — за прошлый период; если заказов несколько, нажмите на ячейку — откроется список всех заказов с датами и суммами. «Ещё оплатит» и «Заметка» — те же, что в Деньги → Аналитика.</p>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
+      <p class="mut no-print" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Пул, Осталось собрать, Ещё оплатит, Заметка</b> — правка прямо в таблице (<b>Enter</b> — сохранить и вниз, <b>Tab</b> — вправо, <b>Esc</b> — отмена). «Осталось собрать» — впишите, сколько агент реально соберёт с клиента до конца срока: Пул не меняется, под суммой видно «из …» — весь остаток долга, ✎ — изменено вами. Чтобы вернуть весь остаток, очистите ячейку. Изменённый Пул отмечен «было …». Нажмите на имя клиента — откроется его карточка. «Посл. заказ» и «Сумма заказов» — за прошлый период; если заказов несколько, нажмите на ячейку — откроется список всех заказов с датами и суммами. «Ещё оплатит» — когда и сколько клиент обещал (например <b>18-500$, 20-300$</b>); по этим датам приходят напоминания 🔔. «Ещё оплатит» и «Заметка» — те же, что в Деньги → Аналитика.</p>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
     </div>`;
   const re = () => EXT_PAGES.debtprev(el);
   $('#dPer', body).onchange = e => { DOLG.period = e.target.value; re(); };
@@ -113,6 +114,8 @@ EXT_PAGES.debtprev = async el => {
   body.querySelectorAll('[data-cp]').forEach(b => b.onclick = async () => { const t = DOLG.text(D, b.dataset.cp).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'"); try { await navigator.clipboard.writeText(t); toast('Список скопирован — вставьте агенту'); } catch { prompt('Скопируйте текст', t); } });
   body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const n = b.dataset.tg; if (!confirm(`Отправить ${n} его список должников в Telegram?`)) return; try { await TG.send(TG.conf().chats[n].id, DOLG.text(D, n)); toast('Отправлено'); } catch (e) { toast(e.message); } });
   $('#dPrint', el).onclick = () => print();
+  $('#dRem', el).onclick = () => REMIND.dialog();
+  if ($('#dRem2', body)) $('#dRem2', body).onclick = e => { e.preventDefault(); REMIND.dialog(); };
   const ORD = DOLG.orders(D);
   $('#dCsv', el).onclick = () => UI.csv('долги-' + D.from, [['Клиент', 'Агент', 'План продаж', 'Продано', 'Пул', 'Оплатил за период', 'Недоплатил', 'Собрано с ' + D.nFrom, 'Осталось собрать', 'Ожидаем ещё', 'Долг сейчас', 'Заказы за период (дата - сумма)', 'Сумма заказов', 'Ещё оплатит (дата - сумма)', 'Заметка', 'Телефон'],
     ...D.clients.filter(c => c.owe > 0.005 && (!DOLG.agent || c.agent === DOLG.agent)).map(c => [c.name, c.agent, c.plan, c.sold, c.pool, c.paid, Math.round(c.owe * 100) / 100, Math.round(got(c) * 100) / 100, Math.round(left(c) * 100) / 100, Math.round(exL(c) * 100) / 100, c.b1 < 0 ? -c.b1 : 0, (ORD.get(c.name) || []).map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), Math.round((ORD.get(c.name) || []).reduce((a, x) => a + x.s, 0)), PAYPLAN.of(c.name).map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), CRMLocal.engine.getState().ag.clients[c.name]?.note || '', c.phone])]);
@@ -142,7 +145,7 @@ DOLG.grid = (wrap, body, D, list, got, left, re, exL) => {
   injectGridCss();
   const f = UI.fmt0, S = DOLG, EMPTY = '(Пустые)', t0 = UI.localDate(Date.now()), St = CRMLocal.engine.getState();
   const note = c => St.ag.clients[c.name]?.note || '';
-  const ORD = DOLG.orders(D), ordOf = c => ORD.get(c.name) || [];
+  const ORD = DOLG.orders(D), ordOf = c => ORD.get(c.name) || [], PF = REMIND.facts(St);
     const sum0 = c => PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0);
   const debtNow = c => (c.b1 == null ? null : c.b1 < 0 ? -c.b1 : 0);
   const kNum = (col, fmt = f) => c => { const v = col.v(c); return v === null ? [[EMPTY, -Infinity]] : [[fmt(v), v]]; };
@@ -162,8 +165,9 @@ DOLG.grid = (wrap, body, D, list, got, left, re, exL) => {
       cell: c => { const o = ordOf(c); if (!o.length) return '<span class="neg" title="За период заказов не было">нет</span>'; const l = o.at(-1), n = REP.days(l.d, t0); return `${UI.dm(l.d)}<small class="mut"> · ${n} дн.</small>`; } },
     { k: 'ordSum', t: 'Сумма заказов', kind: 'num', v: c => (ordOf(c).length ? ordOf(c).reduce((a, x) => a + x.s, 0) : null), tot: true, pop: true,
       cell: c => { const o = ordOf(c); if (!o.length) return '<span class="ph">—</span>'; const t = o.reduce((a, x) => a + x.s, 0); return o.length === 1 ? f(t) : `<b>${f(t)}</b><br><small class="mut">${o.length} ${UI.plural(o.length, 'заказ', 'заказа', 'заказов')} · посл. $${f(o.at(-1).s)}</small>`; } },
-    { k: 'tot', t: 'Ещё оплатит', kind: 'num', v: c => sum0(c) || null, vt: c => sum0(c), tot: true, edit: 'pay',
-      cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(sum0(c))}</b>` : '') : '<span class="ph">＋</span>'; } },
+    { k: 'tot', t: 'Ещё оплатит', kind: 'num', v: c => sum0(c) || null, vt: c => sum0(c), tot: true, edit: 'pay', sv: c => PAYPLAN.of(c.name)[0]?.d || '9999',
+      keys: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => [UI.dm(x.d), x.d]) : [['(Пустые)', '']]; },
+      cell: c => { const pl = PAYPLAN.of(c.name), lp = PF.last.get(c.name) || ''; return pl.length ? pl.map(x => `<div style="white-space:nowrap">${UI.dm(x.d)} · <b>$${f(x.s)}</b> ${REMIND.tag(x.d, lp >= x.d)}</div>`).join('') + (pl.length > 1 ? `<small class="mut">Σ $${f(sum0(c))}</small>` : '') : '<span class="ph">＋ дата и сумма</span>'; } },
     { k: 'note', t: 'Заметка', kind: 'text', v: note, edit: 'note', cell: c => (note(c) ? `<small>${esc(note(c))}</small>` : '<span class="ph">＋</span>') },
   ];
   for (const col of COLS) if (!col.keys) col.keys = col.kind === 'num' ? kNum(col, col.kfmt || f) : kText(col);

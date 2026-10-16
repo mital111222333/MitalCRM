@@ -278,7 +278,8 @@ let xgKeep = null, xgNext = null;
 let repDebt = { agent: '', bucket: '', f: {}, sort: { k: 'score', dir: -1 }, selName: '' };
 // «Аналитика» (Деньги → Аналитика): все клиенты в одной таблице с фильтрами и правкой
 REP.anShell = (el, d) => {
-  el.innerHTML = `<div class="page-head"><div><h2>Аналитика</h2><div class="sub">${d.empty ? 'Нет загруженных данных' : `Все клиенты в одной таблице · данные на <b>${UI.dateRu(d.upload.taken_at)}</b> · период ${UI.dateRu(d.upload.period_from)} — ${UI.dateRu(d.upload.period_to)} · суммы в долларах`}</div></div><div class="actions no-print"><button class="btn gray" id="rCsv">⬇ Excel (CSV)</button></div></div><div id="repBody"></div>`;
+  el.innerHTML = `<div class="page-head"><div><h2>Аналитика</h2><div class="sub">${d.empty ? 'Нет загруженных данных' : `Все клиенты в одной таблице · данные на <b>${UI.dateRu(d.upload.taken_at)}</b> · период ${UI.dateRu(d.upload.period_from)} — ${UI.dateRu(d.upload.period_to)} · суммы в долларах`}</div></div><div class="actions no-print"><button class="btn gray" id="rRem">🔔 Напоминания</button><button class="btn gray" id="rCsv">⬇ Excel (CSV)</button></div></div><div id="repBody"></div>`;
+  const rb = $('#rRem', el); if (rb) rb.onclick = () => (typeof REMIND !== 'undefined' ? REMIND.dialog() : toast('Обновите страницу'));
   return $('#repBody', el);
 };
 EXT_PAGES.rdebt = el => REP.debt(el, 'plan');
