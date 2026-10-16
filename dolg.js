@@ -31,7 +31,7 @@ const DOLG = {
       const c = S.ag.clients[r.client] || {}, pp = PP ? PP[r.client] : null;
       const plan = pp ? pp.plan || 0 : (from === PLAN.from(today) ? c.plan || 0 : 0), pool = pp ? pp.pool || 0 : (from === PLAN.from(today) ? c.pool || 0 : 0);
       const owe = Math.max(0, pool - (r.paid || 0)), w = Math.min(owe, wk.get(r.client) || 0), n = Math.min(owe, now.get(r.client) || 0);
-      return { name: r.client, agent: r.agent || c.agent || 'Без агента', phone: c.phone || '', landmark: c.landmark || '', plan, sold: r.sold || 0, pool, paid: r.paid || 0, b1: debtNow.has(r.client) ? debtNow.get(r.client) : latest ? null : r.b1 || 0, owe, week: w, now: n };
+      return { name: r.client, agent: r.agent || c.agent || 'Без агента', phone: c.phone || '', landmark: c.landmark || '', plan, sold: r.sold || 0, pool, paid: r.paid || 0, b1: debtNow.has(r.client) ? debtNow.get(r.client) : latest ? null : r.b1 || 0, owe, week: w, now: n, debtEnd: (r.b1 || 0) < 0 ? -r.b1 : 0, pool0: pp && pp.pool0 != null ? pp.pool0 : null };
     });
     const agents = new Map();
     for (const c of clients) {
@@ -58,7 +58,7 @@ const DOLG = {
 };
 
 EXT_PAGES.debtprev = async el => {
-  await CRMLocal.ready; if (window.LX) await LX.load();
+  await CRMLocal.ready; if (typeof LX !== 'undefined') await LX.load();
   const f = UI.fmt0, today = UI.localDate(Date.now()), pers = DOLG.periods();
   // default: the last closed period (the one to collect now); before any period has closed — the current one
   if (!DOLG.period || !pers.includes(DOLG.period)) DOLG.period = pers.find(p => PLAN.end(p) < today) || pers[0] || '';
@@ -88,19 +88,189 @@ EXT_PAGES.debtprev = async el => {
     ${UI.panel('По агентам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th><th class="n">План продаж</th><th class="n">Продано</th><th class="n">%</th><th class="n">План сбора</th><th class="n">Собрано</th><th class="n">%</th><th class="n">Недоплатили</th><th class="n">Клиентов</th>${D.closed ? `<th class="n">Собрано с ${UI.dm(D.nFrom)}</th><th class="n">Осталось</th>` : ''}<th></th></tr></thead><tbody>
       ${A.map(a => { const g = D.stage === 'done' ? a.week : a.now; return `<tr><td><a href="#" data-ag="${esc(a.agent)}">${esc(a.agent)}</a></td><td class="n">${f(a.plan)}</td><td class="n">${f(a.sold)}</td><td class="n">${a.plan ? UI.pill(a.sold >= a.plan ? 'good' : 'warn', (UI.pct(a.sold, a.plan) ?? 0) + '%') : '—'}</td><td class="n">${f(a.pool)}</td><td class="n">${f(a.paid)}</td><td class="n">${a.pool ? UI.pill(a.paid >= a.pool ? 'good' : 'warn', (UI.pct(a.paid, a.pool) ?? 0) + '%') : '—'}</td><td class="n"><b>${f(a.owe)}</b></td><td class="n">${a.debtors}</td>${D.closed ? `<td class="n pos">${f(g)}</td><td class="n"><b>${f(Math.max(0, a.owe - g))}</b>${a.owe ? ` <small class="mut">${UI.pct(g, a.owe) ?? 0}%</small>` : ''}</td>` : ''}<td class="no-print">${chats[a.agent] ? `<button class="btn gray" data-tg="${esc(a.agent)}" title="Отправить агенту его список в Telegram">✈ Агенту</button>` : `<button class="btn gray" data-cp="${esc(a.agent)}" title="Скопировать список для агента">📋</button>`}</td></tr>`; }).join('')}
       </tbody></table></div><p class="mut" style="margin:10px 0 0">«Недоплатили» — сумма по клиентам, которые оплатили меньше своего Пула. Она может быть больше, чем «план сбора − собрано»: клиенты, которые заплатили сверх Пула, долг других не закрывают.</p>`, { cls: 'w12' })}
-    ${UI.panel(`Кто недоплатил (${list.length})`, `<div class="bar no-print"><select id="dShow" aria-label="Показать"><option value="left" ${DOLG.show === 'left' ? 'selected' : ''}>Ещё не собрано</option><option value="done" ${DOLG.show === 'done' ? 'selected' : ''}>Уже собрано</option><option value="all" ${DOLG.show === 'all' ? 'selected' : ''}>Все</option></select></div>
-      ${list.length ? `<div class="scroll" style="max-height:640px"><table><thead><tr><th>Клиент</th><th>Агент</th><th class="n">Пул</th><th class="n">Оплатил за период</th><th class="n">Недоплатил</th>${D.closed ? `<th class="n">Собрано с ${UI.dm(D.nFrom)}</th><th class="n">Осталось собрать</th>` : ''}<th class="n">Долг сейчас</th><th>Телефон</th></tr></thead><tbody>
-      ${list.map(c => `<tr><td>${window.LX ? LX.cl(c.name) : esc(c.name)}${c.landmark ? `<br><small class="mut">${esc(c.landmark)}</small>` : ''}</td><td>${esc(c.agent)}</td><td class="n">${f(c.pool)}</td><td class="n">${f(c.paid)}</td><td class="n"><b>${f(c.owe)}</b></td>${D.closed ? `<td class="n pos">${got(c) ? f(got(c)) : '<span class="mut">—</span>'}</td><td class="n">${left(c) > 0.005 ? `<b class="neg">${f(left(c))}</b>` : UI.pill('good', 'собрано')}</td>` : ''}<td class="n">${c.b1 < 0 ? f(-c.b1) : '—'}</td><td>${c.phone ? `<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>` : ''}</td></tr>`).join('')}
-      </tbody></table></div>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
+    ${UI.panel(`Кто недоплатил (${list.length})`, `<div class="bar no-print"><select id="dShow" aria-label="Показать"><option value="left" ${DOLG.show === 'left' ? 'selected' : ''}>Ещё не собрано</option><option value="done" ${DOLG.show === 'done' ? 'selected' : ''}>Уже собрано</option><option value="all" ${DOLG.show === 'all' ? 'selected' : ''}>Все</option></select><span id="dgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="dgReset" style="display:none">✕ Снять все фильтры</button></div>
+      ${list.length ? `<div class="xg-wrap" id="dgW" style="height:auto;max-height:calc(100vh - 160px)"></div>
+      <p class="mut no-print" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Пул, Дата оплаты, Ещё оплатит, Заметка</b> — правка прямо в таблице (<b>Enter</b> — сохранить и вниз, <b>Tab</b> — вправо, <b>Esc</b> — отмена). Изменённый Пул отмечен «было …». Нажмите на имя клиента — откроется его карточка. «Дата оплаты» и «Заметка» — те же, что в Деньги → Аналитика.</p>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
     </div>`;
   const re = () => EXT_PAGES.debtprev(el);
   $('#dPer', body).onchange = e => { DOLG.period = e.target.value; re(); };
   $('#dAg', body).onchange = e => { DOLG.agent = e.target.value; re(); };
   $('#dShow', body).onchange = e => { DOLG.show = e.target.value; re(); };
+  if (list.length) DOLG.grid($('#dgW', body), body, D, list, got, left, re);
   body.querySelectorAll('[data-ag]').forEach(a => a.onclick = e => { e.preventDefault(); DOLG.agent = a.dataset.ag; re(); });
   body.querySelectorAll('[data-cp]').forEach(b => b.onclick = async () => { const t = DOLG.text(D, b.dataset.cp).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'"); try { await navigator.clipboard.writeText(t); toast('Список скопирован — вставьте агенту'); } catch { prompt('Скопируйте текст', t); } });
   body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const n = b.dataset.tg; if (!confirm(`Отправить ${n} его список должников в Telegram?`)) return; try { await TG.send(TG.conf().chats[n].id, DOLG.text(D, n)); toast('Отправлено'); } catch (e) { toast(e.message); } });
   $('#dPrint', el).onclick = () => print();
-  $('#dCsv', el).onclick = () => UI.csv('долги-' + D.from, [['Клиент', 'Агент', 'План продаж', 'Продано', 'Пул', 'Оплатил за период', 'Недоплатил', 'Собрано с ' + D.nFrom, 'Осталось собрать', 'Долг сейчас', 'Телефон'],
-    ...D.clients.filter(c => c.owe > 0.005 && (!DOLG.agent || c.agent === DOLG.agent)).map(c => [c.name, c.agent, c.plan, c.sold, c.pool, c.paid, Math.round(c.owe * 100) / 100, Math.round(got(c) * 100) / 100, Math.round(left(c) * 100) / 100, c.b1 < 0 ? -c.b1 : 0, c.phone])]);
+  $('#dCsv', el).onclick = () => UI.csv('долги-' + D.from, [['Клиент', 'Агент', 'План продаж', 'Продано', 'Пул', 'Оплатил за период', 'Недоплатил', 'Собрано с ' + D.nFrom, 'Осталось собрать', 'Долг на ' + D.end, 'Долг сейчас', 'Дата оплаты → сумма', 'Заметка', 'Телефон'],
+    ...D.clients.filter(c => c.owe > 0.005 && (!DOLG.agent || c.agent === DOLG.agent)).map(c => [c.name, c.agent, c.plan, c.sold, c.pool, c.paid, Math.round(c.owe * 100) / 100, Math.round(got(c) * 100) / 100, Math.round(left(c) * 100) / 100, Math.round(c.debtEnd * 100) / 100, c.b1 < 0 ? -c.b1 : 0, PAYPLAN.of(c.name).map(x => UI.dm(x.d) + ' - ' + Math.round(x.s) + '$').join(', '), CRMLocal.engine.getState().ag.clients[c.name]?.note || '', c.phone])]);
+};
+
+// ---------- «Кто недоплатил» as an Excel-like grid (same look and filters as Деньги → Аналитика) ----------
+DOLG.f = {}; DOLG.sort = { k: '', dir: -1 }; DOLG.sel = ''; DOLG.keep = null;
+// Пул of a client in a plan period: the current period goes through the normal client edit (it also updates the client),
+// a closed period is changed in its saved plan; the first uploaded value is kept as pool0 («было»)
+DOLG.savePool = async (D, c, v) => {
+  const x = CRMLocal.ext(), cur = D.from === PLAN.from(UI.localDate(Date.now()));
+  const PP0 = (x.clientPlans || {})[D.from], e0 = PP0 && PP0[c.name], first = e0 && e0.pool0 != null ? e0.pool0 : c.pool;
+  if (cur && CRMLocal.engine.getState().ag.clients[c.name]) {
+    const r = await api('/api/ag/client', { method: 'POST', body: { name: c.name, pool: v } }); if (r.error) { toast(r.error); return false; }
+  } else {
+    x.clientPlans ||= {}; const PP = (x.clientPlans[D.from] ||= {}); (PP[c.name] ||= { plan: c.plan || 0, pool: 0 }).pool = v;
+  }
+  const e = (CRMLocal.ext().clientPlans || {})[D.from]?.[c.name];
+  if (e) { if (Math.abs(first - v) < 0.005) delete e.pool0; else e.pool0 = first; }
+  CRMLocal.touch(); return true;
+};
+DOLG.saveNote = async (name, note) => {
+  const r = await api('/api/ag/client', { method: 'POST', body: { name, note } }); if (r.error) { toast(r.error); return false; } return true;
+};
+
+DOLG.grid = (wrap, body, D, list, got, left, re) => {
+  injectGridCss();
+  const f = UI.fmt0, S = DOLG, EMPTY = '(Пустые)', t0 = UI.localDate(Date.now()), St = CRMLocal.engine.getState(), H = REP.history(St).clients;
+  const note = c => St.ag.clients[c.name]?.note || '';
+  const lastPay = c => H.get(c.name)?.lastPay || null;
+  const sum0 = c => PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0);
+  const debtNow = c => (c.b1 == null ? null : c.b1 < 0 ? -c.b1 : 0);
+  const kNum = (col, fmt = f) => c => { const v = col.v(c); return v === null ? [[EMPTY, -Infinity]] : [[fmt(v), v]]; };
+  const kText = col => c => { const v = String(col.v(c) ?? '').trim(); return v ? [[v, v.toLowerCase()]] : [[EMPTY, '']]; };
+  const COLS = [
+    { k: 'name', t: 'Клиент', kind: 'text', v: c => c.name, cell: c => `<a class="clink" data-client="${esc(c.name)}">${esc(c.name)}</a>${c.landmark ? `<br><small class="mut">${esc(c.landmark)}</small>` : ''}` },
+    { k: 'agent', t: 'Агент', kind: 'text', v: c => c.agent, cell: c => `<a class="clink" data-agent="${esc(c.agent)}">${esc(c.agent)}</a>` },
+    { k: 'pool', t: 'Пул', kind: 'num', v: c => c.pool || 0, tot: true, edit: 'pool', cell: c => `${f(c.pool)}${c.pool0 != null ? `<br><small class="mut" title="Пул из файла плана">было ${f(c.pool0)}</small>` : ''}` },
+    { k: 'paid', t: 'Оплатил за период', kind: 'num', v: c => c.paid || 0, tot: true, cell: c => f(c.paid) },
+    { k: 'owe', t: 'Недоплатил', kind: 'num', v: c => c.owe, tot: true, cell: c => `<b>${f(c.owe)}</b>` },
+    ...(D.closed ? [
+      { k: 'got', t: `Собрано с ${UI.dm(D.nFrom)}`, kind: 'num', v: c => got(c), tot: true, cell: c => (got(c) ? `<span class="pos">${f(got(c))}</span>` : '<span class="ph">—</span>') },
+      { k: 'left', t: 'Осталось собрать', kind: 'num', v: c => left(c), tot: true, cell: c => (left(c) > 0.005 ? `<b class="neg">${f(left(c))}</b>` : UI.pill('good', 'собрано', '✓')) },
+    ] : []),
+    { k: 'debtEnd', t: `Долг на ${UI.dm(D.end)}`, kind: 'num', v: c => c.debtEnd, tot: true, cell: c => (c.debtEnd ? f(c.debtEnd) : '<span class="ph">—</span>') },
+    { k: 'debt', t: 'Долг сейчас', kind: 'num', v: debtNow, tot: true, cell: c => { const v = debtNow(c); return v == null ? '<span class="ph">нет данных</span>' : v ? `<b>${f(v)}</b>${v > c.debtEnd + 0.5 ? ' <small class="neg" title="Долг вырос после конца периода">▲</small>' : v < c.debtEnd - 0.5 ? ' <small class="pos" title="Долг уменьшился">▼</small>' : ''}` : UI.pill('good', '0', '✓'); } },
+    { k: 'pay', t: 'Посл. оплата', kind: 'num', v: c => (lastPay(c) ? REP.days(lastPay(c), t0) : null), kfmt: v => `${v} дн. назад`, cell: c => { const lp = lastPay(c); if (!lp) return '<span class="neg">нет</span>'; const n = REP.days(lp, t0); return `${UI.dm(lp)}<small class="${n > 30 ? 'neg' : 'mut'}"> · ${n} дн.</small>`; } },
+    { k: 'date', t: 'Дата оплаты', kind: 'text', v: c => PAYPLAN.of(c.name).map(x => UI.dm(x.d)).join(' '), sv: c => PAYPLAN.of(c.name)[0]?.d || '9999', edit: 'pay',
+      keys: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => [UI.dm(x.d), x.d]) : [[EMPTY, '']]; },
+      cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div class="${x.d < t0 ? 'neg' : ''}" title="${x.d < t0 ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('') : '<span class="ph">＋</span>'; } },
+    { k: 'tot', t: 'Ещё оплатит', kind: 'num', v: c => sum0(c) || null, vt: c => sum0(c), tot: true, edit: 'pay',
+      cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(sum0(c))}</b>` : '') : '<span class="ph">＋</span>'; } },
+    { k: 'note', t: 'Заметка', kind: 'text', v: note, edit: 'note', cell: c => (note(c) ? `<small>${esc(note(c))}</small>` : '<span class="ph">＋</span>') },
+  ];
+  for (const col of COLS) if (!col.keys) col.keys = col.kind === 'num' ? kNum(col, col.kfmt || f) : kText(col);
+  const EDIT = COLS.filter(c => c.edit);
+
+  // ----- filters (Excel autofilter: ticked values and/or a condition) -----
+  const parseN = x => { const n = Number(String(x ?? '').replace(/[\s']/g, '').replace(',', '.')); return Number.isFinite(n) ? n : NaN; };
+  const TXT_OPS = [['eq', 'Равно'], ['ne', 'Не равно'], ['sw', 'Начинается с'], ['has', 'Содержит'], ['nhas', 'Не содержит']];
+  const NUM_OPS = [['eq', 'Равно'], ['gt', 'Больше'], ['ge', 'Больше или равно'], ['lt', 'Меньше'], ['le', 'Меньше или равно'], ['bw', 'Между'], ['empty', 'Пусто'], ['nonempty', 'Не пусто']];
+  for (const k of Object.keys(S.f)) if (!COLS.some(c => c.k === k)) delete S.f[k];
+  const passCond = (col, c, cd) => {
+    if (col.kind !== 'num') { const v = String(col.v(c) ?? '').toLowerCase(), a = String(cd.a ?? '').toLowerCase(); return { eq: v === a, ne: v !== a, sw: v.startsWith(a), has: v.includes(a), nhas: !v.includes(a) }[cd.op] ?? true; }
+    const v = col.v(c), a = parseN(cd.a), b = parseN(cd.b);
+    if (cd.op === 'empty') return v === null; if (cd.op === 'nonempty') return v !== null; if (v === null) return false;
+    return { eq: Math.abs(v - a) < 0.005, gt: v > a, ge: v >= a, lt: v < a, le: v <= a, bw: v >= Math.min(a, b) && v <= Math.max(a, b) }[cd.op] ?? true;
+  };
+  const compile = () => COLS.map(col => { const st = S.f[col.k]; return st ? { col, sel: st.sel ? new Set(st.sel) : null, cond: st.cond || null } : null; }).filter(Boolean);
+  const rowPass = (c, flt, skip) => flt.every(x => x.col.k === skip || ((!x.sel || x.col.keys(c).some(([k]) => x.sel.has(k))) && (!x.cond || passCond(x.col, c, x.cond))));
+  const view = () => {
+    const flt = compile(), rows = list.filter(c => rowPass(c, flt)), sc = COLS.find(x => x.k === S.sort.k);
+    if (sc) { const val = c => (sc.sv ? sc.sv(c) : sc.v(c)); rows.sort((a, b) => { const x = val(a), y = val(b); if (x === y) return 0; if (x === null) return 1; if (y === null) return -1; return (typeof x === 'string' ? x.localeCompare(y, 'ru') : x - y) * S.sort.dir; }); }
+    return rows;
+  };
+
+  wrap.innerHTML = `<table class="xg"><thead><tr><th class="rn" style="cursor:default">№</th>${COLS.map((col, i) => `<th class="${i === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''}" data-k="${col.k}" title="Нажмите — фильтр и сортировка"><div class="th"><span class="tt">${col.t}<span class="si"></span></span><i class="fb">▾</i></div></th>`).join('')}</tr></thead>
+    <tbody></tbody><tfoot><tr><td class="rn"></td>${COLS.map((col, i) => `<td class="${i === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''}" data-t="${col.k}"></td>`).join('')}</tr></tfoot></table>`;
+  const tb = $('tbody', wrap);
+  let cur = [];
+  const draw = () => {
+    cur = view();
+    tb.innerHTML = cur.map((c, i) => `<tr data-n="${esc(c.name)}" class="${S.sel === c.name ? 'sel' : ''}"><td class="rn">${i + 1}</td>${COLS.map((col, j) => `<td data-k="${col.k}" class="${j === 0 ? 'c1' : ''} ${col.kind === 'num' ? 'n' : ''} ${col.edit ? 'ed' : ''}">${col.cell ? col.cell(c) : esc(String(col.v(c) ?? ''))}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${COLS.length + 1}" class="mut" style="padding:18px;text-align:center">По фильтрам никого нет</td></tr>`;
+    for (const col of COLS) $(`[data-t="${col.k}"]`, wrap).textContent = col.tot ? f(cur.reduce((a, c) => a + ((col.vt ? col.vt(c) : col.v(c)) || 0), 0)) : '';
+    $('tfoot td:nth-child(2)', wrap).textContent = `Итого · ${cur.length}`;
+    wrap.querySelectorAll('thead th[data-k]').forEach(th => { const k = th.dataset.k; th.classList.toggle('fa', !!S.f[k]); th.querySelector('.si').textContent = S.sort.k === k ? (S.sort.dir > 0 ? ' ▲' : ' ▼') : ''; });
+    $('#dgInfo', body).textContent = `Показано ${cur.length} из ${list.length} · недоплатили $${f(cur.reduce((a, c) => a + c.owe, 0))}${D.closed ? ` · осталось собрать $${f(cur.reduce((a, c) => a + left(c), 0))}` : ''} · долг сейчас $${f(cur.reduce((a, c) => a + (debtNow(c) || 0), 0))} · обещали $${f(cur.reduce((a, c) => a + sum0(c), 0))}`;
+    $('#dgReset', body).style.display = Object.keys(S.f).length ? '' : 'none';
+  };
+  const setF = (k, patch) => { const st = { sel: null, cond: null, ...(S.f[k] || {}), ...patch }; if (!st.sel && !st.cond) delete S.f[k]; else S.f[k] = st; draw(); };
+  const condDialog = (col, op) => {
+    const ops = col.kind === 'num' ? NUM_OPS : TXT_OPS, old = S.f[col.k]?.cond || {};
+    const m = modal(`<h3 style="margin:0 0 6px">Пользовательский автофильтр</h3><p class="mut" style="margin:0 0 10px">Столбец: <b>${esc(col.t)}</b></p>
+      <div style="display:grid;gap:8px"><select id="coP">${ops.map(([o, n]) => `<option value="${o}" ${o === op ? 'selected' : ''}>${n}</option>`).join('')}</select><input id="coA" placeholder="значение" value="${esc(old.op === op ? old.a ?? '' : '')}"><input id="coB" placeholder="и" value="${esc(old.op === op ? old.b ?? '' : '')}"></div>
+      <div class="bar" style="margin-top:12px"><span class="spacer"></span><button class="btn gray" id="coX">Отмена</button><button class="btn" id="coOk">OK</button></div>`);
+    const sync = () => { const o = $('#coP', m.el).value; $('#coA', m.el).style.display = o === 'empty' || o === 'nonempty' ? 'none' : ''; $('#coB', m.el).style.display = o === 'bw' ? '' : 'none'; };
+    $('#coP', m.el).onchange = sync; sync(); $('#coA', m.el).focus(); $('#coX', m.el).onclick = () => m.close();
+    const ok = () => { const o = $('#coP', m.el).value, a = $('#coA', m.el).value.trim(), b2 = $('#coB', m.el).value.trim(); if (!['empty', 'nonempty'].includes(o) && a === '') return toast('Впишите значение'); if (col.kind === 'num' && !['empty', 'nonempty'].includes(o) && (Number.isNaN(parseN(a)) || (o === 'bw' && Number.isNaN(parseN(b2))))) return toast('Для числа впишите цифры'); m.close(); setF(col.k, { cond: { op: o, a, b: b2 } }); };
+    $('#coOk', m.el).onclick = ok; m.el.addEventListener('keydown', e => { if (e.key === 'Enter') ok(); });
+  };
+  const openFilter = th => {
+    const col = COLS.find(x => x.k === th.dataset.k), st = S.f[col.k] || {}, num = col.kind === 'num';
+    const mp = new Map(); for (const c of list.filter(c => rowPass(c, compile(), col.k))) for (const [k, sv] of col.keys(c)) { const o = mp.get(k) || { sv, n: 0 }; o.n++; mp.set(k, o); }
+    const keys = [...mp.entries()].sort((x, y) => (typeof x[1].sv === 'string' ? x[1].sv.localeCompare(y[1].sv, 'ru') : x[1].sv === y[1].sv ? 0 : x[1].sv < y[1].sv ? -1 : 1));
+    const chosen = new Set(st.sel || keys.map(([k]) => k)), pop = document.createElement('div'); pop.className = 'xf-pop';
+    pop.innerHTML = `<div class="xi" data-a="asc">${num ? 'Сортировка по возрастанию' : 'Сортировка от А до Я'}</div><div class="xi" data-a="desc">${num ? 'Сортировка по убыванию' : 'Сортировка от Я до А'}</div><div class="xs"></div>
+      <div class="xi ${S.f[col.k] ? '' : 'dis'}" data-a="clear">Снять фильтр с «${esc(col.t)}»</div><div class="xs"></div>
+      <div class="xi" data-a="cond">${num ? 'Числовые фильтры' : 'Текстовые фильтры'}<span>▸</span></div><div id="xsub" hidden>${(num ? NUM_OPS : TXT_OPS).map(([o, n]) => `<div class="xi sub" data-op="${o}">${n}${['empty', 'nonempty'].includes(o) ? '' : '…'}</div>`).join('')}</div><div class="xs"></div>
+      <input class="xq" placeholder="Поиск" autocomplete="off"><div class="xl"><label><input type="checkbox" data-all> (Выделить все)</label>${keys.map(([k, o], i) => `<label data-s="${esc(k.toLowerCase())}"><input type="checkbox" data-i="${i}"> <span>${esc(k)}</span><small>${o.n}</small></label>`).join('')}</div>
+      <div class="xb"><button class="btn sm" data-a="ok">OK</button><button class="btn gray sm" data-a="cancel">Отмена</button></div>`;
+    xgOpen(pop, th); pop.dataset.for = col.k;
+    const boxes = [...pop.querySelectorAll('input[data-i]')], all = pop.querySelector('input[data-all]'), q = pop.querySelector('.xq'), okb = pop.querySelector('[data-a=ok]');
+    const vis = () => boxes.filter(b => b.closest('label').style.display !== 'none');
+    const refresh = () => { const v = vis(); all.checked = v.length > 0 && v.every(b => b.checked); all.indeterminate = !all.checked && v.some(b => b.checked); okb.disabled = !boxes.some(b => b.checked); };
+    boxes.forEach((b, i) => { b.checked = chosen.has(keys[i][0]); b.onchange = refresh; });
+    all.onchange = () => { vis().forEach(b => { b.checked = all.checked; }); refresh(); };
+    q.oninput = () => { const w = q.value.trim().toLowerCase(); pop.querySelectorAll('label[data-s]').forEach(l => { l.style.display = !w || l.dataset.s.includes(w) ? '' : 'none'; }); refresh(); };
+    refresh(); q.focus();
+    pop.onclick = e => {
+      const it = e.target.closest('[data-a],[data-op]'); if (!it) return;
+      if (it.dataset.op) { xgClose(); if (['empty', 'nonempty'].includes(it.dataset.op)) setF(col.k, { cond: { op: it.dataset.op } }); else condDialog(col, it.dataset.op); return; }
+      const a = it.dataset.a;
+      if (a === 'asc' || a === 'desc') { xgClose(); S.sort = { k: col.k, dir: a === 'asc' ? 1 : -1 }; draw(); }
+      else if (a === 'clear') { xgClose(); delete S.f[col.k]; draw(); }
+      else if (a === 'cond') pop.querySelector('#xsub').hidden = !pop.querySelector('#xsub').hidden;
+      else if (a === 'cancel') xgClose();
+      else if (a === 'ok') { const pick = keys.filter((_, i) => boxes[i].checked).map(([k]) => k); xgClose(); setF(col.k, { sel: pick.length === keys.length ? null : pick }); }
+    };
+  };
+  wrap.querySelector('thead').onclick = e => { const th = e.target.closest('th[data-k]'); if (!th) return; if (XPOP && XPOP.dataset.for === th.dataset.k) return xgClose(); openFilter(th); };
+  $('#dgReset', body).onclick = () => { S.f = {}; draw(); };
+
+  // ----- editing right in the table -----
+  const target = (c, col, how) => { // next cell after Enter (down) / Tab (right)
+    if (how === 'down') { const i = cur.indexOf(c); return cur[i + 1] ? { name: cur[i + 1].name, k: col.k } : null; }
+    const j = EDIT.indexOf(col); return EDIT[j + 1] ? { name: c.name, k: EDIT[j + 1].k } : null;
+  };
+  const reload = next => { S.keep = { t: wrap.scrollTop, l: wrap.scrollLeft, next }; re(); };
+  const startEdit = (td, c, col) => {
+    if (col.edit === 'pay') return PAYPLAN.pop(c.name, td, () => draw());
+    const old = col.edit === 'pool' ? c.pool || 0 : note(c), inp = document.createElement('input');
+    inp.value = old || ''; if (col.edit === 'pool') { inp.className = 'num'; inp.inputMode = 'decimal'; } else inp.maxLength = 500;
+    td.textContent = ''; td.appendChild(inp); inp.focus(); inp.select();
+    let done = false;
+    const finish = async (commit, how) => {
+      if (done) return; done = true;
+      if (!commit) return draw();
+      let v = inp.value;
+      if (col.edit === 'pool') { v = String(v).trim() === '' ? 0 : parseN(v); if (!(v >= 0)) { toast('Число не меньше 0'); return draw(); } }
+      else v = String(v).trim();
+      const next = how ? target(c, col, how) : null;
+      if (col.edit === 'pool' ? Math.abs(v - old) < 0.005 : v === old) { if (next) { draw(); clickCell(next); } else draw(); return; }
+      if (col.edit === 'pool') { if (!(await DOLG.savePool(D, c, v))) return draw(); toast(`Пул ${c.name}: ${f(old)} → ${f(v)}`); return reload(next); }
+      if (!(await DOLG.saveNote(c.name, v))) return draw();
+      draw(); if (next) clickCell(next);
+    };
+    inp.onkeydown = e => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true, 'down'); }
+      else if (e.key === 'Tab') { e.preventDefault(); finish(true, 'right'); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+    };
+    inp.onblur = () => finish(true, null);
+  };
+  const clickCell = nx => { const tr = [...tb.rows].find(r => r.dataset.n === nx.name), td = tr && tr.querySelector(`td[data-k="${nx.k}"]`); if (td) { td.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); td.click(); } };
+  tb.onclick = e => {
+    const tr = e.target.closest('tr'); if (!tr || !tr.dataset.n) return;
+    const td = e.target.closest('td.ed');
+    if (td && !td.querySelector('input') && !e.target.closest('a')) { const c = cur.find(x => x.name === tr.dataset.n), col = COLS.find(x => x.k === td.dataset.k); if (c && col) { tb.querySelectorAll('tr.sel').forEach(x => x.classList.remove('sel')); tr.classList.add('sel'); S.sel = c.name; startEdit(td, c, col); return; } }
+    if (e.target.closest('a,button,input,select')) return;
+    const was = tr.classList.contains('sel'); tb.querySelectorAll('tr.sel').forEach(x => x.classList.remove('sel')); S.sel = was ? '' : tr.dataset.n; if (!was) tr.classList.add('sel');
+  };
+  draw();
+  if (S.keep) { const k = S.keep; S.keep = null; wrap.scrollTop = k.t; wrap.scrollLeft = k.l; if (k.next) clickCell(k.next); }
 };
