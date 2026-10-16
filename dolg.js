@@ -98,7 +98,7 @@ EXT_PAGES.debtprev = async el => {
     </div>
     <div class="grid">
     ${UI.panel('По агентам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th><th class="n">План продаж</th><th class="n">Продано</th><th class="n">%</th><th class="n">План сбора</th><th class="n">Собрано</th><th class="n">%</th><th class="n">Недоплатили</th><th class="n">Клиентов</th>${D.closed ? `<th class="n">Собрано с ${UI.dm(D.nFrom)}</th><th class="n">Осталось</th><th class="n" title="Сколько, по вашей оценке, агент ещё соберёт до конца срока">Ожидаем ещё</th><th class="n">Итого соберёт</th>` : ''}<th></th></tr></thead><tbody>
-      ${A.map(a => { const g = D.stage === 'done' ? a.week : a.now; return `<tr><td><a href="#" data-ag="${esc(a.agent)}">${esc(a.agent)}</a></td><td class="n">${f(a.plan)}</td><td class="n">${f(a.sold)}</td><td class="n">${a.plan ? UI.pill(a.sold >= a.plan ? 'good' : 'warn', (UI.pct(a.sold, a.plan) ?? 0) + '%') : '—'}</td><td class="n">${f(a.pool)}</td><td class="n">${f(a.paid)}</td><td class="n">${a.pool ? UI.pill(a.paid >= a.pool ? 'good' : 'warn', (UI.pct(a.paid, a.pool) ?? 0) + '%') : '—'}</td><td class="n"><b>${f(a.owe)}</b></td><td class="n">${a.debtors}</td>${D.closed ? `<td class="n pos">${f(g)}</td><td class="n"><b>${f(Math.max(0, a.owe - g))}</b>${a.owe ? ` <small class="mut">${UI.pct(g, a.owe) ?? 0}%</small>` : ''}</td><td class="n">${(() => { const e = agC(a.agent, exL); return e ? `<b>${f(e)}</b>` : '<span class="mut">—</span>'; })()}</td><td class="n">${(() => { const t = g + agC(a.agent, exL); return `<b>${f(t)}</b>${a.owe ? ` <small class="mut">${UI.pct(t, a.owe) ?? 0}%</small>` : ''}`; })()}</td>` : ''}<td class="no-print">${chats[a.agent] ? `<button class="btn gray" data-tg="${esc(a.agent)}" title="Отправить агенту его список в Telegram">✈ Агенту</button>` : `<button class="btn gray" data-cp="${esc(a.agent)}" title="Скопировать список для агента">📋</button>`}</td></tr>`; }).join('')}
+      ${A.map(a => { const g = D.stage === 'done' ? a.week : a.now; return `<tr><td><a href="#" data-ag="${esc(a.agent)}">${esc(a.agent)}</a></td><td class="n">${f(a.plan)}</td><td class="n">${f(a.sold)}</td><td class="n">${a.plan ? UI.pill(a.sold >= a.plan ? 'good' : 'warn', (UI.pct(a.sold, a.plan) ?? 0) + '%') : '—'}</td><td class="n">${f(a.pool)}</td><td class="n">${f(a.paid)}</td><td class="n">${a.pool ? UI.pill(a.paid >= a.pool ? 'good' : 'warn', (UI.pct(a.paid, a.pool) ?? 0) + '%') : '—'}</td><td class="n"><b>${f(a.owe)}</b></td><td class="n">${a.debtors}</td>${D.closed ? `<td class="n pos">${f(g)}</td><td class="n"><b>${f(Math.max(0, a.owe - g))}</b>${a.owe ? ` <small class="mut">${UI.pct(g, a.owe) ?? 0}%</small>` : ''}</td><td class="n">${(() => { const e = agC(a.agent, exL); return e ? `<b>${f(e)}</b>` : '<span class="mut">—</span>'; })()}</td><td class="n">${(() => { const t = g + agC(a.agent, exL); return `<b>${f(t)}</b>${a.owe ? ` <small class="mut">${UI.pct(t, a.owe) ?? 0}%</small>` : ''}`; })()}</td>` : ''}<td class="no-print" style="white-space:nowrap"><button class="btn gray" data-xl="${esc(a.agent)}" title="Скачать список должников агента в Excel">📊</button>${chats[a.agent] ? ` <button class="btn gray" data-tg="${esc(a.agent)}" title="Отправить агенту Excel-файл с его должниками в Telegram">✈</button>` : ''} <button class="btn gray" data-cp="${esc(a.agent)}" title="Скопировать список текстом">📋</button></td></tr>`; }).join('')}
       </tbody></table></div><p class="mut" style="margin:10px 0 0">«Недоплатили» — сумма по клиентам, которые оплатили меньше своего Пула. Она может быть больше, чем «план сбора − собрано»: клиенты, которые заплатили сверх Пула, долг других не закрывают.</p>`, { cls: 'w12' })}
     ${UI.panel(`Кто недоплатил (${list.length})`, `<div class="bar no-print"><select id="dShow" aria-label="Показать"><option value="left" ${DOLG.show === 'left' ? 'selected' : ''}>Ещё не собрано</option><option value="done" ${DOLG.show === 'done' ? 'selected' : ''}>Уже собрано</option><option value="all" ${DOLG.show === 'all' ? 'selected' : ''}>Все</option></select><span id="dgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="dgReset" style="display:none">✕ Снять все фильтры</button></div>
       ${list.length ? `<div class="xg-wrap" id="dgW" style="height:auto;max-height:calc(100vh - 160px)"></div>
@@ -112,7 +112,8 @@ EXT_PAGES.debtprev = async el => {
   if ($('#dTerm', body)) $('#dTerm', body).onchange = e => { DOLG.setTerm(D.from, +e.target.value); re(); };
   body.querySelectorAll('[data-ag]').forEach(a => a.onclick = e => { e.preventDefault(); DOLG.agent = a.dataset.ag; re(); });
   body.querySelectorAll('[data-cp]').forEach(b => b.onclick = async () => { const t = DOLG.text(D, b.dataset.cp).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'"); try { await navigator.clipboard.writeText(t); toast('Список скопирован — вставьте агенту'); } catch { prompt('Скопируйте текст', t); } });
-  body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const n = b.dataset.tg; if (!confirm(`Отправить ${n} его список должников в Telegram?`)) return; try { await TG.send(TG.conf().chats[n].id, DOLG.text(D, n)); toast('Отправлено'); } catch (e) { toast(e.message); } });
+  body.querySelectorAll('[data-xl]').forEach(b => b.onclick = async () => { const n = b.dataset.xl; try { b.disabled = true; const x = await DOLG.xlsx(D, n); const a = document.createElement('a'); a.href = URL.createObjectURL(x.blob); a.download = x.name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); toast('Файл скачан: ' + x.name); } catch (e) { toast(e.message); } finally { b.disabled = false; } });
+  body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const n = b.dataset.tg; if (!confirm(`Отправить ${n} Excel-файл с его должниками в Telegram?`)) return; try { b.disabled = true; const x = await DOLG.xlsx(D, n); await REMIND.sendDoc(TG.conf().chats[n].id, x.blob, x.name, DOLG.caption(D, n)); toast('Отправлено агенту'); } catch (e) { toast(e.message); } finally { b.disabled = false; } });
   $('#dPrint', el).onclick = () => print();
   $('#dRem', el).onclick = () => REMIND.dialog();
   if ($('#dRem2', body)) $('#dRem2', body).onclick = e => { e.preventDefault(); REMIND.dialog(); };
@@ -323,4 +324,34 @@ DOLG.ordPop = (name, list, anchor, D) => {
     <table style="width:100%;font-size:12px;box-shadow:none;border:0">${list.map(x => `<tr><td>${UI.dm(x.d)} <small class="mut">· ${REP.days(x.d, t0)} дн.</small></td><td class="n" style="text-align:right">$${f(x.s)}</td></tr>`).join('')}
     <tr><td><b>Итого · ${list.length}</b></td><td style="text-align:right"><b>$${f(tot)}</b></td></tr></table></div>`;
   xgOpen(pop, anchor);
+};
+
+// short text that goes with the agent's Excel file
+DOLG.caption = (D, agent) => {
+  const f = UI.fmt0, a = D.agents.find(x => x.agent === agent) || {}, list = D.clients.filter(c => c.agent === agent && c.owe > 0.005);
+  const left = list.reduce((s, c) => s + DOLG.expLeft(D, c), 0);
+  return [`<b>${esc(agent)}</b> — долги за ${UI.dm(D.from)}–${UI.dm(D.end)}`, `План сбора: $${f(a.pool)} · собрано $${f(a.paid)}${a.pool ? ` (${UI.pct(a.paid, a.pool)}%)` : ''}`, `Нужно собрать: <b>$${f(left)}</b> у ${list.filter(c => DOLG.expLeft(D, c) > 0.005).length} клиентов${D.closed ? ` до ${UI.dateRu(D.wEnd)}` : ''}`].join('\n');
+};
+// the agent's debtors as an Excel file
+DOLG.xlsx = async (D, agent) => {
+  if (!window.XLSX) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = res; sc.onerror = () => rej(new Error('Не удалось загрузить модуль Excel (нет интернета?)')); document.head.appendChild(sc); });
+  const S = CRMLocal.engine.getState(), ORD = DOLG.orders(D), r2 = n => Math.round((n || 0) * 100) / 100, g = c => (D.stage === 'done' ? c.week : c.now);
+  const list = D.clients.filter(c => c.agent === agent && c.owe > 0.005).sort((a, b) => DOLG.expLeft(D, b) - DOLG.expLeft(D, a) || b.owe - a.owe);
+  const a = D.agents.find(x => x.agent === agent) || {};
+  const head = ['№', 'Клиент', 'Ориентир', 'Пул, $', 'Оплатил за период, $', 'Недоплатил, $', ...(D.closed ? [`Собрано с ${UI.dm(D.nFrom)}, $`] : []), 'Осталось собрать, $', 'Долг сейчас, $', 'Посл. заказ', 'Обещал оплатить', 'Заметка'];
+  const rows = [[`${agent} — должники за период ${UI.dm(D.from)}–${UI.dm(D.end)}`], [`План сбора $${UI.fmt0(a.pool)} · собрано $${UI.fmt0(a.paid)}${a.pool ? ` (${UI.pct(a.paid, a.pool)}%)` : ''}${D.closed ? ` · собрать до ${UI.dateRu(D.wEnd)}` : ''}`], [], head];
+  list.forEach((c, i) => {
+    const o = ORD.get(c.name) || [], lo = o[o.length - 1], pl = PAYPLAN.of(c.name);
+    rows.push([i + 1, c.name, c.landmark || '', r2(c.pool), r2(c.paid), r2(c.owe), ...(D.closed ? [r2(g(c))] : []), r2(DOLG.expLeft(D, c)), c.b1 == null ? '' : r2(c.b1 < 0 ? -c.b1 : 0),
+      lo ? `${UI.dm(lo.d)} · $${UI.fmt0(lo.s)}${o.length > 1 ? ` (всего ${o.length})` : ''}` : 'нет', pl.map(x => `${UI.dm(x.d)} — $${UI.fmt0(x.s)}`).join(', '), S.ag.clients[c.name]?.note || '']);
+  });
+  const sum = k => r2(list.reduce((s, c) => s + k(c), 0));
+  rows.push(['', 'ИТОГО · ' + list.length + ' кл.', '', sum(c => c.pool), sum(c => c.paid), sum(c => c.owe), ...(D.closed ? [sum(g)] : []), sum(c => DOLG.expLeft(D, c)), sum(c => (c.b1 < 0 ? -c.b1 : 0)), '', '', '']);
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [4, 30, 22, 9, 12, 12, ...(D.closed ? [13] : []), 13, 12, 18, 24, 30].map(w => ({ wch: w }));
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: head.length - 1 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: head.length - 1 } }];
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 3, c: 0 }, e: { r: rows.length - 2, c: head.length - 1 } }) };
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Должники');
+  const blob = new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  return { blob, name: `Долги_${agent.split(' ')[0]}_${UI.dm(D.from).replace('.', '-')}.xlsx` };
 };
