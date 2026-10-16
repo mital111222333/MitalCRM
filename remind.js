@@ -3,7 +3,7 @@
 // даже когда CRM закрыта; кнопка «Отправить сейчас» шлёт то же самое прямо из CRM.
 // Settings live in the synced state (ext.payRemind) so the script reads the same ones.
 const REMIND = {
-  conf: () => (CRMLocal.ext().payRemind ||= { on: true, hour: 9, agents: false }),
+  conf: () => (CRMLocal.ext().payRemind ||= { on: true, hour: 9, agents: false, fmt: 'xlsx' }),
   plus: (d, n) => UI.localDate(Date.parse(d + 'T12:00:00') + n * 864e5),
   // when each client last paid (a growth of «Оплачено» between two snapshots of the same period) and the current debt
   facts(S) {
@@ -38,13 +38,36 @@ const REMIND = {
     if (Lt.length) out.push('', `<b>⚠️ Не заплатили в обещанный день (${Lt.length})</b>`, ...Lt.map(x => row(x) + ` · обещал ${UI.dm(x.d)}`));
     return out.join('\n');
   },
+  caption(L, agent, today = UI.localDate(Date.now())) {
+    const f = UI.fmt0, pick = a => a.filter(x => !agent || x.agent === agent), T = pick(L.today), M = pick(L.tomorrow), Lt = pick(L.late), s = a => f(a.reduce((x, y) => x + y.s, 0));
+    return [`🔔 <b>Обещанные оплаты — ${UI.dm(today)}</b>${agent ? ' · ' + esc(agent) : ''}`, `Сегодня: ${T.length ? `<b>${T.length} — $${s(T)}</b>` : 'нет'}`, `Завтра: ${M.length ? `${M.length} — $${s(M)}` : 'нет'}`, ...(Lt.length ? [`⚠️ Не заплатили в обещанный день: ${Lt.length} — $${s(Lt)}`] : [])].join('\n');
+  },
+  // Excel file (SheetJS, loaded on first use)
+  async xlsx(L, agent, today = UI.localDate(Date.now())) {
+    if (!window.XLSX) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = res; sc.onerror = () => rej(new Error('Не удалось загрузить модуль Excel (нет интернета?)')); document.head.appendChild(sc); });
+    const pick = a => a.filter(x => !agent || x.agent === agent), head = ['№', 'Когда', 'Дата', 'Клиент', ...(agent ? [] : ['Агент']), 'Обещал, $', 'Долг сейчас, $', 'Статус'], rows = [head];
+    for (const [name, list] of [['Сегодня', pick(L.today)], ['Завтра', pick(L.tomorrow)], ['Не заплатили в обещанный день', pick(L.late)]]) {
+      if (!list.length) continue; let i = 0, tot = 0;
+      for (const x of list) { i++; tot += x.s; const late = REP.days(x.d, today); rows.push([i, name, UI.dm(x.d), x.client, ...(agent ? [] : [x.agent]), x.s, x.debt ?? '', x.d === today ? (x.paid ? 'уже платил сегодня' : 'ждём сегодня') : x.d > today ? 'напомнить' : `не заплатил · ${late} дн.`]); }
+      rows.push(['', 'Итого: ' + name.toLowerCase(), '', i + ' кл.', ...(agent ? [] : ['']), Math.round(tot * 100) / 100, '', '']);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(rows); ws['!cols'] = [4, 22, 7, 32, ...(agent ? [] : [24]), 11, 13, 22].map(w => ({ wch: w })); ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Оплаты ' + UI.dm(today));
+    return new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  },
+  async sendDoc(chat, blob, name, caption) {
+    const fd = new FormData(); fd.append('chat_id', chat); fd.append('document', blob, name); fd.append('caption', caption); fd.append('parse_mode', 'HTML');
+    const r = await fetch(`https://api.telegram.org/bot${TG.conf().token}/sendDocument`, { method: 'POST', body: fd }).catch(() => null), d = r ? await r.json().catch(() => ({})) : {};
+    if (!d.ok) throw new Error(d.description || 'Не удалось отправить файл в Telegram');
+  },
   async sendNow() {
     const c = REMIND.conf(), tg = TG.conf(), L = REMIND.lists(); let n = 0;
     if (!tg.token) throw new Error('Сначала подключите бота: Отчёт дня → Telegram агентам');
     const me = REMIND.text(L);
     if (!me) return 'Сегодня, завтра и просроченных обещанных оплат нет — отправлять нечего';
-    if (tg.me?.id) { await TG.send(tg.me.id, me); n++; }
-    if (c.agents) for (const a of new Set([...L.today, ...L.tomorrow, ...L.late].map(x => x.agent))) { const ch = tg.chats?.[a], t = REMIND.text(L, a); if (ch?.id && t) { await TG.send(ch.id, t); n++; } }
+    const t0 = UI.localDate(Date.now()), send = async (chat, agent, text) => { if (c.fmt !== 'text') return REMIND.sendDoc(chat, await REMIND.xlsx(L, agent), `Оплаты_${UI.dm(t0).replace('.', '-')}${agent ? '_' + agent.split(' ')[0] : ''}.xlsx`, REMIND.caption(L, agent)); return TG.send(chat, text); };
+    if (tg.me?.id) { await send(tg.me.id, '', me); n++; }
+    if (c.agents) for (const a of new Set([...L.today, ...L.tomorrow, ...L.late].map(x => x.agent))) { const ch = tg.chats?.[a], t = REMIND.text(L, a); if (ch?.id && t) { await send(ch.id, a, t); n++; } }
     return n ? `Отправлено сообщений: ${n}` : 'Некому отправить: привяжите свой чат («Я, руководитель») в «Telegram агентам»';
   },
   // how a promised date looks in a cell: today / tomorrow / passed
@@ -62,6 +85,7 @@ const REMIND = {
       <div style="display:grid;gap:10px">
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rmOn" ${c.on !== false ? 'checked' : ''}> Присылать каждое утро</label>
         <label style="display:flex;gap:8px;align-items:center">Во сколько <select id="rmH">${Array.from({ length: 14 }, (_, i) => i + 7).map(h => `<option value="${h}" ${h === (c.hour ?? 9) ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></label>
+        <label style="display:flex;gap:8px;align-items:center">Как присылать <select id="rmF"><option value="xlsx" ${c.fmt !== 'text' ? 'selected' : ''}>Excel-таблица + короткая сводка</option><option value="text" ${c.fmt === 'text' ? 'selected' : ''}>Обычным текстом</option></select></label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rmAg" ${c.agents ? 'checked' : ''}> Ещё и каждому агенту — список по его клиентам</label>
       </div>
       <div class="mut" style="margin:12px 0;font-size:13px">Сейчас: сегодня ${L.today.length} на $${s(L.today)} · завтра ${L.tomorrow.length} на $${s(L.tomorrow)} · не заплатили ${L.late.length}<br>
@@ -71,7 +95,7 @@ const REMIND = {
         <p class="mut" style="margin:6px 0 0">Ключи вписывать не нужно: скрипт берёт их из файла автозагрузки. Настройки выше он читает из CRM.</p></details>
       <div class="bar"><button class="btn gray" id="rmSend">✈ Отправить сейчас</button><span class="spacer"></span><button class="btn gray" id="rmX">Закрыть</button><button class="btn" id="rmOk">Сохранить</button></div>`);
     $('#rmX', m.el).onclick = () => m.close();
-    const save = () => { c.on = $('#rmOn', m.el).checked; c.hour = +$('#rmH', m.el).value; c.agents = $('#rmAg', m.el).checked; CRMLocal.touch(); };
+    const save = () => { c.on = $('#rmOn', m.el).checked; c.hour = +$('#rmH', m.el).value; c.agents = $('#rmAg', m.el).checked; c.fmt = $('#rmF', m.el).value; CRMLocal.touch(); };
     $('#rmOk', m.el).onclick = () => { save(); m.close(); toast(c.on ? `Напоминания каждый день в ${String(c.hour).padStart(2, '0')}:00` : 'Напоминания выключены'); };
     $('#rmSend', m.el).onclick = async () => { save(); try { toast(await REMIND.sendNow()); } catch (e) { toast(e.message); } };
   },
