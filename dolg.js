@@ -90,7 +90,7 @@ EXT_PAGES.debtprev = async el => {
       </tbody></table></div><p class="mut" style="margin:10px 0 0">«Недоплатили» — сумма по клиентам, которые оплатили меньше своего Пула. Она может быть больше, чем «план сбора − собрано»: клиенты, которые заплатили сверх Пула, долг других не закрывают.</p>`, { cls: 'w12' })}
     ${UI.panel(`Кто недоплатил (${list.length})`, `<div class="bar no-print"><select id="dShow" aria-label="Показать"><option value="left" ${DOLG.show === 'left' ? 'selected' : ''}>Ещё не собрано</option><option value="done" ${DOLG.show === 'done' ? 'selected' : ''}>Уже собрано</option><option value="all" ${DOLG.show === 'all' ? 'selected' : ''}>Все</option></select><span id="dgInfo" class="mut"></span><span class="spacer"></span><button class="btn gray sm" id="dgReset" style="display:none">✕ Снять все фильтры</button></div>
       ${list.length ? `<div class="xg-wrap" id="dgW" style="height:auto;max-height:calc(100vh - 160px)"></div>
-      <p class="mut no-print" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Пул, Ещё оплатит, Заметка</b> — правка прямо в таблице (<b>Enter</b> — сохранить и вниз, <b>Tab</b> — вправо, <b>Esc</b> — отмена). Изменённый Пул отмечен «было …». Нажмите на имя клиента — откроется его карточка. «Посл. заказ» и «Сумма заказов» — за прошлый период; если заказов несколько, нажмите на ячейку — откроется список всех заказов с датами и суммами. «Ещё оплатит» и «Заметка» — те же, что в Деньги → Аналитика.</p>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
+      <p class="mut no-print" style="margin:8px 0 0;font-size:12px">Нажмите на название столбца — фильтр и сортировка, как в Excel. Нажмите на ячейку <b>Пул, Осталось собрать, Ещё оплатит, Заметка</b> — правка прямо в таблице (<b>Enter</b> — сохранить и вниз, <b>Tab</b> — вправо, <b>Esc</b> — отмена). Если поменять «Осталось собрать», Пул клиента за прошлый период пересчитается сам (оплатил + собрано с 16-го + осталось); изменённый Пул отмечен «было …». Нажмите на имя клиента — откроется его карточка. «Посл. заказ» и «Сумма заказов» — за прошлый период; если заказов несколько, нажмите на ячейку — откроется список всех заказов с датами и суммами. «Ещё оплатит» и «Заметка» — те же, что в Деньги → Аналитика.</p>` : `<p class="mut">${DOLG.show === 'left' ? 'Все долги по Пулу собраны 👍' : 'Пусто.'}</p>`}`, { cls: 'w12', sub: D.closed ? `«Собрано с ${UI.dm(D.nFrom)}» — оплаты клиента в новом периоде (по балансу LINKO), не больше его недоплаты.${D.stage === 'done' ? ` Итоги — по данным на ${UI.dateRu(D.weekUp?.taken_at || D.wEnd)}.` : ''}` : `Предварительно: период закроется ${UI.dateRu(D.end)}, 16-го список станет окончательным.` })}
     </div>`;
   const re = () => EXT_PAGES.debtprev(el);
   $('#dPer', body).onchange = e => { DOLG.period = e.target.value; re(); };
@@ -143,7 +143,7 @@ DOLG.grid = (wrap, body, D, list, got, left, re) => {
     { k: 'owe', t: 'Недоплатил', kind: 'num', v: c => c.owe, tot: true, cell: c => `<b>${f(c.owe)}</b>` },
     ...(D.closed ? [
       { k: 'got', t: `Собрано с ${UI.dm(D.nFrom)}`, kind: 'num', v: c => got(c), tot: true, cell: c => (got(c) ? `<span class="pos">${f(got(c))}</span>` : '<span class="ph">—</span>') },
-      { k: 'left', t: 'Осталось собрать', kind: 'num', v: c => left(c), tot: true, cell: c => (left(c) > 0.005 ? `<b class="neg">${f(left(c))}</b>` : UI.pill('good', 'собрано', '✓')) },
+      { k: 'left', t: 'Осталось собрать', kind: 'num', v: c => left(c), tot: true, edit: 'left', cell: c => (left(c) > 0.005 ? `<b class="neg">${f(left(c))}</b>` : UI.pill('good', 'собрано', '✓')) },
     ] : []),
     { k: 'debt', t: 'Долг сейчас', kind: 'num', v: debtNow, tot: true, cell: c => { const v = debtNow(c); return v == null ? '<span class="ph">нет данных</span>' : v ? `<b>${f(v)}</b>` : UI.pill('good', '0', '✓'); } },
     { k: 'ord', t: 'Посл. заказ', kind: 'num', v: c => (ordOf(c).length ? REP.days(ordOf(c).at(-1).d, t0) : null), kfmt: v => `${v} дн. назад`, pop: true,
@@ -240,18 +240,20 @@ DOLG.grid = (wrap, body, D, list, got, left, re) => {
   const reload = next => { S.keep = { t: wrap.scrollTop, l: wrap.scrollLeft, next }; re(); };
   const startEdit = (td, c, col) => {
     if (col.edit === 'pay') return PAYPLAN.pop(c.name, td, () => draw());
-    const old = col.edit === 'pool' ? c.pool || 0 : note(c), inp = document.createElement('input');
-    inp.value = old || ''; if (col.edit === 'pool') { inp.className = 'num'; inp.inputMode = 'decimal'; } else inp.maxLength = 500;
+    const num = col.edit === 'pool' || col.edit === 'left', old = col.edit === 'pool' ? c.pool || 0 : col.edit === 'left' ? Math.round(left(c) * 100) / 100 : note(c), inp = document.createElement('input');
+    inp.value = old || ''; if (num) { inp.className = 'num'; inp.inputMode = 'decimal'; } else inp.maxLength = 500;
     td.textContent = ''; td.appendChild(inp); inp.focus(); inp.select();
     let done = false;
     const finish = async (commit, how) => {
       if (done) return; done = true;
       if (!commit) return draw();
       let v = inp.value;
-      if (col.edit === 'pool') { v = String(v).trim() === '' ? 0 : parseN(v); if (!(v >= 0)) { toast('Число не меньше 0'); return draw(); } }
+      if (num) { v = String(v).trim() === '' ? 0 : parseN(v); if (!(v >= 0)) { toast('Число не меньше 0'); return draw(); } }
       else v = String(v).trim();
       const next = how ? target(c, col, how) : null;
-      if (col.edit === 'pool' ? Math.abs(v - old) < 0.005 : v === old) { if (next) { draw(); clickCell(next); } else draw(); return; }
+      if (num ? Math.abs(v - old) < 0.005 : v === old) { if (next) { draw(); clickCell(next); } else draw(); return; }
+      // «Осталось собрать» is what is left of the client's Пул: Пул = оплатил за период + уже собрано с 16-го + осталось
+      if (col.edit === 'left') { const np = Math.round(((c.paid || 0) + got(c) + v) * 100) / 100; if (!(await DOLG.savePool(D, c, np))) return draw(); toast(`${c.name}: осталось собрать ${f(old)} → ${f(v)} · Пул ${f(c.pool)} → ${f(np)}`); return reload(next); }
       if (col.edit === 'pool') { if (!(await DOLG.savePool(D, c, v))) return draw(); toast(`Пул ${c.name}: ${f(old)} → ${f(v)}`); return reload(next); }
       if (!(await DOLG.saveNote(c.name, v))) return draw();
       draw(); if (next) clickCell(next);
