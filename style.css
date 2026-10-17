@@ -285,6 +285,7 @@ ol.steps { margin: 0 0 10px; padding-left: 20px; } ol.steps li { margin: 4px 0; 
 .lbhero { display: flex; gap: 12px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
 .lbhero b { font-size: 16px; } .lbhero > div { min-width: 0; } .lbhero .mut { font-size: 12px; }
 .lbhero.team { background: var(--nav); color: #fff; border-color: var(--nav); } .lbhero.team .mut { color: #9fd3cf; }
+.lbnote { background: var(--card); border: 1px solid var(--line); border-left: 4px solid #2a78d6; border-radius: var(--radius); padding: 10px 14px; margin: 0 0 12px; font-size: 13px; } .lbnote.warn { border-left-color: #e29a00; }
 .lbhero .lbmedal { font-size: 30px; }
 .lbrow { display: grid; grid-template-columns: 34px 38px 1fr; gap: 10px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
 .lbrow:last-child { border-bottom: 0; }
