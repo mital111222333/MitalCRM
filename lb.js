@@ -15,8 +15,8 @@ const LB = {
   COLORS: { good: '#1b9e4b', ok: '#2a78d6', warn: '#e29a00', crit: '#e34948', none: '#b4b9c0' },
 
   build(d) {
-    LB.dl = d.lbPast ? 'за ' + UI.dm(d.lbPast.grace) : 'за день';
-    LB.moveTitle = d.lbPast ? ['Поднялся за счёт оплат ' + UI.dm(d.lbPast.grace), 'Опустился после оплат ' + UI.dm(d.lbPast.grace)] : ['Поднялся с прошлой загрузки', 'Опустился с прошлой загрузки'];
+    LB.dl = d.lbPast ? 'после ' + UI.dm(d.lbPast.end) : 'за день';
+    LB.moveTitle = d.lbPast ? ['Поднялся за счёт оплат после ' + UI.dm(d.lbPast.end), 'Опустился после оплат после ' + UI.dm(d.lbPast.end)] : ['Поднялся с прошлой загрузки', 'Опустился с прошлой загрузки'];
     const pace = agPace(d), list = d.agents.filter(a => a.agent !== 'Без агента');
     const board = (key, planKey, dKey, needKey) => {
       const rows = list.map(a => ({ a, v: a[key], plan: a[planKey] || 0, p: a[planKey] > 0 ? a[key] / a[planKey] : null, dv: a[dKey], need: a[needKey] })).sort((x, y) => y.v - x.v);
@@ -163,44 +163,28 @@ const lbAddDay = (iso, n) => { const t = new Date(iso + 'T00:00:00Z'); t.setUTCD
 const lbPeriodEnd = pf => { const y = +pf.slice(0, 4), m = +pf.slice(5, 7), dd = +pf.slice(8, 10), dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(), t = new Date(Date.UTC(y, m, Math.min(dd, dim))); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10); };
 let lbPastOn = false; // Лидерборд → «Прошлый период»
 
-// The previous plan period as it is judged: sales up to its last day (15th),
-// money up to its last day plus what clients paid on the first day of the new period (16th — the extra day for agents).
-// Payments of the 16th come from: a balance export of the old period taken on the 16th (16.09–16.10), or the export of the new period for that one day (16.10–16.10).
+// The previous plan period as it is judged: sales up to its last day (15th), money up to its last day plus everything clients paid on the 16th
+// (the extra day for agents). The data layer (static-api.js → GRACE) keeps a final upload of that period «16.09–16.10»:
+// either LINKO's own export for that period (the auto-loader sends it in the first days, so late card payments are caught too),
+// or one built from the last upload of 15.10 + the one-day upload of 16.10.
 function lbPastInfo(live) {
   const ups = live.uploads, curPF = live.upload.period_from;
   const prevPF = [...new Set(ups.map(u => u.period_from))].filter(p => p < curPF).sort().pop();
   if (!prevPF) return null;
   const end = lbPeriodEnd(prevPF), grace = lbAddDay(end, 1), own = ups.filter(u => u.period_from === prevPF); // newest first
-  const base = own.find(u => u.taken_at <= end) || own[own.length - 1];
-  const ext = own.find(u => u.taken_at === grace && u.id !== base.id) || null;
-  const day1 = ups.find(u => u.period_from === grace && u.taken_at === grace) || null;
-  const src = base.taken_at > end ? 'included' : ext ? 'ext' : day1 ? 'day1' : 'none';
-  return { prevPF, end, grace, base, ext, day1, src };
+  const fin = own.find(u => u.period_to === grace) || null, base = own.find(u => u.taken_at <= end && u.period_to <= end) || null;
+  return { prevPF, end, grace, fin, base, top: fin || base || own[0] };
 }
 
 async function lbPastData(info) {
-  const d = await api('/api/ag/dashboard?upload=' + info.base.id);
+  const d = await api('/api/ag/dashboard?upload=' + info.top.id);
   if (d.error || d.empty) throw new Error(d.error || 'Нет данных прошлого периода');
-  const S = CRMLocal.engine.getState(), rowsOf = id => S.ag.uploads.find(u => u.id === id)?.rows || [];
-  const cAg = new Map(d.clients.map(c => [c.name, c.agent])), cl = new Map(d.clients.map(c => [c.name, c])), pay = [];
-  if (info.src === 'ext') { const b = new Map(rowsOf(info.base.id).map(r => [r.client, r.paid || 0])); for (const r of rowsOf(info.ext.id)) pay.push([r, (r.paid || 0) - (b.get(r.client) || 0)]); }
-  else if (info.src === 'day1') for (const r of rowsOf(info.day1.id)) pay.push([r, r.paid || 0]);
-  const g = {}; let total = 0;
-  for (const [r, v] of pay) {
-    if (Math.abs(v) < 0.005) continue;
-    const ag = cAg.get(r.client) || r.agent || S.ag.clients[r.client]?.agent || 'Без агента';
-    g[ag] = (g[ag] || 0) + v; total += v;
-    const c = cl.get(r.client); if (c) { c.paid += v; c.d_paid = v; c.b1 += v; }
-  }
-  for (const n of Object.keys(g)) if (!d.agents.some(a => a.agent === n)) d.agents.push({ agent: n, okb: 0, akb: 0, plan: 0, sold: 0, ret: 0, paid: 0, pool: 0, more_sale: 0, more_pool: 0, debt: 0, debtors: 0, idle_debtors: 0 });
-  for (const a of d.agents) {
-    const v = g[a.agent] || 0;
-    a.paid += v; a.debt = Math.max(0, a.debt - v);
-    a.d_paid = info.src === 'none' || info.src === 'included' ? null : v; a.d_sold = null;
-    delete a.need_sell_day; delete a.need_collect_day;
-  }
-  d.prev = info.src === 'ext' || info.src === 'day1' ? { taken_at: info.base.taken_at } : null; // arrows: change of place thanks to the 16th
-  d.lbPast = { end: info.end, grace: info.grace, src: info.src, total };
+  const md = d.forecast.month_days || 30;
+  d.forecast = { ...d.forecast, projectable: true, elapsed: md, month_days: md, days_left: 0, period_end: info.end }; // the period is over: the mark is at 100%
+  for (const a of d.agents) { a.d_sold = null; delete a.need_sell_day; delete a.need_collect_day; if (!info.fin) a.d_paid = null; }
+  if (!info.fin) d.prev = null;
+  const T = d.agents.reduce((t, a) => t + (a.d_paid || 0), 0);
+  d.lbPast = { end: info.end, grace: info.grace, src: !info.fin ? 'none' : info.fin.synth ? 'built' : 'linko', total: T, at: info.fin?.snap_at || info.fin?.uploaded_at || null };
   return d;
 }
 
@@ -214,13 +198,12 @@ EXT_PAGES.leaders = async el => {
   const L = LB.build(d), col = agColors(d), T = L.T, fc = d.forecast, pace = L.pace, P = d.lbPast;
   const top = (rows, title) => rows[0] ? `<div class="lbhero"><span class="lbmedal">🥇</span><div><div class="mut">${title}</div><b>${esc(rows[0].a.agent)}</b><div>$${UI.fmt0(rows[0].v)}${rows[0].p !== null ? ` · ${Math.round(rows[0].p * 100)}% плана` : ''}</div></div></div>` : '';
   const perBtn = info ? `<button class="btn ${P ? '' : 'gray'}" id="lbPer" title="Итоги прошлого периода: деньги с учётом оплат ${UI.dm(info.grace)}">${P ? '↩ Текущий период' : `📅 Прошлый период ${UI.dm(info.prevPF)}–${UI.dm(info.end)}`}</button>` : '';
-  const perText = P ? `<span class="mut">Итоги ${UI.dm(info.prevPF)}–${UI.dm(info.end)} · продажи по ${UI.dm(info.end)} · деньги по ${UI.dm(info.end)}${P.src === 'none' ? '' : ` + оплаты ${UI.dm(info.grace)}`}</span>`
+  const perText = P ? `<span class="mut">Итоги ${UI.dm(info.prevPF)}–${UI.dm(info.end)} · продажи по ${UI.dm(info.end)} · деньги по ${UI.dm(info.end)}${P.src === 'none' ? '' : ` + ${UI.dm(info.grace)}`}</span>`
     : `<span class="mut">${fc.projectable ? `Период ${UI.dm(d.upload.period_from)}–${UI.dm(fc.period_end)} · прошло ${Math.round(pace * 100)}%, осталось ${fc.days_left} дн.` : ''}</span>`;
+  const at = P?.at ? new Date(P.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
   const note = !P ? '' : P.src === 'none'
-    ? `<div class="lbnote warn">⚠ Оплаты за ${UI.dateRu(info.grace)} не найдены, поэтому деньги показаны только по ${UI.dateRu(info.end)}. Загрузите «Баланс клиентов» из LINKO за один день ${UI.dateRu(info.grace)} (период ${UI.dm(info.grace)}–${UI.dm(info.grace)}) — и оплаты этого дня добавятся сюда. <a href="#/aup">Перейти к загрузке</a></div>`
-    : P.src === 'included'
-      ? `<div class="lbnote">Загрузка прошлого периода сделана ${UI.dateRu(info.base.taken_at)} — оплаты ${UI.dm(info.grace)} уже в ней (продажи тоже).</div>`
-      : `<div class="lbnote">💰 К собранным деньгам добавлены оплаты за ${UI.dateRu(info.grace)}: <b>$${UI.fmt0(P.total)}</b>${info.base.taken_at < info.end ? ` · ⚠ последняя загрузка прошлого периода — на ${UI.dateRu(info.base.taken_at)}, а не на ${UI.dateRu(info.end)}` : ''}. Стрелки ▲▼ в «Собранных деньгах» — как изменилось место за счёт этого дня.</div>`;
+    ? `<div class="lbnote warn">⚠ Нет данных за ${UI.dateRu(info.grace)}, поэтому деньги показаны только по ${UI.dateRu(info.end)}. Автозагрузка сама пришлёт их в первые дни периода; вручную — скачайте в LINKO «Баланс клиентов» за ${UI.dm(info.prevPF)}–${UI.dm(info.grace)} и перетащите в «Загрузить данные». <a href="#/aup">Загрузки</a></div>`
+    : `<div class="lbnote">💰 К деньгам по ${UI.dateRu(info.end)} добавлено <b>$${UI.fmt0(P.total)}</b>: оплаты ${UI.dateRu(info.grace)}${P.src === 'linko' ? ' и оплаты, внесённые в LINKO задним числом (карты)' : ''}. ${P.src === 'linko' ? `Цифры — из LINKO за период ${UI.dm(info.prevPF)}–${UI.dm(info.grace)}` : `Посчитано из загрузок ${info.base ? UI.dm(info.base.taken_at) : ''} и ${UI.dm(info.grace)} — оплаты, внесённые в LINKO позже, сюда не попали`}${at ? `, данные LINKO на ${at}` : ''}.${info.base && info.base.taken_at < info.end ? ` ⚠ Последняя загрузка прошлого периода — на ${UI.dateRu(info.base.taken_at)}.` : ''}</div>`;
   body.innerHTML = `<div class="bar"><button class="btn" id="lbSend">📤 Отправить в Telegram</button><button class="btn gray" id="lbDown">⬇ Скачать картинку</button><button class="btn gray" id="lbPlans">🎯 Планы агентов</button>${perBtn}
       ${perText}</div>${note}
     <div class="lbheros">${top(L.sales, 'Лидер продаж')}${top(L.money, 'Лидер по сбору денег')}${L.overall[0] ? `<div class="lbhero"><span class="lbmedal">⭐</span><div><div class="mut">Лучший в общем зачёте</div><b>${esc(L.overall[0].a.agent)}</b><div>${L.hasPlans ? `${Math.round(L.overall[0].score * 100)}% планов в среднем` : `места: продажи ${L.overall[0].s.rank}, сбор ${L.overall[0].m.rank}`}</div></div></div>` : ''}

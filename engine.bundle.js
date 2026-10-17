@@ -676,7 +676,8 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
   }
 
   // ---------- agents data source (shape expected by lib/ag-calc.js) ----------
-  const agUploadsDesc = () => S.ag.uploads.slice().sort((a, b) => byBinary(b.taken_at, a.taken_at) || b.id - a.id);
+  // on one day the new plan period comes first (on the 16th: 16.10–16.10 before the final of 16.09–16.10)
+  const agUploadsDesc = () => S.ag.uploads.slice().sort((a, b) => byBinary(b.taken_at, a.taken_at) || byBinary(b.period_from, a.period_from) || b.id - a.id);
   const agRows = id => {
     const up = S.ag.uploads.find(u => u.id === id), PP = S.ext?.clientPlans?.[up.period_from] || null; // plans uploaded for this plan period
     return up.rows.map(r => {
@@ -691,10 +692,21 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
     let parsed, sheets;
     try { sheets = await readTableAsync(raw, q.file || ''); parsed = parseBalance(sheets); } catch (e) { return err(e.message, e.status || 400); }
     const fileDate = (String(q.file || '').match(/(\d{4}-\d{2}-\d{2})/) || [])[1];
-    const date = q.date || (isDate(fileDate) ? fileDate : today());
+    let date = q.date || (isDate(fileDate) ? fileDate : today());
     if (!isDate(date)) return err('Дата должна быть в формате ГГГГ-ММ-ДД');
     if (date > addDays(today(), 1)) return err('Дата выгрузки не может быть в будущем');
-    const from = q.from || date.slice(0, 8) + '01', to = q.to || date;
+    let from = q.from || date.slice(0, 8) + '01', to = q.to || date, detected = null;
+    // a LINKO export of the PREVIOUS plan period (e.g. 16.09–16.10, downloaded later): its «Баланс на начало периода» is that period's.
+    // It is kept as the previous period through its extra day (the 16th).
+    if (q.detect === '1') {
+      const b0 = parsed.rows.reduce((a, r) => a + (r.b0 || 0), 0);
+      const older = [...new Set(S.ag.uploads.filter(u => !u.synth && u.period_from < from).map(u => u.period_from))].sort().pop();
+      if (older) {
+        const ref = S.ag.uploads.filter(u => !u.synth && u.period_from === older).sort((a, b) => byBinary(b.taken_at, a.taken_at) || b.id - a.id)[0];
+        const rb0 = ref.rows.reduce((a, r) => a + (r.b0 || 0), 0), oEnd = agCalc.forecast({ period_from: older, period_to: older }).period_end, P = addDays(oEnd, 1);
+        if (Math.abs(b0 - rb0) < 1 && Math.abs(rb0) > 1 && date >= P) { from = older; to = P; date = P; detected = { from, to }; }
+      }
+    }
     if (!isDate(from) || !isDate(to) || from > to) return err('Период указан неверно');
     // mode: "overwrite" takes План/Пул/Заметки from the file (use for the Google workbook), "keep" never touches them
     const overwrite = q.mode === 'overwrite' || (q.mode !== 'keep' && parsed.workbook && parsed.hasPlan);
@@ -726,7 +738,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
       }
     }
     S.ag.uploads.push({ id, taken_at: date, period_from: from, period_to: to, file: (q.file || '').slice(0, 200), uploaded_at: new Date().toISOString(), uploaded_by: user, clients: rows.length, sold: sum('sold'), paid: sum('paid'), returned: sum('ret'), b1: sum('b1'), rows: stored });
-    return ok({ ok: true, id, clients: rows.length, created, agent_changes: agentChanges, plan_updates: planUpdates, tasks_imported: tasksImported, replaced, source: parsed.workbook ? 'workbook' : 'export', overwrite, date, period: { from, to } });
+    return ok({ ok: true, id, clients: rows.length, created, agent_changes: agentChanges, plan_updates: planUpdates, tasks_imported: tasksImported, replaced, source: parsed.workbook ? 'workbook' : 'export', overwrite, date, period: { from, to }, detected });
   }
 
   // plan file for a plan period: №, Клиент, (Агент), План, Пул — matched to clients by № first, then by name

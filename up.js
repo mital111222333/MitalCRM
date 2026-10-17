@@ -169,8 +169,13 @@ const UPALL = {
       const date = upFileDate(it.f);
       try {
         if (it.type === 'balance') {
-          const pf = PLAN.from(date, day), d = await UI.rawUpload(`/api/ag/upload?file=${encodeURIComponent(it.f.name)}&date=${date}&from=${pf}&to=${date}`, it.f);
-          lines.push(d.error ? `✕ ${esc(it.f.name)}: ${esc(d.error)}` : `✓ Баланс: ${d.clients} клиентов на ${UI.dateRu(date)}${d.created ? `, новых ${d.created}` : ''}`);
+          // the auto-loader names its extra files with the period: «balance 2026-09-16_2026-10-16 - 2026-10-17.xlsx»
+          const per = it.f.name.match(/balance (\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})/);
+          const pf = per ? per[1] : PLAN.from(date, day), pt = per ? per[2] : date;
+          const d = await UI.rawUpload(`/api/ag/upload?file=${encodeURIComponent(it.f.name)}&date=${pt}&from=${pf}&to=${pt}${per ? '' : '&detect=1'}`, it.f);
+          const p = d.period || { from: pf, to: pt };
+          lines.push(d.error ? `✕ ${esc(it.f.name)}: ${esc(d.error)}` : d.detected ? `✓ Баланс прошлого периода ${UI.dm(p.from)}–${UI.dm(p.to)}: ${d.clients} клиентов — оплаты ${UI.dm(p.to)} пойдут в итоги прошлого периода (проверьте, что в LINKO был выбран период по ${UI.dateRu(p.to)})`
+            : per ? `✓ Баланс за период ${UI.dm(p.from)}–${UI.dm(p.to)}: ${d.clients} клиентов` : `✓ Баланс: ${d.clients} клиентов на ${UI.dateRu(date)}${d.created ? `, новых ${d.created}` : ''}`);
         } else if (it.type === 'stock') {
           if (!it.wh) { lines.push(`— ${esc(it.f.name)}: пропущен`); continue; }
           const d = await UI.rawUpload(`/api/wh/upload?warehouse=${encodeURIComponent(it.wh)}&date=${date}&file=${encodeURIComponent(it.f.name)}`, it.f);
@@ -277,7 +282,8 @@ window.LINKO_AUTO = {
       const files = snap.files.map(f => new File([bin(f.b64)], f.name));
       const box = document.createElement('div');
       await UPALL.run(files, box, PLAN.day());
-      { const S = CRMLocal.engine.getState(), last = (S.ag.uploads || []).slice().sort((a, b) => b.id - a.id)[0]; if (last && Date.now() - Date.parse(last.uploaded_at || 0) < 10 * 60000) last.snap_at = snap.at; } // when LINKO gave this balance (for card payments by time)
+      for (const u of CRMLocal.engine.getState().ag.uploads || []) if (!u.synth && Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // when LINKO gave each balance (for card payments by time)
+      CRMLocal.grace && CRMLocal.grace.fix(CRMLocal.engine.getState()); // the final of the previous period takes the new time too
       for (const u of CRMLocal.engine.getState().wh.uploads || []) if (Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // …and when LINKO gave each warehouse's stock
       x.linkoAuto.importedAt = snap.at; x.linkoAuto.checkedAt = new Date().toISOString(); x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
       if (box.textContent.includes('✓')) { toast(`Данные из LINKO обновлены (${new Date(snap.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })})`); const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]'); if (!typing && typeof route === 'function') route(); }

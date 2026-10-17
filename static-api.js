@@ -28,7 +28,67 @@
     try { engine = CRMEngine.createEngine({ state, onChange: schedule }); }
     catch { engine = CRMEngine.createEngine({ onChange: schedule }); } // unreadable stored state: start empty (a backup file can be restored)
     try { navigator.storage?.persist?.(); } catch { /* optional */ }
+    graceFix();
   })();
+
+
+  // ---------- the first day of a plan period (the 16th) is an extra day for the PREVIOUS period's money ----------
+  // Everything clients pay on the 16th counts for the period that ended on the 15th (16.10 → 16.09–15.10); sales of the 16th stay in the new period.
+  // The rows keep LINKO's own numbers in paid0 / sold0 / ret0, so the shift is recomputed from scratch every time and never applied twice.
+  //  • new period uploads (16.10–…): paid = LINKO paid − what the client paid on the 16th (from the one-day upload 16.10–16.10)
+  //  • the previous period «16.09–16.10» from LINKO (the auto-loader sends it in the first days): paid as LINKO shows it, sales/returns without the 16th
+  //  • no such file: a final upload of the previous period is built from its last upload (15.10) + payments of the 16th
+  const GRACE = {
+    day: (d, n) => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); },
+    end(pf) { const y = +pf.slice(0, 4), m = +pf.slice(5, 7), d = +pf.slice(8, 10), dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(), t = new Date(Date.UTC(y, m, Math.min(d, dim))); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10); },
+    raw: (r, k) => (r[k + '0'] !== undefined ? r[k + '0'] : r[k] || 0),
+    // writes the shifted value, keeping LINKO's own number in <k>0; without a shift the LINKO number comes back
+    set(r, k, v) {
+      v = Math.round(v * 1e6) / 1e6; const raw = GRACE.raw(r, k);
+      if (Math.abs(v - raw) < 1e-6) { if (r[k + '0'] === undefined) return false; r[k] = raw; delete r[k + '0']; return true; }
+      if (r[k + '0'] === undefined) r[k + '0'] = r[k] || 0;
+      if (r[k] === v) return false; r[k] = v; return true;
+    },
+    sums(u) { const t = k => u.rows.reduce((a, r) => a + (r[k] || 0), 0); u.sold = t('sold'); u.paid = t('paid'); u.returned = t('ret'); u.b1 = t('b1'); u.clients = u.rows.length; },
+    latest: list => list.slice().sort((a, b) => (a.taken_at < b.taken_at ? 1 : a.taken_at > b.taken_at ? -1 : b.id - a.id))[0] || null,
+    fix(S) {
+      const U = S.ag.uploads; let changed = false;
+      const real = U.filter(u => !u.synth), periods = [...new Set(real.map(u => u.period_from))].sort(), keepSynth = new Set();
+      const touched = new Set();
+      for (const P of periods) {
+        const O = periods.filter(p => p < P).pop();
+        const ok = O && GRACE.day(GRACE.end(O), 1) === P; // the previous period ends the day before P
+        const day1 = ok ? GRACE.latest(real.filter(u => u.period_from === P && u.period_to === P && u.taken_at === P)) : null;
+        const G = new Map(), S16 = new Map(), R16 = new Map(), B16 = new Map();
+        if (day1) for (const r of day1.rows) { G.set(r.client, GRACE.raw(r, 'paid')); S16.set(r.client, GRACE.raw(r, 'sold')); R16.set(r.client, GRACE.raw(r, 'ret')); B16.set(r.client, r.b1); }
+        // new period: without the 16th's money
+        for (const u of real.filter(x => x.period_from === P)) { let ch = false; for (const r of u.rows) ch = GRACE.set(r, 'paid', GRACE.raw(r, 'paid') - (G.get(r.client) || 0)) || ch; if (ch) { touched.add(u); changed = true; } }
+        if (!ok) continue;
+        // the previous period through the 16th straight from LINKO: its sales and returns without the 16th
+        const ext = real.filter(x => x.period_from === O && x.period_to === P);
+        for (const u of ext) { let ch = false; for (const r of u.rows) { ch = GRACE.set(r, 'sold', GRACE.raw(r, 'sold') - (S16.get(r.client) || 0)) || ch; ch = GRACE.set(r, 'ret', GRACE.raw(r, 'ret') - (R16.get(r.client) || 0)) || ch; } if (ch) { touched.add(u); changed = true; } }
+        if (ext.length || !day1) continue;
+        // no such file: build the final of the previous period from its last upload + payments of the 16th
+        const end = GRACE.end(O), base = GRACE.latest(real.filter(u => u.period_from === O && u.taken_at <= end));
+        if (!base) continue;
+        const sig = `${base.id}|${base.uploaded_at || ''}|${day1.id}|${day1.uploaded_at || ''}`;
+        let syn = U.find(u => u.synth && u.period_from === O && u.period_to === P);
+        keepSynth.add(syn);
+        if (syn && syn.sig === sig) { if (syn.snap_at !== (day1.snap_at || null)) { syn.snap_at = day1.snap_at || null; changed = true; } continue; }
+        const rows = base.rows.map(r => { const g = G.get(r.client) || 0; return { client: r.client, agent: r.agent, b0: r.b0, sold: r.sold, ret: r.ret, paid: (r.paid || 0) + g, other_in: r.other_in || 0, other_out: r.other_out || 0, b1: B16.has(r.client) ? B16.get(r.client) : (r.b1 || 0) + g }; });
+        const inBase = new Set(base.rows.map(r => r.client));
+        for (const r of day1.rows) if (!inBase.has(r.client) && (G.get(r.client) || 0)) rows.push({ client: r.client, agent: r.agent, b0: r.b0, sold: 0, ret: 0, paid: G.get(r.client), other_in: 0, other_out: 0, b1: r.b1 });
+        if (!syn) { syn = { id: ++S.seq.ag, synth: true }; U.push(syn); keepSynth.add(syn); }
+        Object.assign(syn, { taken_at: P, period_from: O, period_to: P, sig, base_id: base.id, day1_id: day1.id, file: `Итог периода (авто): по ${end} + оплаты ${P}`, uploaded_at: day1.uploaded_at || base.uploaded_at, uploaded_by: 'авто', snap_at: day1.snap_at || null, rows });
+        GRACE.sums(syn); changed = true;
+      }
+      // a final that is no longer needed (LINKO file came, or its base / 16th was deleted)
+      const before = U.length; S.ag.uploads = U.filter(u => !u.synth || keepSynth.has(u)); if (S.ag.uploads.length !== before) changed = true;
+      for (const u of touched) GRACE.sums(u);
+      return changed;
+    },
+  };
+  const graceFix = () => { try { if (engine && GRACE.fix(engine.getState())) schedule(); } catch (e) { console.warn('grace', e); } };
 
   // plans set per agent for a plan period (Лидерборд → «Планы агентов») replace the sum of the clients' plans
   function applyAgentPlans(d) {
@@ -53,8 +113,9 @@
     touch: schedule, // call after changing engine.getState().ext directly
     ext: () => engine.getState().ext,
     // replace everything with a state that came from the cloud: saved locally, but not sent back
-    replaceFromCloud: async st => { engine.importState(st); dirty = false; clearTimeout(timer); await idbPut(engine.getState()); lastSaved = new Date(); },
-    request: (method, path, body) => engine.request(method, path, { json: body || {} }).then(r => (path.startsWith('/api/ag/dashboard') ? applyAgentPlans(r.json) : r.json)),
+    replaceFromCloud: async st => { engine.importState(st); GRACE.fix(engine.getState()); dirty = false; clearTimeout(timer); await idbPut(engine.getState()); lastSaved = new Date(); },
+    grace: GRACE,
+    request: (method, path, body) => engine.request(method, path, { json: body || {} }).then(r => (method === 'POST' && /^\/api\/ag\/(upload|uploads\/)/.test(path) && graceFix(), r)).then(r => (path.startsWith('/api/ag/dashboard') ? applyAgentPlans(r.json) : r.json)),
   };
 
   const ME = { name: 'Вы', login: 'local', role: 'Владелец', branch: '', demo: false, perms: ['stock.view', 'stock.edit', 'agents.view', 'agents.edit'] };
@@ -75,6 +136,7 @@
     if (body instanceof Blob) req = { raw: new Uint8Array(await body.arrayBuffer()) };
     else if (typeof body === 'string' && body) { try { req = { json: JSON.parse(body) }; } catch { return json({ error: 'Некорректный запрос' }, 400); } }
     const r = await engine.request(method, path, req);
+    if (method === 'POST' && /^\/api\/ag\/(upload|uploads\/)/.test(path)) graceFix();
     return json(path.startsWith('/api/ag/dashboard') ? applyAgentPlans(r.json) : r.json, r.status);
   };
   try { localStorage.setItem('token', 'local'); } catch { /* storage blocked: the page will show the sign-in form */ }
