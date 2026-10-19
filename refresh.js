@@ -31,6 +31,7 @@
       if (!live && window.LINKO_AUTO) { LINKO_AUTO.lastTry = 0; for (let i = 0; i < 20 && LINKO_AUTO.busy; i++) await new Promise(r => setTimeout(r, 300)); await LINKO_AUTO.check(); }
       const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]');
       if (!typing && typeof route === 'function') route();
+      dispatchEvent(new Event('crm:refresh')); // ИИ-помощник пересчитывает подсказки
       lastAt = clock();
       // the clock above is when the button was pressed; what matters is when LINKO last gave the data
       const la = CRMLocal.ext().linkoAuto || {}, lx = CRMLocal.ext().lx || {}, hm = v => { const d = v ? new Date(v) : null; return d && !isNaN(d) ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''; };
