@@ -5,6 +5,8 @@
  * Оплаты — тоже каждые 5 минут (файл linko-fast.json; какие разделы быстрые, решает CRM: "every": 5 в linko-jobs.json).
  * Раз в 30 минут — заказы, товары, возвраты, долги по срокам, работу агентов и др. (файл linko-extra.json).
  * CRM на любом устройстве, включая телефон, при открытии сама забирает эти данные.
+ * Кнопка «🔄 Обновить» в CRM: если скрипт опубликован как веб-приложение (см. doGet ниже), он по нажатию сразу
+ * берёт ВСЁ из LINKO — баланс, остатки, заказы, оплаты, долги — одновременно (параллельно) и отдаёт прямо в CRM.
  *
  * Как поставить: см. CRM → «Данные → Синхронизация и настройки» → «Автозагрузка из LINKO».
  * Заполните 3 строки ниже, сохраните (Ctrl+S), выберите функцию «setup» и нажмите «Выполнить».
@@ -24,10 +26,12 @@ const CFG = {
   EXTRA_MIN: 30,                           // заказы, товары, оплаты, долги, работа агентов — раз в 30 минут
   TG_BOT: '',                              // необязательно: токен Telegram-бота — пришлёт сообщение, если что-то сломалось
   TG_CHAT: '',                             // необязательно: ваш chat id
+  WEB_KEY: 'ВСТАВЬТЕ_КЛЮЧ_КНОПКИ',          // секрет кнопки «Обновить» (вписывается из CRM) — без него веб-приложение никому не отвечает
 };
 
 function setup() {
-  ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
+  // only this loader's own timer is replaced — the reminders' trigger (remind.gs) stays as it is
+  ScriptApp.getProjectTriggers().forEach(t => { if (t.getHandlerFunction() === 'run') ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('run').timeBased().everyMinutes(5).create();
   PropertiesService.getScriptProperties().deleteAllProperties();
   run();
@@ -37,6 +41,10 @@ function setup() {
 function run() {
   const hour = Number(Utilities.formatDate(new Date(), CFG.TZ, 'H'));
   if (hour < 7 || hour > 22) return; // ночью данные не меняются
+  const lock = LockService.getScriptLock(); if (!lock.tryLock(5000)) { Logger.log('Сейчас идёт обновление по кнопке — пропускаю'); return; }
+  try { run0_(); } finally { lock.releaseLock(); }
+}
+function run0_() {
   base_();
   try { gps_(); } catch (e) { Logger.log('GPS: ' + mask_(e.message || e)); }
   let jobs = null; try { jobs = jobs_(); } catch (e) { Logger.log('Список разделов: ' + mask_(e.message || e)); }
@@ -217,6 +225,102 @@ function fetch_(url, opts) {
     catch (e) { last = e; Utilities.sleep(1500 * (i + 1)); }
   }
   throw new Error(mask_((last && last.message) || last));
+}
+
+// ---------- «🔄 Обновить» в CRM: веб-приложение, которое по нажатию сразу берёт всё из LINKO ----------
+// Опубликовать: «Начать развёртывание» → «Новое развёртывание» → тип «Веб-приложение», запуск от «Меня»,
+// доступ «Все» → «Начать развёртывание» → скопировать URL и вставить в CRM («Данные → Синхронизация и настройки»).
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  if (!CFG.WEB_KEY || CFG.WEB_KEY.indexOf('ВСТАВЬТЕ') === 0 || p.k !== CFG.WEB_KEY) return json_({ error: 'Нет доступа: ключ кнопки не совпадает. Скопируйте скрипт из CRM заново.' });
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(60000)) return json_({ error: 'LINKO сейчас уже обновляется — нажмите ещё раз через минуту' });
+  try { return json_(now_()); }
+  catch (err) { return json_({ error: mask_(err.message || err) }); }
+  finally { lock.releaseLock(); }
+}
+function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+
+// everything at once: the balance export, every warehouse and every LINKO section are asked in parallel,
+// then only the next pages of long lists — so a press takes about as long as the slowest single LINKO answer
+function now_() {
+  const t0 = Date.now(), at = new Date().toISOString();
+  const today = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(today);
+  let jobs = []; try { jobs = jobs_(); } catch (e) { Logger.log('Список разделов: ' + mask_(e.message || e)); }
+  const P = PropertiesService.getScriptProperties();
+  let known = null; try { known = JSON.parse(P.getProperty('branches') || 'null'); } catch (e) { known = null; }
+  const branches = known && known.length ? known : Array.from({ length: 20 }, (_, i) => i + 1);
+  const q = 'only_out_stock=False&is_only_delivered=False&last_status=False&exclude_closed_clients=false&only_payment_with_invoice=false&begin_date=' + from + '&end_date=' + today;
+  const lists = [];
+  branches.forEach(br => lists.push({ key: 'st' + br, br: br, url: 'stock/all_balances/?in_way=true&page=1&branch=' + br + '&page_size=500&show_in=amount' }));
+  jobs.forEach(j => lists.push({ key: 'job:' + j.id, job: j, url: j.path.replace(/\{from\}/g, from).replace(/\{to\}/g, today) }));
+  const balUrl = CFG.LINKO_API + 'stats/client_balances_expanded/export/?token=' + CFG.LINKO_TOKEN + '&' + q;
+  const got = pages_(lists, [{ url: balUrl, headers: auth_(), muteHttpExceptions: true, followRedirects: true }]);
+  const files = [], br = got.raw[0];
+  // 1) client balance
+  const b = br && br.getContent ? br.getContent() : null;
+  if (br && br.getResponseCode && br.getResponseCode() === 200 && b && b.length > 4 && b[0] === 0x50 && b[1] === 0x4b) files.push({ name: 'balance - ' + today + 'T000000.xlsx', b64: Utilities.base64Encode(b) });
+  else {
+    const list = all_('stats/client_balances_expanded/?' + q + '&page=1&page_size=500');
+    const rows = [['№', 'Клиент', 'Агент', 'Баланс на начало периода', 'Продано', 'Возврат', 'Оплачено', 'Прочие приходы', 'Прочие расходы', 'Баланс на конец']];
+    list.forEach(c => { const u = (c.currencies || []).filter(x => x.name === 'USD')[0] || {}; rows.push([c.client_id || c.id, c.name, '', n_(u.begin_balance), n_(u.order), n_(u.order_return), n_(u.payment), n_(u.none_type_plus), n_(u.none_type_minus), n_(u.end_balance)]); });
+    files.push({ name: 'balance - ' + today + 'T000000.csv', b64: Utilities.base64Encode(csv_(rows), Utilities.Charset.UTF_8) });
+  }
+  // 2) warehouses
+  const found = [];
+  lists.filter(l => l.br).forEach(l => {
+    const r = got.out[l.key]; if (!r || r.error) return;
+    const wasKnown = !!(known && known.indexOf(l.br) >= 0);
+    if (!wasKnown && (!r.rows.length || !r.rows.some(p => n_(p.balance) || n_(p.reserved)))) return;
+    found.push(l.br);
+    const rows = [['Продукт', 'Код', 'Aртикул', 'Тип продукта', 'Бренд', 'Ед. изм.', 'Всего товаров', 'В пути', 'Зарезервированный', 'Доступный']];
+    r.rows.forEach(p => rows.push([p.title, p.product_code || '', p.vendor_code || '', (p.type || {}).name || '', (p.brand || {}).brand || '', (p.measurement || {}).name || '', n_(p.balance), n_(p.in_way), n_(p.reserved), n_(p.available)]));
+    files.push({ name: 'stock LINKO branch ' + l.br + '.csv', b64: Utilities.base64Encode(csv_(rows), Utilities.Charset.UTF_8) });
+  });
+  if (!(known && known.length) && found.length) P.setProperties({ branches: JSON.stringify(found), branchesAt: String(Date.now()) });
+  // 3) sections: the fast ones (payments, orders, debts) and the rest
+  const fast = { at: at, from: from, to: today, data: {}, errors: {} }, extra = { at: at, from: from, to: today, data: {}, errors: {} };
+  lists.filter(l => l.job).forEach(l => {
+    const r = got.out[l.key], box = l.job.every && l.job.every < CFG.EXTRA_MIN ? fast : extra;
+    if (!r || r.error) box.errors[l.job.id] = (r && r.error) || 'нет ответа'; else box.data[l.job.id] = r.rows.map(x => pick_(x, l.job.pick));
+  });
+  if (Object.values(got.out).some(r => r && /ключ/.test(r.error || ''))) throw new Error('LINKO не принял ключ (401): возьмите новый ключ LINKO и вставьте в скрипт');
+  Logger.log('Обновление по кнопке: ' + (Date.now() - t0) + ' мс, файлов ' + files.length + ', разделов ' + (Object.keys(fast.data).length + Object.keys(extra.data).length));
+  return { at: at, ms: Date.now() - t0, latest: { at: at, from: from, to: today, files: files }, fast: fast, extra: extra };
+}
+// all pages of many LINKO lists at once: round 1 asks every first page (plus `raw` requests) in parallel,
+// next rounds ask only the following pages of the lists that have them
+function pages_(lists, raw) {
+  const out = {}, nexts = {};
+  lists.forEach(l => { out[l.key] = { rows: [] }; nexts[l.key] = l.url; });
+  let rawRes = [], round = 0;
+  while (round < 60) {
+    const keys = Object.keys(nexts).filter(k => nexts[k]);
+    const reqs = keys.map(k => { const u = nexts[k]; return { url: u.indexOf('http') === 0 ? u : CFG.LINKO_API + u, headers: auth_(), muteHttpExceptions: true }; });
+    const extraReqs = round === 0 ? (raw || []) : [];
+    if (!reqs.length && !extraReqs.length) break;
+    const res = fetchAll_(extraReqs.concat(reqs));
+    if (round === 0) rawRes = res.slice(0, extraReqs.length);
+    res.slice(extraReqs.length).forEach((r, i) => {
+      const k = keys[i]; nexts[k] = null;
+      if (r instanceof Error) { out[k].error = mask_(r.message); return; }
+      const code = r.getResponseCode();
+      if (code === 401) { out[k].error = 'LINKO не принял ключ (401)'; return; }
+      if (code !== 200) { out[k].error = 'LINKO ответил ' + code; return; }
+      let j; try { j = JSON.parse(r.getContentText()); } catch (e) { out[k].error = 'LINKO прислал не JSON'; return; }
+      if (Array.isArray(j)) out[k].rows = out[k].rows.concat(j);
+      else if (j && Array.isArray(j.results)) { out[k].rows = out[k].rows.concat(j.results); nexts[k] = j.next || null; }
+      else out[k].rows.push(j);
+    });
+    round++;
+  }
+  return { out: out, raw: rawRes };
+}
+// UrlFetchApp.fetchAll, but one network hiccup does not break the whole batch: the failed ones are retried one by one
+function fetchAll_(reqs) {
+  if (!reqs.length) return [];
+  try { return UrlFetchApp.fetchAll(reqs); }
+  catch (e) { return reqs.map(r => { try { const o = Object.assign({}, r); delete o.url; return fetch_(r.url, o); } catch (e2) { return e2 instanceof Error ? e2 : new Error(String(e2)); } }); }
 }
 
 function planFrom_(d) {
