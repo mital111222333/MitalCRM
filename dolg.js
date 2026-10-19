@@ -339,26 +339,51 @@ DOLG.caption = (D, agent) => {
   const left = list.reduce((s, c) => s + DOLG.expLeft(D, c), 0);
   return [`<b>${esc(agent)}</b> — долги за ${UI.dm(D.from)}–${UI.dm(D.end)}`, `План сбора: $${f(a.pool)} · собрано $${f(a.paid)}${a.pool ? ` (${UI.pct(a.paid, a.pool)}%)` : ''}`, `Нужно собрать: <b>$${f(left)}</b> у ${list.filter(c => DOLG.expLeft(D, c) > 0.005).length} клиентов${D.closed ? ` до ${UI.dateRu(D.wEnd)}` : ''}`].join('\n');
 };
-// the agent's debtors as an Excel file
+// the agent's debtors as an Excel file — styled like a ready Excel table (blue header, banded rows, red debt, blue total row).
+// Styles need xlsx-js-style (a SheetJS build that writes cell formatting); it is loaded as window.XLSXS so other modules keep their XLSX.
+DOLG.lib = async () => {
+  if (window.XLSXS) return window.XLSXS;
+  const prev = window.XLSX;
+  await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js'; sc.onload = res; sc.onerror = () => rej(new Error('Не удалось загрузить модуль Excel (нет интернета?)')); document.head.appendChild(sc); });
+  window.XLSXS = window.XLSX; if (prev) window.XLSX = prev;
+  return window.XLSXS;
+};
 DOLG.xlsx = async (D, agent) => {
-  if (!window.XLSX) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = res; sc.onerror = () => rej(new Error('Не удалось загрузить модуль Excel (нет интернета?)')); document.head.appendChild(sc); });
+  const X = await DOLG.lib();
   const S = CRMLocal.engine.getState(), ORD = DOLG.orders(D), r2 = n => Math.round((n || 0) * 100) / 100, g = c => (D.stage === 'done' ? c.week : c.now);
   const list = D.clients.filter(c => c.agent === agent && DOLG.task(c)).sort((a, b) => DOLG.expLeft(D, b) - DOLG.expLeft(D, a) || b.owe - a.owe);
   const a = D.agents.find(x => x.agent === agent) || {};
-  const head = ['№', 'Клиент', 'Ориентир', 'Пул, $', 'Оплатил за период, $', 'Недоплатил, $', ...(D.closed ? [`Собрано с ${UI.dm(D.nFrom)}, $`] : []), 'Осталось собрать, $', 'Долг сейчас, $', 'Посл. заказ', 'Обещал оплатить', 'Заметка'];
-  const rows = [[`${agent} — должники за период ${UI.dm(D.from)}–${UI.dm(D.end)}`], [`План сбора $${UI.fmt0(a.pool)} · собрано $${UI.fmt0(a.paid)}${a.pool ? ` (${UI.pct(a.paid, a.pool)}%)` : ''}${D.closed ? ` · собрать до ${UI.dateRu(D.wEnd)}` : ''}`], [], head];
+  // columns: [header, width, kind]  kind: n = number, d = debt (red), t = text
+  const cols = [['№', 4, 'n'], ['Клиент', 30, 't'], ['Пул, $', 9, 'n'], ['Оплатил за период, $', 19, 'n'], ['Недоплатил, $', 13, 'n'],
+    ...(D.closed ? [[`Собрано с ${UI.dm(D.nFrom)}, $`, 16, 'n']] : []), ['Осталось собрать, $', 17, 'n'], ['Долг сейчас, $', 13, 'd'], ['Посл. заказ', 16, 't'], ['Обещал оплатить', 22, 't'], ['Заметка', 27, 't']];
+  const N = cols.length;
+  const rows = [[`${agent} — должники за период ${UI.dm(D.from)}–${UI.dm(D.end)}`], [`План сбора $${UI.fmt0(a.pool)} · собрано $${UI.fmt0(a.paid)}${a.pool ? ` (${UI.pct(a.paid, a.pool)}%)` : ''}${D.closed ? ` · собрать до ${UI.dateRu(D.wEnd)}` : ''}`], [], cols.map(c => c[0])];
   list.forEach((c, i) => {
     const o = ORD.get(c.name) || [], lo = o[o.length - 1], pl = PAYPLAN.of(c.name);
-    rows.push([i + 1, c.name, c.landmark || '', r2(c.pool), r2(c.paid), r2(c.owe), ...(D.closed ? [r2(g(c))] : []), r2(DOLG.expLeft(D, c)), c.b1 == null ? '' : r2(c.b1 < 0 ? -c.b1 : 0),
+    rows.push([i + 1, c.name, r2(c.pool), r2(c.paid), r2(c.owe), ...(D.closed ? [r2(g(c))] : []), r2(DOLG.expLeft(D, c)), c.b1 == null ? '' : r2(c.b1 < 0 ? -c.b1 : 0),
       lo ? `${UI.dm(lo.d)} · $${UI.fmt0(lo.s)}${o.length > 1 ? ` (всего ${o.length})` : ''}` : 'нет', pl.map(x => `${UI.dm(x.d)} — $${UI.fmt0(x.s)}`).join(', '), S.ag.clients[c.name]?.note || '']);
   });
   const sum = k => r2(list.reduce((s, c) => s + k(c), 0));
-  rows.push(['', 'ИТОГО · ' + list.length + ' кл.', '', sum(c => c.pool), sum(c => c.paid), sum(c => c.owe), ...(D.closed ? [sum(g)] : []), sum(c => DOLG.expLeft(D, c)), sum(c => (c.b1 < 0 ? -c.b1 : 0)), '', '', '']);
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [4, 30, 22, 9, 12, 12, ...(D.closed ? [13] : []), 13, 12, 18, 24, 30].map(w => ({ wch: w }));
-  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: head.length - 1 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: head.length - 1 } }];
-  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 3, c: 0 }, e: { r: rows.length - 2, c: head.length - 1 } }) };
-  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Должники');
-  const blob = new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  rows.push(['Итог', '', sum(c => c.pool), sum(c => c.paid), sum(c => c.owe), ...(D.closed ? [sum(g)] : []), sum(c => DOLG.expLeft(D, c)), sum(c => (c.b1 < 0 ? -c.b1 : 0)), '', '', list.length]);
+  const ws = X.utils.aoa_to_sheet(rows);
+  // styles
+  const BLUE = '4472C4', BAND1 = 'B4C6E7', BAND2 = 'D9E1F2', RED = 'FF0000', WHITE = 'FFFFFF';
+  const line = { style: 'thin', color: { rgb: WHITE } }, border = { top: line, bottom: line, left: line, right: line };
+  const font = (o = {}) => ({ name: 'Calibri', sz: 11, ...o });
+  const put = (r, c, st) => { const ref = X.utils.encode_cell({ r, c }); if (!ws[ref]) ws[ref] = { t: 's', v: '' }; ws[ref].s = st; };
+  const numFmt = '#,##0.##;-#,##0.##;0', last = rows.length - 1;
+  put(0, 0, { font: font({ bold: true, sz: 12 }) }); put(1, 0, { font: font({ bold: true }) });
+  cols.forEach(([, , k], c) => {
+    put(3, c, { font: font({ bold: true, color: { rgb: k === 'd' ? RED : WHITE } }), fill: { fgColor: { rgb: BLUE } }, border, alignment: { vertical: 'center', wrapText: true } });
+    for (let r = 4; r < last; r++) put(r, c, { font: font(k === 'd' ? { color: { rgb: RED } } : {}), fill: { fgColor: { rgb: (r - 4) % 2 ? BAND2 : BAND1 } }, border, numFmt: k === 't' ? undefined : numFmt, alignment: { horizontal: k === 't' ? 'left' : 'right', vertical: 'center' } });
+    put(last, c, { font: font({ bold: true, color: { rgb: c === 0 || c === N - 1 ? WHITE : RED } }), fill: { fgColor: { rgb: BLUE } }, border, numFmt, alignment: { horizontal: c === 0 ? 'left' : 'right' } });
+  });
+  ws['!cols'] = cols.map(c => ({ wch: c[1] }));
+  ws['!rows'] = [{ hpt: 18 }, { hpt: 16 }, { hpt: 8 }, { hpt: 20 }];
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: N - 1 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: N - 1 } }, { s: { r: last, c: 0 }, e: { r: last, c: 1 } }];
+  ws['!freeze'] = { xSplit: 0, ySplit: 4 };
+  const wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, 'Должники');
+  wb.Workbook = { Views: [{ RTL: false }] };
+  const blob = new Blob([X.write(wb, { bookType: 'xlsx', type: 'array', cellStyles: true })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   return { blob, name: `Долги_${agent.split(' ')[0]}_${UI.dm(D.from).replace('.', '-')}.xlsx` };
 };
