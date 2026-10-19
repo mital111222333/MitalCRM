@@ -23,7 +23,12 @@
         if (st.status === 'error') throw new Error(st.message || 'ошибка синхронизации');
         if (st.status === 'conflict') { label('idle', 'Выберите версию'); return; }
       }
-      if (window.LINKO_AUTO) { LINKO_AUTO.lastTry = 0; for (let i = 0; i < 20 && LINKO_AUTO.busy; i++) await new Promise(r => setTimeout(r, 300)); await LINKO_AUTO.check(); }
+      let live = null, liveErr = '';
+      if (window.LINKO_AUTO?.web()) {
+        label('busy', 'Беру из LINKO…');
+        try { live = await LINKO_AUTO.now(); } catch (e) { liveErr = String(e.message || e); }
+      }
+      if (!live && window.LINKO_AUTO) { LINKO_AUTO.lastTry = 0; for (let i = 0; i < 20 && LINKO_AUTO.busy; i++) await new Promise(r => setTimeout(r, 300)); await LINKO_AUTO.check(); }
       const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]');
       if (!typing && typeof route === 'function') route();
       lastAt = clock();
@@ -32,6 +37,8 @@
       const stockAt = hm(la.importedAt), liveAt = hm(lx.fastAt || lx.at);
       label('idle', 'Обновлено ' + lastAt + (stockAt ? ' · LINKO ' + stockAt : ''));
       const b = btn(); if (b) b.title = `Остатки и баланс клиентов из LINKO: ${stockAt || 'нет данных'}\nЗаказы, оплаты, долги: ${liveAt || 'нет данных'}\nНажато: ${lastAt}`;
+      if (live) { if (typeof toast === 'function') toast(`✓ Всё взято из LINKO прямо сейчас (${lastAt}) за ${Math.max(1, Math.round((live.ms || 0) / 1000))} с: баланс, остатки, заказы, оплаты, долги`); return; }
+      if (liveErr && typeof toast === 'function') { toast('⚠ Мгновенное обновление из LINKO не сработало: ' + liveErr.slice(0, 120) + '. Показаны последние данные автозагрузки.'); return; }
       if (typeof toast === 'function') toast(la.error ? '⚠ Автозагрузка из LINKO не сработала: ' + String(la.error).slice(0, 80) + '. Остатки и баланс могут быть устаревшими.' : `Данные обновлены · ${lastAt} · остатки LINKO от ${stockAt || '—'}, оплаты и долги от ${liveAt || '—'}`);
     } catch (e) {
       label('idle', 'Обновить');

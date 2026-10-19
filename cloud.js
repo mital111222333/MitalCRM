@@ -208,6 +208,13 @@ window.CLOUD = (() => {
 
 // ---------- page: Данные → Синхронизация и настройки ----------
 window.EXT_PAGES = window.EXT_PAGES || {};
+// the secret the «Обновить» button shows to the Google web app; made once, kept in the synced data (so the phone has it)
+function webKey() {
+  const x = CRMLocal.ext(); if (x.linkoWeb?.key) return x.linkoWeb.key;
+  const a = new Uint8Array(18); crypto.getRandomValues(a);
+  const key = Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+  x.linkoWeb = { ...(x.linkoWeb || {}), key }; CRMLocal.touch(); return key;
+}
 EXT_PAGES.cloud = async el => {
   await CRMLocal.ready;
   const c = CLOUD.cfg(), st = CLOUD.status(), ext = CRMLocal.ext();
@@ -260,6 +267,20 @@ EXT_PAGES.cloud = async el => {
       <p class="mut" style="margin-bottom:0">Скрипт хранится в вашем аккаунте Google, ключи никуда кроме LINKO и вашего GitHub не отправляются. Не пересылайте скрипт другим людям. Если в LINKO выйти из аккаунта, ключ может смениться — тогда снова нажмите закладку и повторите шаги 2–4.</p>`, { cls: 'w12' });
   })()}
   ${(() => {
+    const w = ext.linkoWeb || {}, t = v => new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return UI.panel('⚡ Кнопка «🔄 Обновить» — всё из LINKO сразу', `
+      <p style="margin-top:0">${w.url ? (w.lastErr ? `<b class="neg">Последняя попытка не удалась: ${esc(maskKey(w.lastErr))}</b>` : w.lastAt ? `✓ Работает. Последний раз: <b>${t(w.lastAt)}</b>, за ${Math.max(1, Math.round((w.lastMs || 0) / 1000))} с.` : 'Адрес сохранён — нажмите «Проверить».') : 'Пока не настроено: кнопка «Обновить» берёт последние данные автозагрузки (до 5–30 минут назад).'}</p>
+      <p class="mut">После настройки кнопка «🔄 Обновить» (на компьютере и на телефоне) просит ваш скрипт Google взять из LINKO <b>всё прямо сейчас</b> — баланс клиентов, остатки складов, заказы, оплаты, возвраты, долги, работу агентов. Все разделы LINKO запрашиваются одновременно, поэтому обычно это 5–20 секунд.</p>
+      <ol class="steps">
+        <li>Обновите скрипт: кнопка «📋 Скопировать готовый скрипт» выше → в script.google.com откройте файл <b>KOD</b>, сотрите всё, вставьте, 💾. Функцию <b>setup</b> запустите один раз (напоминания remind.gs она больше не трогает).</li>
+        <li>Вверху справа: <b>Начать развёртывание → Новое развёртывание</b> → ⚙ «Веб-приложение». «Запуск от имени»: <b>Я</b>, «У кого есть доступ»: <b>Все</b> → «Начать развёртывание» → разрешить доступ.</li>
+        <li>Скопируйте «URL веб-приложения» (заканчивается на <code>/exec</code>) и вставьте сюда. На телефоне вводить не нужно — адрес придёт через синхронизацию.</li>
+      </ol>
+      <div class="form"><label style="grid-column:1/-1">URL веб-приложения<input id="lwUrl" value="${esc(w.url || '')}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label></div>
+      <div class="bar" style="margin-top:10px"><button class="btn" id="lwSave">Сохранить и проверить</button><span id="lwMsg" class="mut" role="status"></span></div>
+      <p class="mut" style="margin-bottom:0">Когда меняете скрипт потом: «Начать развёртывание → Управление развёртываниями» → ✏ → версия «Новая версия» → «Развернуть» — адрес останется прежним. Ключ кнопки уже вписан в скрипт: без него веб-приложение никому не отвечает.</p>`, { cls: 'w12' });
+  })()}
+  ${(() => {
     let g = {}; try { g = JSON.parse(localStorage.getItem('crm_gps_login') || '{}'); } catch { /* none */ }
     return UI.panel('📍 GPS агентов (gps.logic.uz)', `<p class="mut" style="margin-top:0">Чтобы видеть агентов на карте в разделе <a href="#/gps">Агенты → 📍 Где агенты</a>, впишите здесь логин и пароль, с которыми вы входите на gps.logic.uz. Они сохраняются <b>только на этом компьютере</b> и попадают в ваш скрипт автозагрузки — никуда больше. Никому их не отправляйте, мне в чат тоже.</p>
       <div class="form"><label>Адрес платформы<input id="gpsUrl" value="${esc(g.url || 'http://gps.logic.uz')}" autocomplete="off"></label><label>Логин (e-mail)<input id="gpsEmail" value="${esc(g.email || '')}" autocomplete="off"></label><label>Пароль<input id="gpsPass" type="password" value="${esc(g.password || '')}" autocomplete="new-password"></label></div>
@@ -293,6 +314,17 @@ EXT_PAGES.cloud = async el => {
   el.querySelectorAll('[data-menu]').forEach(cb => cb.onchange = () => { const on = [...el.querySelectorAll('[data-menu]')].filter(x => x.checked).map(x => x.dataset.menu); try { localStorage.setItem('crm_menu_extra', JSON.stringify(on)); } catch { /* blocked */ } render(); });
   const gs = $('#gpsSave', el);
   if (gs) gs.onclick = () => { const g = { url: $('#gpsUrl', el).value.trim().replace(/\/+$/, ''), email: $('#gpsEmail', el).value.trim(), password: $('#gpsPass', el).value }; try { localStorage.setItem('crm_gps_login', JSON.stringify(g)); } catch { /* blocked */ } $('#gpsMsg', el).textContent = '✓ Сохранено. Теперь обновите скрипт автозагрузки: «Скопировать готовый скрипт» → вставить в script.google.com → setup.'; };
+  const lw = $('#lwSave', el);
+  if (lw) lw.onclick = async () => {
+    const msg = $('#lwMsg', el), url = $('#lwUrl', el).value.trim(), x = CRMLocal.ext();
+    if (url && !/^https:\/\/script\.google\.com\/.+\/exec(\?.*)?$/.test(url)) { msg.className = 'neg'; msg.textContent = 'Нужен адрес веб-приложения: https://script.google.com/macros/s/…/exec'; return; }
+    webKey(); x.linkoWeb = { ...(x.linkoWeb || {}), url, lastErr: '' }; CRMLocal.touch();
+    if (!url) { msg.className = 'mut'; msg.textContent = 'Отключено'; return; }
+    msg.className = 'mut'; msg.textContent = 'Беру данные из LINKO…'; lw.disabled = true;
+    try { const j = await LINKO_AUTO.now(); msg.className = 'pos'; msg.textContent = `✓ Работает: всё из LINKO за ${Math.max(1, Math.round((j.ms || 0) / 1000))} с`; toast('Кнопка «Обновить» теперь берёт всё из LINKO сразу'); }
+    catch (e) { msg.className = 'neg'; msg.textContent = maskKey(String(e.message || e)) + (/доступа|ключ кнопки/.test(e.message) ? ' — скопируйте скрипт заново (шаг 1) и разверните новую версию' : ''); }
+    finally { lw.disabled = false; }
+  };
   const lc = $('#laCopy', el);
   if (lc) lc.onclick = async () => {
     let key = ''; try { key = localStorage.getItem('crm_linko_key') || ''; } catch { /* ignore */ }
@@ -314,6 +346,7 @@ EXT_PAGES.cloud = async el => {
     let code = src.replace('ВСТАВЬТЕ_КЛЮЧ_LINKO', key).replace('ВСТАВЬТЕ_КЛЮЧ_GITHUB', cc.token).replace("GH_OWNER: 'mital111222333'", `GH_OWNER: '${cc.owner}'`).replace("GH_REPO: 'mitalcrm-data'", `GH_REPO: '${cc.repo}'`).replace('PLAN_DAY: 16,', `PLAN_DAY: ${PLAN.day()},`).replace("CRM_URL: 'https://mital111222333.github.io/MitalCRM/'", `CRM_URL: '${location.origin + location.pathname.replace(/[^/]*$/, '')}'`);
     let gps = {}; try { gps = JSON.parse(localStorage.getItem('crm_gps_login') || '{}'); } catch { /* none */ }
     const q = v => JSON.stringify(String(v || ''));
+    code = code.replace("WEB_KEY: 'ВСТАВЬТЕ_КЛЮЧ_КНОПКИ',", `WEB_KEY: ${q(webKey())},`);
     code = code.replace("GPS_URL: 'http://gps.logic.uz',", `GPS_URL: ${q(gps.url || 'http://gps.logic.uz')},`).replace("GPS_EMAIL: '',", `GPS_EMAIL: ${q(gps.email)},`).replace("GPS_PASSWORD: '',", `GPS_PASSWORD: ${q(gps.password)},`);
     try { await navigator.clipboard.writeText(code); toast('Скрипт скопирован — вставьте его в script.google.com'); }
     catch { const m = modal(`<h3>Скопируйте скрипт</h3><textarea style="width:100%;height:50vh;font:12px monospace">${esc(code)}</textarea><div class="bar"><span class="spacer"></span><button class="btn" id="cx">Закрыть</button></div>`); m.el.querySelector('textarea').select(); m.el.querySelector('#cx').onclick = m.close; }

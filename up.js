@@ -275,21 +275,53 @@ window.LINKO_AUTO = {
     LINKO_AUTO.lastTry = Date.now(); LINKO_AUTO.busy = true;
     try {
       const snap = await CLOUD.readJson('linko-latest.json'); if (!snap || !snap.at || !Array.isArray(snap.files)) return await LINKO_AUTO.extra();
-      const x = CRMLocal.ext(); x.linkoAuto = { ...(x.linkoAuto || {}), seenAt: snap.at, error: snap.error || '' };
-      x.linkoAuto.checkedAt = new Date().toISOString();
-      if (snap.error || (x.linkoAuto.importedAt && x.linkoAuto.importedAt >= snap.at)) return await LINKO_AUTO.extra();
-      const bin = b => Uint8Array.from(atob(b), c => c.charCodeAt(0));
-      const files = snap.files.map(f => new File([bin(f.b64)], f.name));
-      const box = document.createElement('div');
-      await UPALL.run(files, box, PLAN.day());
-      for (const u of CRMLocal.engine.getState().ag.uploads || []) if (!u.synth && Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // when LINKO gave each balance (for card payments by time)
-      CRMLocal.grace && CRMLocal.grace.fix(CRMLocal.engine.getState()); // the final of the previous period takes the new time too
-      for (const u of CRMLocal.engine.getState().wh.uploads || []) if (Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // …and when LINKO gave each warehouse's stock
-      x.linkoAuto.importedAt = snap.at; x.linkoAuto.checkedAt = new Date().toISOString(); x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
-      if (box.textContent.includes('✓')) { toast(`Данные из LINKO обновлены (${new Date(snap.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })})`); const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]'); if (!typing && typeof route === 'function') route(); }
+      await LINKO_AUTO.applyLatest(snap);
       await LINKO_AUTO.extra();
     } catch (e) { console.warn('LINKO auto', e); }
     finally { LINKO_AUTO.busy = false; }
+  },
+  // balance + stock of every warehouse (the same files as a manual upload)
+  async applyLatest(snap, { quiet = false } = {}) {
+    const x = CRMLocal.ext(); x.linkoAuto = { ...(x.linkoAuto || {}), seenAt: snap.at, error: snap.error || '' };
+    x.linkoAuto.checkedAt = new Date().toISOString();
+    if (snap.error || (x.linkoAuto.importedAt && x.linkoAuto.importedAt >= snap.at)) return false;
+    const bin = b => Uint8Array.from(atob(b), c => c.charCodeAt(0));
+    const files = snap.files.map(f => new File([bin(f.b64)], f.name));
+    const box = document.createElement('div');
+    await UPALL.run(files, box, PLAN.day());
+    for (const u of CRMLocal.engine.getState().ag.uploads || []) if (!u.synth && Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // when LINKO gave each balance (for card payments by time)
+    CRMLocal.grace && CRMLocal.grace.fix(CRMLocal.engine.getState()); // the final of the previous period takes the new time too
+    for (const u of CRMLocal.engine.getState().wh.uploads || []) if (Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // …and when LINKO gave each warehouse's stock
+    x.linkoAuto.importedAt = snap.at; x.linkoAuto.checkedAt = new Date().toISOString(); x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
+    if (!quiet && box.textContent.includes('✓')) { toast(`Данные из LINKO обновлены (${new Date(snap.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })})`); const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]'); if (!typing && typeof route === 'function') route(); }
+    return true;
+  },
+  // «🔄 Обновить»: the Google script (published as a web app) asks LINKO for everything right now, in parallel,
+  // and hands it straight to this page — no waiting for the 5-minute timer and no detour through GitHub.
+  // false = not set up on this account (the button then reads the last files as before)
+  web() { const w = CRMLocal.ext().linkoWeb || {}; return w.url && w.key ? w : null; },
+  async now() {
+    const w = LINKO_AUTO.web(); if (!w) return false;
+    for (let i = 0; i < 40 && LINKO_AUTO.busy; i++) await new Promise(r => setTimeout(r, 300));
+    LINKO_AUTO.busy = true;
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 120000);
+    try {
+      let r;
+      try { r = await fetch(w.url + (w.url.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(w.key) + '&t=' + Date.now(), { signal: ac.signal, redirect: 'follow', cache: 'no-store' }); }
+      catch (e) { throw new Error(e.name === 'AbortError' ? 'LINKO не ответил за 2 минуты' : 'скрипт Google недоступен (проверьте адрес веб-приложения и доступ «Все»)'); }
+      let j; try { j = await r.json(); } catch { throw new Error('скрипт Google ответил не данными — опубликуйте его как веб-приложение с доступом «Все»'); }
+      if (j.error) throw new Error(j.error);
+      await LINKO_AUTO.applyLatest(j.latest, { quiet: true });
+      await LX.load();
+      if (j.extra?.data) LX.importSnap(j.extra);
+      if (j.fast?.data) LX.importFast(j.fast);
+      const x = CRMLocal.ext(); x.linkoWeb = { ...x.linkoWeb, lastAt: j.at, lastMs: j.ms, lastErr: '' }; CRMLocal.touch();
+      LINKO_AUTO.lastTry = Date.now();
+      return j;
+    } catch (e) {
+      const x = CRMLocal.ext(); x.linkoWeb = { ...x.linkoWeb, lastErr: String(e.message || e).slice(0, 200) }; CRMLocal.touch();
+      throw e;
+    } finally { clearTimeout(timer); LINKO_AUTO.busy = false; }
   },
 };
 // no timers: LINKO data is picked up when the CRM opens and when «🔄 Обновить» is pressed (refresh.js)
