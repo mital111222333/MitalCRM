@@ -24,7 +24,7 @@ const CFG = {
   GPS_EMAIL: '',                           // логин от GPS (вписывается из CRM)
   GPS_PASSWORD: '',                        // пароль от GPS
   EXTRA_MIN: 30,                           // заказы, товары, оплаты, долги, работа агентов — раз в 30 минут
-  TG_BOT: '',                              // необязательно: токен Telegram-бота — пришлёт сообщение, если что-то сломалось
+  TG_BOT: '',                              // токен Telegram-бота (вписывается из CRM): сообщит о сбое и о заказе клиенту на стопе
   TG_CHAT: '',                             // необязательно: ваш chat id
   WEB_KEY: 'ВСТАВЬТЕ_КЛЮЧ_КНОПКИ',          // секрет кнопки «Обновить» (вписывается из CRM) — без него веб-приложение никому не отвечает
 };
@@ -189,6 +189,7 @@ function fast_(all) {
   const P = PropertiesService.getScriptProperties();
   const to = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(to), data = {}, errors = {};
   runJobs_(jobs, from, to, data, errors);
+  try { stop_(data); } catch (e) { Logger.log('Стоп-отгрузка: ' + mask_(e.message || e)); }
   if (!Object.keys(data).length) return;
   const body = JSON.stringify({ data: data, from: from });
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
@@ -351,6 +352,45 @@ function saveToGithub_(path, text) {
   const r = fetch_(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
   if (r.getResponseCode() >= 300) throw new Error('GitHub не принял файл: ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
 }
+// ---------- стоп-отгрузка: заказ клиенту на стопе → сообщение в Telegram (правила — credit-rules.json из CRM) ----------
+// Клиент на стопе: долг больше его лимита или есть долг старше выбранного срока LINKO. Каждый заказ сообщается один раз.
+function stop_(data) {
+  if (!CFG.TG_BOT || !CFG.TG_CHAT || !data.orders || !data.debtors) return;
+  const url = 'https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/credit-rules.json';
+  const r = fetch_(url, { headers: { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28' }, muteHttpExceptions: true });
+  if (r.getResponseCode() !== 200) return; // правила ещё не заданы в CRM
+  const R = JSON.parse(r.getContentText()); if (!R || !R.on) return;
+  const norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+  const own = {}; Object.keys(R.clients || {}).forEach(k => { own[norm(k)] = R.clients[k]; });
+  const debt = {};
+  data.debtors.forEach(d => {
+    const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(x => /usd|\$|долл/i.test(x.name || ''))[0] || cs[0] || {};
+    const raw = [c.debt_first, c.debt_second, c.debt_third, c.debt_fourth].map(v => Math.abs(n_(v)));
+    const total = Math.abs(n_(c.debt_total)) || raw.reduce((a, b) => a + b, 0);
+    let left = total; const b = raw.map(v => { const t = Math.min(v, left); left -= t; return t; }); // оплаты закрывают самые старые заказы
+    if (left > 1e-9) b[0] += left;
+    debt[norm(d['client.name'])] = { total: total, old: b.slice(R.age || 2).reduce((a, v) => a + v, 0) };
+  });
+  const P = PropertiesService.getScriptProperties(), seen = JSON.parse(P.getProperty('stopSeen') || '[]'), first = !P.getProperty('stopSeen');
+  const fresh = [];
+  data.orders.forEach(o => {
+    if (!o.id || seen.indexOf(o.id) >= 0 || /cancel|reject|return|отмен|отклон|возвр/i.test(String(o.status))) return;
+    const k = norm(o['client.name']), x = own[k] || {}, d = debt[k]; if (!d || x.ex) return;
+    const limit = x.limit != null ? x.limit : (R.limit || 0), why = [];
+    if (d.old >= (R.minOld || 0) && d.old > 0.005) why.push('долг ' + (R.ageLabel || 'старый') + ': $' + Math.round(d.old));
+    if (limit > 0 && d.total > limit) why.push('долг $' + Math.round(d.total) + ' больше лимита $' + Math.round(limit));
+    if (!why.length) return;
+    seen.push(o.id);
+    if (first) return; // первый запуск: уже существующие заказы только запоминаем
+    fresh.push('🛑 Заказ клиенту на стопе\n' + o['client.name'] + ' — агент ' + [o['user.first_name'], o['user.second_name']].filter(String).join(' ') + '\nЗаказ $' + Math.round(n_(o.total_price)) + ' · ' + String(o.created_date || '').slice(0, 16).replace('T', ' ') + '\nПочему стоп: ' + why.join('; ') + (R.crm ? '\n' + R.crm + '#/credit' : ''));
+  });
+  P.setProperty('stopSeen', JSON.stringify(seen.slice(-400)));
+  if (first) { notify_('🛑 Стоп-отгрузка включена. Заказов клиентам на стопе в этом периоде: ' + (seen.length) + '. Про каждый новый такой заказ напишу сюда' + (R.crm ? '\n' + R.crm + '#/credit' : '')); return; }
+  fresh.slice(0, 10).forEach(t => notify_(t));
+  if (fresh.length > 10) notify_('…и ещё ' + (fresh.length - 10) + ' заказов клиентам на стопе — смотрите в CRM');
+  if (fresh.length) Logger.log('Стоп-отгрузка: сообщений ' + fresh.length);
+}
+
 function notify_(text) {
   if (!CFG.TG_BOT || !CFG.TG_CHAT) return;
   UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: CFG.TG_CHAT, text: text }), muteHttpExceptions: true });

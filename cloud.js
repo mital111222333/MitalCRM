@@ -347,6 +347,7 @@ EXT_PAGES.cloud = async el => {
     let gps = {}; try { gps = JSON.parse(localStorage.getItem('crm_gps_login') || '{}'); } catch { /* none */ }
     const q = v => JSON.stringify(String(v || ''));
     code = code.replace("WEB_KEY: 'ВСТАВЬТЕ_КЛЮЧ_КНОПКИ',", `WEB_KEY: ${q(webKey())},`);
+    { const tg = CRMLocal.ext().tg || {}; if (tg.token && tg.me?.id) code = code.replace("TG_BOT: '',", `TG_BOT: ${q(tg.token)},`).replace("TG_CHAT: '',", `TG_CHAT: ${q(tg.me.id)},`); } // сбои и стоп-отгрузка — вам в Telegram
     code = code.replace("GPS_URL: 'http://gps.logic.uz',", `GPS_URL: ${q(gps.url || 'http://gps.logic.uz')},`).replace("GPS_EMAIL: '',", `GPS_EMAIL: ${q(gps.email)},`).replace("GPS_PASSWORD: '',", `GPS_PASSWORD: ${q(gps.password)},`);
     try { await navigator.clipboard.writeText(code); toast('Скрипт скопирован — вставьте его в script.google.com'); }
     catch { const m = modal(`<h3>Скопируйте скрипт</h3><textarea style="width:100%;height:50vh;font:12px monospace">${esc(code)}</textarea><div class="bar"><span class="spacer"></span><button class="btn" id="cx">Закрыть</button></div>`); m.el.querySelector('textarea').select(); m.el.querySelector('#cx').onclick = m.close; }
