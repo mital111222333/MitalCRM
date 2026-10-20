@@ -339,7 +339,7 @@ EXT_PAGES.lxage = async el => {
         <div class="sub">${noProm.length ? `<b>${noProm.length}</b> из них без обещания оплатить или со сорванным · ` : 'у всех есть обещание оплатить · '}${noPay.length ? `<b>${noPay.length}</b> не платили больше 30 дней или ни разу за период · ` : ''}на ${crit.slice(0, 5).length} крупнейших приходится ${$$(crit.slice(0, 5).reduce((a, r) => a + r.crit, 0))} (${pc(crit.slice(0, 5).reduce((a, r) => a + r.crit, 0), critSum)}%)</div></section>`;
 
   const kpi = `<div class="kpis">
-    ${UI.tile(`Критично: ${labels[3]}`, $$(critSum), { tone: critSum ? 'bad' : 'good', hero: !!critSum, sub: `${crit.length} клиентов · ${pc(critSum, grand)}% всего долга` })}
+    ${UI.tile(`Критично: ${labels[3]}`, $$(critSum), { tone: critSum ? 'bad' : 'good', sub: `${crit.length} клиентов · ${pc(critSum, grand)}% всего долга` })}
     ${UI.tile('Весь долг', $$(grand), { sub: `${live.length} должников · топ-10 = ${pc(top10, grand)}%` })}
     ${UI.tile(labels[2], $$(tot[2]), { tone: tot[2] ? 'warn' : '', sub: `${live.filter(r => r.b[2] > 0.005).length} клиентов · скоро станут критичными` })}
     ${UI.tile(labels[1], $$(tot[1]), { sub: `${live.filter(r => r.b[1] > 0.005).length} клиентов` })}
