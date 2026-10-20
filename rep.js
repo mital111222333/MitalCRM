@@ -514,7 +514,8 @@ EXT_PAGES.rsleep = async el => {
     const text = prompt(`Задание для ${chosen.length} клиентов (срок ${UI.dateRu(dueS)}):`, S.view === 'never' ? 'Сделать первую продажу' : 'Вернуть клиента: визит и заказ');
     if (text === null) return;
     for (const c of chosen) await CRMLocal.request('POST', '/api/ag/tasks', { client: c.name, kind: 'Продажа', text, target: 0, due: dueS });
-    await CRMLocal.flush(); toast(`Создано заданий: ${chosen.length}`); re();
+    if (typeof WK !== 'undefined') WK.give(chosen); // «Возврат спящих» follows whether they buy again
+    await CRMLocal.flush(); toast(`Создано заданий: ${chosen.length} · результат — в «Агенты → Возврат спящих»`); re();
   };
   $('#rCsv', el).onclick = () => UI.csv(`спящие-клиенты-${d.upload.taken_at}.csv`, [['Клиент', 'Агент', 'Телефон', 'Последняя покупка', 'Дней без покупок', 'Последняя оплата', 'Долг $'], ...list.map(c => [c.name, c.agent, c.phone || '', c.lastBuy ? UI.dateRu(c.lastBuy) : 'нет', c.lastBuy ? c.buyDays : '', c.lastPay ? UI.dateRu(c.lastPay) : 'нет', UI.c2(c.debt)])]);
 };
