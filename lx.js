@@ -154,7 +154,7 @@ LX.load();
 
 // ---------- Бренды и товары ----------
 EXT_PAGES.lxbrand = async el => {
-  const body = await LX.shell(el, 'lxbrand', '<button class="btn gray" id="lxCsv">⬇ Excel (CSV)</button>'); if (!body) return;
+  const body = await LX.shell(el, 'lxbrand', '<button class="btn gray" id="lxCsv">⬇ Excel</button>'); if (!body) return;
   const M = LX.model(), f = UI.fmt0, $$ = v => LX.money(v, M.cur);
   const L = M.lines.filter(l => !LX.agent || l.agent === LX.agent);
   if (!L.length) { body.innerHTML = LX.agentSel(LX.agentsOf(M.lines)) + UI.empty('Продаж по товарам нет', 'В этом периоде LINKO не отдал строки заказов.'); LX.bindAgent(body); return; }
@@ -198,7 +198,7 @@ LX.debtOf = name => { try { const S = CRMLocal.engine.getState(), u = S.ag.uploa
 
 // ---------- Оплаты по дням ----------
 EXT_PAGES.lxpay = async el => {
-  const body = await LX.shell(el, 'lxpay', '<button class="btn gray" id="lxCsv">⬇ Excel (CSV)</button>'); if (!body) return;
+  const body = await LX.shell(el, 'lxpay', '<button class="btn gray" id="lxCsv">⬇ Excel</button>'); if (!body) return;
   const M = LX.model(), f = UI.fmt0, $$ = v => LX.money(v, M.payCur), t0 = UI.localDate(Date.now()), y0 = UI.localDate(Date.now() - 864e5);
   const P = M.payments.filter(p => !LX.agent || p.agent === LX.agent);
   const sumD = d => P.filter(p => p.date === d).reduce((a, p) => a + p.amount, 0), wk = UI.localDate(Date.now() - 6 * 864e5);
@@ -222,7 +222,7 @@ EXT_PAGES.lxpay = async el => {
 // ---------- Заказы по дням: who ordered what today ----------
 LX.dead = s => /cancel|reject|отмен|отклон/i.test(String(s));
 EXT_PAGES.lxday = async el => {
-  const body = await LX.shell(el, 'lxday', '<button class="btn gray" id="lxCsv">⬇ Excel (CSV)</button>'); if (!body) return;
+  const body = await LX.shell(el, 'lxday', '<button class="btn gray" id="lxCsv">⬇ Excel</button>'); if (!body) return;
   const M = LX.model(), f = UI.fmt0, $$ = v => LX.money(v, M.cur), t0 = UI.localDate(Date.now()), y0 = UI.localDate(Date.now() - 864e5), wk = UI.localDate(Date.now() - 6 * 864e5);
   const all = M.ords.filter(o => !LX.agent || o.agent === LX.agent), O = all.filter(o => !LX.dead(o.status)), dead = all.filter(o => LX.dead(o.status));
   const sum = a => a.reduce((x, o) => x + o.sum, 0), onDay = d => O.filter(o => o.date === d);
@@ -302,7 +302,7 @@ LX.agedEx = () => (CRMLocal.ext().agedEx ||= {});
 LX.AGE_COL = ['var(--c3)', 'var(--c4)', 'var(--st-serious, #e08a1e)', 'var(--st-crit, #cc3a2f)'];
 
 EXT_PAGES.lxage = async el => {
-  const body = await LX.shell(el, 'lxage', '<button class="btn gray" id="lxCsv">⬇ Excel (CSV)</button>'); if (!body) return;
+  const body = await LX.shell(el, 'lxage', '<button class="btn gray" id="lxCsv">⬇ Excel</button>'); if (!body) return;
   const { labels, rows, other } = LX.aging(), f = UI.fmt0, M = LX.model(), t0 = UI.localDate(Date.now());
   let rep = null; try { rep = await REP.load(); if (rep.empty) rep = null; } catch { rep = null; }
   const dayDiff = d => Math.round((Date.parse(t0) - Date.parse(d)) / 864e5);
@@ -389,7 +389,19 @@ EXT_PAGES.lxage = async el => {
   body.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { try { await navigator.clipboard.writeText(msgFor(b.dataset.copy).replace(/<\/?b>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')); toast('Список скопирован'); } catch { toast('Не удалось скопировать'); } });
   body.querySelectorAll('[data-tg]').forEach(b => b.onclick = async () => { const a = b.dataset.tg; if (!confirm(`Отправить агенту ${a} список из ${crit.filter(r => r.agent === a).length} клиентов в Telegram?`)) return; try { await TG.send(tgc.chats[a].id, msgFor(a)); toast('Отправлено агенту'); } catch (e) { toast('Telegram: ' + e.message); } });
   LX.bindAgent(body);
-  $('#lxCsv', el).onclick = () => UI.csv('просрочка-' + t0, [['Клиент', 'Агент', 'Телефон', ...labels, 'Всего', 'Последняя оплата', 'Дней без оплаты', 'Обещание', 'Неоплаченные заказы', 'Исключение', 'Адрес'], ...R.sort((a, b) => old(b) - old(a)).map(r => [r.name, r.agent, r.phone, ...r.b.map(x => UI.c2(x)), UI.c2(r.total), r.last ? UI.dateRu(r.last) : 'нет', r.days ?? '', r.prom ? UI.dateRu(r.prom.date) : '', r.ords.map(o => '№' + o.id + ' ' + UI.dm(o.date) + ' $' + UI.c2(o.sum)).join('; '), r.ex ? r.ex.reason : '', r.address])]);
+  // Excel in the owner's layout: Клиент, Агент, 4 age buckets, Всего, Последняя оплата, Дней без оплаты; table style + «Итог» row.
+  // Same clients and sums as on the screen (exceptions are not in the totals, so they go to their own sheet).
+  // Buckets are rounded so that they add up exactly to «Всего» (before: 20.35 + 256.78 = 277.13, but «Всего» said 277.12).
+  $('#lxCsv', el).onclick = () => {
+    const r2 = UI.c2, from = UI.dm(LX.st().from);
+    const split = r => { const t = r2(r.total), b = r.b.map(r2), d = r2(t - b.reduce((a, x) => a + x, 0)); if (Math.abs(d) >= 0.005) { const k = b.reduce((m, x, i) => (x > b[m] ? i : m), 0); b[k] = r2(b[k] + d); } return [b, t]; };
+    const line = r => { const [b, t] = split(r); return [r.name, r.agent, ...b, t, r.last || ('нет с ' + from), r.days ?? '']; };
+    const cols = [{ h: 'Клиент', w: 32, t: 's', total: 'label' }, { h: 'Агент', w: 26, t: 's' }, ...labels.map((l, i) => ({ h: l, w: i === 3 ? 15 : 12, t: 'm', total: 'sum' })),
+      { h: 'Всего', w: 12, t: 'm', total: 'sum' }, { h: 'Последняя оплата', w: 17, t: 'd' }, { h: 'Дней без оплаты', w: 16, t: 'i' }];
+    const sheets = [{ name: 'просрочка-' + t0, cols, rows: live.slice().sort((a, b) => old(b) - old(a)).map(line), totals: true }];
+    if (exc.length) sheets.push({ name: 'Исключения', cols: [...cols, { h: 'Причина', w: 34, t: 's' }], rows: exc.map(r => [...line(r), r.ex.reason || '']), totals: true });
+    XL.download('просрочка-' + t0 + (LX.agent ? '-' + LX.agent.split(' ')[0] : ''), sheets);
+  };
 };
 
 // ---------- Работа агентов (working day, visits, refusals) ----------
@@ -432,7 +444,7 @@ EXT_PAGES.lxprof = async el => {
 
 // ---------- Рекомендация склада (LINKO: how many days the stock lasts, what to order) ----------
 EXT_PAGES.lxrec = async el => {
-  const body = await LX.shell(el, 'lxrec', '<button class="btn gray" id="lxCsv">⬇ Excel (CSV)</button>'); if (!body) return;
+  const body = await LX.shell(el, 'lxrec', '<button class="btn gray" id="lxCsv">⬇ Excel</button>'); if (!body) return;
   const f = UI.fmt0, n = LX.n;
   const R = LX.d('recom').map(r => ({ name: r.full_name || r.name, brand: r['brand.name'] || LX.brandOf(r.name), type: r['type.name'] || '', bal: n(r.total_balance), sold: n(r.total_amount), day: n(r.by_day), left: r.remain_days == null ? null : n(r.remain_days), week: n(r.week_recommendations), month: n(r.month_recommendations) })).sort((a, b) => (a.left ?? 1e9) - (b.left ?? 1e9));
   if (!R.length) { body.innerHTML = UI.empty('Рекомендации нет', 'LINKO не отдал рекомендацию по складу.'); return; }

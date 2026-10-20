@@ -25,7 +25,9 @@ const UI = {
     return `<section class="panel ${cls}"><div class="ph"><div><h4>${title}</h4>${sub ? `<div class="sub">${sub}</div>` : ''}</div><div class="tools">${tools}${body.includes('class="tableview"') ? '<button class="twin" type="button" aria-pressed="false" title="Показать данные таблицей">Таблица</button>' : ''}</div></div>${body}</section>`;
   },
   pill(kind, text, icon = '') { return `<span class="pill ${kind}">${icon ? `<span aria-hidden="true">${icon}</span>` : ''}${esc(text)}</span>`; },
+  // downloads a real .xlsx (xl.js): numbers stay numbers in Russian Excel, no «31.авг» instead of 31.8. CSV only if xl.js is missing.
   csv(filename, rows) {
+    if (typeof XL !== 'undefined') return XL.fromRows(filename, rows);
     const body = rows.map(l => l.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + body], { type: 'text/csv' })); a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   },
