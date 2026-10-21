@@ -3,7 +3,7 @@
 // including moving an item into another section. The order is remembered in this browser.
 // Loaded after static-api.js (EXT_MENU) and before app.js (which copies EXT_MENU into MENU).
 (() => {
-  const KEY = 'crm_menu_order';
+  const KEY = 'crm_menu_order_v2'; // v2: the menu was regrouped on 2026-10-21 — an order saved for the old menu is not applied
   const get = () => { try { const v = JSON.parse(localStorage.getItem(KEY) || 'null'); return Array.isArray(v) ? v : null; } catch { return null; } };
   const put = v => { try { v ? localStorage.setItem(KEY, JSON.stringify(v)) : localStorage.removeItem(KEY); } catch { /* storage blocked */ } };
   if (!window.EXT_MENU) return;

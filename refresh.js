@@ -54,6 +54,8 @@
     b.innerHTML = '<span class="ri" aria-hidden="true">🔄</span><span class="rt">' + (lastAt ? 'Обновлено ' + lastAt : 'Обновить') + '</span>';
     b.onclick = run;
     nav.insertBefore(b, nav.querySelector('#cloudBadge') || nav.querySelector('#themeBtn') || nav.querySelector('#me'));
+    // Telegram chats: an icon in the top bar instead of a menu item one has to look for
+    if (!nav.querySelector('#chatBtn')) { const c = document.createElement('a'); c.id = 'chatBtn'; c.href = '#/chat'; c.title = 'Чаты Telegram'; c.setAttribute('aria-label', 'Чаты Telegram'); c.innerHTML = '<span aria-hidden="true">💬</span>'; nav.insertBefore(c, b); }
   };
   addEventListener('DOMContentLoaded', () => { place(); new MutationObserver(place).observe(document.getElementById('app'), { childList: true }); });
 })();
