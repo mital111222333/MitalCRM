@@ -24,6 +24,32 @@
   const link = inTg && qs.get('u') ? { tg: TGA.initData, u: qs.get('u') } : store.get('mital_me');
   if (inTg) { try { TGA.ready(); TGA.expand(); if (TGA.colorScheme === 'dark') document.documentElement.dataset.theme = 'dark'; } catch { /* old Telegram */ } }
   let tab = 'main', q = '', S = store.get('mital_me_data'), loading = false, doing = null;
+  // chat tab: the agent's conversation with the bot through the chat worker (/agent/*), signed in by Telegram's initData
+  const CH = { msgs: [], last: 0, timer: null, sending: false };
+  const chatUrl = p => S?.chat ? S.chat.replace(/\/+$/, '') + p : '';
+  async function chatLoad() {
+    if (!inTg || !S?.chat) return;
+    try {
+      const r = await fetch(chatUrl('/agent/messages?since=' + CH.last), { headers: { Authorization: 'tma ' + TGA.initData }, cache: 'no-store' });
+      const j = await r.json(); if (!Array.isArray(j)) return;
+      for (const m of j) if (!CH.msgs.some(x => x.id === m.id)) CH.msgs.push(m);
+      CH.msgs.sort((a, b) => a.id - b.id); if (CH.msgs.length) CH.last = CH.msgs.at(-1).id;
+      if (j.length && tab === 'chat') chatDraw();
+    } catch { /* offline: try again on the next tick */ }
+  }
+  function chatDraw() {
+    const box = $('#chatList'); if (!box) return;
+    const at = s => new Date(s * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const file = id => chatUrl('/agent/file?file_id=' + encodeURIComponent(id) + '&init=' + encodeURIComponent(TGA.initData));
+    box.innerHTML = CH.msgs.length ? CH.msgs.map(m => { const me = !m.out; let media = '';
+      if (m.type === 'photo' && m.file_id) media = `<img src="${file(m.file_id)}" alt="Фото" loading="lazy">`;
+      else if ((m.type === 'voice' || m.type === 'audio') && m.file_id) media = `<audio controls preload="none" src="${file(m.file_id)}"></audio>`;
+      else if ((m.type === 'video' || m.type === 'video_note') && m.file_id) media = `<video controls preload="none" src="${file(m.file_id)}" style="max-width:100%"></video>`;
+      else if (m.type === 'document' && m.file_id) media = `<a href="${file(m.file_id)}" target="_blank" rel="noopener">📎 ${esc(m.file_name || 'файл')}</a>`;
+      return `<div class="chat-msg ${me ? 'me' : ''}">${media}${m.text ? esc(m.text) : ''}<small>${me ? 'Вы' : 'Руководитель'} · ${at(m.date)}</small></div>`; }).join('') : '<p class="mut">Сообщений пока нет. Напишите руководителю — он ответит здесь.</p>';
+    box.scrollTop = box.scrollHeight;
+  }
+  function chatStop() { clearInterval(CH.timer); CH.timer = null; }
   // tasks marked here but not yet seen by the supervisor's CRM: shown as «отправлено» until the next data comes
   const marks = () => store.get('mital_me_marks') || {}, markKey = t => t.src + ':' + t.id;
   const isOpen = t => (t.status === 'open' || t.status === 'returned') && !marks()[markKey(t)];
@@ -70,6 +96,28 @@
     $('#meSub').textContent = `Период ${dRu(S.period.from)} — ${dRu(S.period.to)}${S.period.days_left != null ? ` · осталось ${S.period.days_left} дн.` : ''} · план и рейтинг на ${hhmm(S.at)}${S.live?.debt ? ` · долги на ${hhmm(S.live.debt)}` : ''}${S.live?.stock ? ` · остатки на ${hhmm(S.live.stock)}` : ''}`;
     document.querySelectorAll('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
     const openN = (S.tasks || []).filter(isOpen).length; $('#meTaskN').textContent = openN ? `(${openN})` : '';
+    if (tab !== 'chat') chatStop();
+    if (tab === 'chat') {
+      if (!inTg || !S.chat) { body.innerHTML = panel('Чат с руководителем', `<p>Чат работает в кабинете внутри Telegram.</p>${chatBtn() ? `<div class="bar">${chatBtn()}</div>` : ''}`); return; }
+      body.innerHTML = panel('Чат с руководителем', `<div class="chat-list" id="chatList"><p class="mut">Загружаю…</p></div>
+        <div class="chat-send"><label class="btn gray" title="Отправить фото" aria-label="Отправить фото" style="cursor:pointer;font-size:20px;padding:8px 12px;line-height:1">📷<input id="chatPh" type="file" accept="image/*" hidden></label><textarea id="chatT" rows="2" maxlength="3000" placeholder="Сообщение"></textarea><button class="btn" id="chatGo" type="button">➤</button></div><small id="chatE" class="neg" role="alert"></small>`, 'Голосовые и файлы можно отправить в самом чате с ботом — кнопка ниже');
+      body.insertAdjacentHTML('beforeend', `<div class="bar">${chatBtn()}</div>`);
+      chatDraw(); chatLoad(); if (!CH.timer) CH.timer = setInterval(chatLoad, 5000);
+      const send = async (text, file) => {
+        if (CH.sending) return; CH.sending = true; $('#chatE').textContent = '';
+        try {
+          let r;
+          if (file) { const fd = new FormData(), b64 = await shrink(file), bin = atob(b64), u8 = Uint8Array.from(bin, c => c.charCodeAt(0)); fd.append('file', new Blob([u8], { type: 'image/jpeg' }), 'photo.jpg'); if (text) fd.append('caption', text); r = await fetch(chatUrl('/agent/send-photo'), { method: 'POST', headers: { Authorization: 'tma ' + TGA.initData }, body: fd }); }
+          else r = await fetch(chatUrl('/agent/send'), { method: 'POST', headers: { Authorization: 'tma ' + TGA.initData, 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+          const j = await r.json(); if (j.error) throw new Error(j.error);
+          $('#chatT').value = ''; await chatLoad(); chatDraw();
+        } catch (e) { $('#chatE').textContent = e.message || 'Не отправилось — проверьте интернет'; }
+        CH.sending = false;
+      };
+      $('#chatGo').onclick = () => { const t = $('#chatT').value.trim(); if (t) send(t); };
+      $('#chatPh').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) send($('#chatT').value.trim(), f); };
+      return;
+    }
     if (tab === 'tasks') {
       const T = S.tasks || [], ST = { open: ['info', 'в работе'], returned: ['crit', 'возвращено — доделать'], done: ['warn', 'на проверке'], closed: ['good', '✓ принято'] };
       const item = t => { const sent = marks()[markKey(t)], st = sent ? ['warn', 'отправлено руководителю'] : ST[t.status] || ST.open;
