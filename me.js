@@ -11,6 +11,7 @@
   const pct = (a, b) => (b > 0 ? Math.round(a / b * 100) : null);
   const tile = (label, value, sub = '', tone = '') => `<div class="tile ${tone ? 'tone-' + tone : ''}"><div class="tl">${label}</div><div class="tv">${value}</div><div class="ts">${sub}</div></div>`;
   const panel = (title, body, sub = '') => `<section class="panel w12"><div class="ph"><div><h4>${title}</h4>${sub ? `<div class="sub">${sub}</div>` : ''}</div></div>${body}</section>`;
+  const ACADEMY = 'https://mital111222333.github.io/academy/'; // MITAL Akademiya: courses for agents
   const store = { get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked */ } } };
 
   // the personal link: #k=…&u=… (taken once, then remembered and removed from the address bar)
@@ -44,7 +45,8 @@
     document.querySelectorAll('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
     if (tab === 'main') {
       const t = S.disc?.today, top = S.clients.filter(c => c.debt > 0 && (c.promise || c.pool > c.paid)).slice(0, 10);
-      body.innerHTML = `<div class="kpis">
+      body.innerHTML = `<section class="panel w12" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><div style="font-size:32px" aria-hidden="true">🎓</div><div style="flex:1;min-width:200px"><h4 style="margin:0">MITAL Akademiya</h4><div class="sub">Курсы для агентов: продажи, работа с клиентами и долгами, товары</div></div><a class="btn" style="padding:10px 18px;white-space:nowrap;line-height:1.2" href="${ACADEMY}" target="_blank" rel="noopener">Перейти к курсам →</a></section>
+        <div class="kpis">
         ${tile('Продано', $$(k.sold), k.plan ? `план ${$$(k.plan)} · ${sp}%` : 'план не задан', sp === null ? '' : sp >= 100 ? 'good' : '')}
         ${tile('Собрано', $$(k.paid), k.pool ? `пул ${$$(k.pool)} · ${cp}% · осталось ${$$(Math.max(0, k.pool - k.paid))}` : 'пул не задан', cp === null ? '' : cp >= 100 ? 'good' : '')}
         ${tile('Долг ваших клиентов', $$(k.debt), `должников ${f0(k.debtors)}`, k.debt ? 'warn' : '')}
