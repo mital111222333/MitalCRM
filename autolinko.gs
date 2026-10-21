@@ -233,12 +233,24 @@ function fetch_(url, opts) {
 // доступ «Все» → «Начать развёртывание» → скопировать URL и вставить в CRM («Данные → Синхронизация и настройки»).
 function doGet(e) {
   const p = (e && e.parameter) || {};
+  if (p.agent) return json_(agent_(p.agent)); // кабинет агента: только его файл, без ключа кнопки
   if (!CFG.WEB_KEY || CFG.WEB_KEY.indexOf('ВСТАВЬТЕ') === 0 || p.k !== CFG.WEB_KEY) return json_({ error: 'Нет доступа: ключ кнопки не совпадает. Скопируйте скрипт из CRM заново.' });
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(60000)) return json_({ error: 'LINKO сейчас уже обновляется — нажмите ещё раз через минуту' });
   try { return json_(now_()); }
   catch (err) { return json_({ error: mask_(err.message || err) }); }
   finally { lock.releaseLock(); }
+}
+// ---------- кабинет агента: по личному коду отдаётся только его файл agents/<sha256(код)>.json (его готовит CRM руководителя) ----------
+function agent_(code) {
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(String(code))) return { error: 'Ссылка неверная — попросите руководителя прислать её заново' };
+  const hex = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(code), Utilities.Charset.UTF_8).map(b => ((b + 256) % 256).toString(16).padStart(2, '0')).join('');
+  const cache = CacheService.getScriptCache(), hit = cache.get('ag_' + hex); if (hit) return JSON.parse(hit);
+  const r = fetch_('https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/agents/' + hex + '.json', { headers: { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28' }, muteHttpExceptions: true });
+  if (r.getResponseCode() === 404) return { error: 'Доступ закрыт или ссылка устарела — попросите руководителя прислать новую' };
+  if (r.getResponseCode() !== 200) return { error: 'Не удалось получить данные, попробуйте через минуту' };
+  const text = r.getContentText(); if (text.length < 90000) cache.put('ag_' + hex, text, 60); // минута: чтобы частые открытия не нагружали GitHub
+  return JSON.parse(text);
 }
 function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 
