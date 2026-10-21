@@ -49,6 +49,7 @@ function run0_() {
   try { gps_(); } catch (e) { Logger.log('GPS: ' + mask_(e.message || e)); }
   let jobs = null; try { jobs = jobs_(); } catch (e) { Logger.log('Список разделов: ' + mask_(e.message || e)); }
   if (jobs) try { fast_(jobs); } catch (e) { Logger.log('Оплаты: ' + mask_(e.message || e)); }
+  try { storesRemind_(); } catch (e) { Logger.log('Сверка, напоминание: ' + mask_(e.message || e)); }
   if (jobs) try { extra_(jobs); } catch (e) { Logger.log('Доп. данные: ' + mask_(e.message || e)); }
 }
 
@@ -309,8 +310,9 @@ function tgAgent_(initData) {
   const f = ghRaw_('agents/tg/' + u.id + '.json');
   if (f.code === 404) return { error: 'Доступ к кабинету не открыт — попросите руководителя' };
   if (f.code !== 200) return { error: 'Не удалось получить данные, попробуйте через минуту' };
-  const out = JSON.stringify(live_(JSON.parse(f.text)));
-  if (out.length < 90000) cache.put('tg_' + u.id, out, 60);
+  const s0 = JSON.parse(f.text), store = s0.role === 'store';
+  const out = JSON.stringify(store ? storeLive_(s0) : live_(s0)); // кабинет склада — список товаров без количества
+  if (out.length < 90000 && !store) cache.put('tg_' + u.id, out, 60);
   return JSON.parse(out);
 }
 // ---------- отметки агентов: «Выполнено» из кабинета (комментарий, фото) → inbox/ в приватном репозитории + сообщение руководителю ----------
@@ -341,7 +343,9 @@ function doPost(e) {
     else if (/^[A-Za-z0-9_-]{20,64}$/.test(String(p.k || ''))) path = 'agents/' + Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(p.k), Utilities.Charset.UTF_8).map(b => ((b + 256) % 256).toString(16).padStart(2, '0')).join('') + '.json';
     else return json_({ error: 'Откройте кабинет кнопкой в боте' });
     const f = ghRaw_(path); if (f.code !== 200) return json_({ error: 'Доступ к кабинету не открыт' });
-    const snap = JSON.parse(f.text), task = (snap.tasks || []).filter(t => t.src === p.src && String(t.id) === String(p.id))[0];
+    const snap = JSON.parse(f.text);
+    if (p.act === 'count_start' || p.act === 'count') return json_(countAct_(p, snap)); // сверка склада
+    const task = (snap.tasks || []).filter(t => t.src === p.src && String(t.id) === String(p.id))[0];
     if (p.act !== 'done' || !task) return json_({ error: 'Задание не найдено — обновите кабинет' });
     const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     let photo = '';
@@ -355,6 +359,68 @@ function doPost(e) {
     } catch (err) { Logger.log('Отметка: сообщение не ушло ' + mask_(err.message || err)); }
     return json_({ ok: true });
   } catch (err) { return json_({ error: 'Не удалось сохранить: ' + mask_(err.message || err) }); }
+}
+// ---------- сверка склада: завсклад считает в кабинете склада (вслепую), скрипт сравнивает с «Всего» в LINKO ----------
+// «Начать сверку» запоминает «Всего» по складу на эту минуту; «Отправить» сохраняет факт в inbox/ и сразу пишет руководителю итог.
+// Каждые 5 минут после срока (stores.json от CRM) — напоминание тем, кто не прислал, и руководителю список.
+function stockTotals_(branch) {
+  const L = JSON.parse(ghRaw_('linko-latest.json').text || '{}'), f = (L.files || []).filter(x => x.name === 'stock LINKO branch ' + branch + '.csv')[0];
+  if (!f) return null;
+  const rows = Utilities.parseCsv(Utilities.newBlob(Utilities.base64Decode(f.b64)).getDataAsString('UTF-8').replace(/^﻿/, ''), ';'), h = rows[0] || [];
+  const iName = h.indexOf('Продукт'), iArt = h.indexOf('Aртикул'), iBrand = h.indexOf('Бренд'), iTotal = h.indexOf('Всего товаров'), out = {};
+  rows.slice(1).forEach(r => { if (!r[iName]) return; const k = String(r[iArt] || r[iName]).trim(); out[k] = { name: r[iName], brand: r[iBrand] || '', total: (out[k] ? out[k].total : 0) + n_(String(r[iTotal]).replace(',', '.')) }; });
+  return { at: L.at, items: out };
+}
+// the store keeper's file with the product list from LINKO — names only: the count is blind
+function storeLive_(snap) {
+  try { const s = snap.branch && stockTotals_(snap.branch); if (s) { snap.items = Object.keys(s.items).map(k => ({ art: k, name: s.items[k].name, brand: s.items[k].brand })).sort((a, b) => a.brand.localeCompare(b.brand) || a.name.localeCompare(b.name)); snap.items_at = s.at; } }
+  catch (e) { Logger.log('Кабинет склада: ' + mask_(e.message || e)); }
+  const P = PropertiesService.getScriptProperties(), day = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), done = P.getProperty('cntdone_' + day + '_' + snap.who);
+  snap.today = done ? JSON.parse(done) : null;
+  return snap;
+}
+function countAct_(p, snap) {
+  if (snap.role !== 'store' || !snap.branch) return { error: 'Это не кабинет склада' };
+  const cache = CacheService.getScriptCache(), key = 'cnt_' + snap.who;
+  if (p.act === 'count_start') {
+    const s = stockTotals_(snap.branch); if (!s) return { error: 'Нет остатков склада из LINKO — попробуйте через 5 минут' };
+    const totals = {}; Object.keys(s.items).forEach(k => { totals[k] = s.items[k].total; });
+    cache.put(key, JSON.stringify({ at: new Date().toISOString(), linko_at: s.at, totals: totals }), 6 * 3600);
+    return { ok: true, at: new Date().toISOString() };
+  }
+  // act === 'count'
+  const counts = p.counts || {}, arts = Object.keys(counts); if (!arts.length) return { error: 'Нет посчитанных товаров' };
+  let start = null; try { start = JSON.parse(cache.get(key) || 'null'); } catch (e) { start = null; }
+  const now = stockTotals_(snap.branch); if (!now) return { error: 'Нет остатков склада из LINKO — попробуйте через 5 минут' };
+  const base = start ? start.totals : null, items = arts.map(a => ({ art: a, name: (now.items[a] || {}).name || a, linko: base && a in base ? base[a] : ((now.items[a] || {}).total || 0), now: (now.items[a] || {}).total || 0, fact: Math.max(0, Math.round(n_(counts[a]))) }));
+  const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  let photo = '';
+  if (p.photo && /^[A-Za-z0-9+/=]+$/.test(p.photo) && p.photo.length < 2800000) { photo = 'inbox/photos/' + uid + '.jpg'; saveB64ToGithub_(photo, p.photo, 'Сверка склада: фото'); }
+  const rec = { act: 'count', at: new Date().toISOString(), start_at: start ? start.at : null, who: snap.who, name: snap.name, warehouse: snap.warehouse, partial: !!p.partial, items: items, photo: photo, comment: String(p.comment || '').slice(0, 500) };
+  saveB64ToGithub_('inbox/' + stamp + '/' + uid + '.json', Utilities.base64Encode(JSON.stringify(rec), Utilities.Charset.UTF_8), 'Сверка склада: ' + snap.warehouse);
+  cache.remove(key);
+  // a real discrepancy: the fact matches neither the stock at the start nor the stock now (a shipment during the count is not a shortage)
+  const diff = items.filter(i => i.fact !== i.linko && i.fact !== i.now), moved = items.filter(i => i.fact !== i.linko && i.fact === i.now);
+  PropertiesService.getScriptProperties().setProperty('cntdone_' + stamp + '_' + snap.who, JSON.stringify({ at: rec.at, diff: diff.length, partial: rec.partial }));
+  const t = Utilities.formatDate(new Date(), CFG.TZ, 'HH:mm');
+  const lines = diff.slice(0, 15).map(i => '• ' + i.name + ': по LINKO ' + i.linko + ', факт ' + i.fact + ' (' + (i.fact > i.linko ? '+' : '') + (i.fact - i.linko) + ')');
+  notify_('📦 ' + snap.warehouse + (rec.partial ? ' — пересчёт ' : ' — сверка ') + t + ' (' + snap.name + ')\n' + (diff.length ? 'Расхождений: ' + diff.length + ' из ' + items.length + '\n' + lines.join('\n') + (diff.length > 15 ? '\n…и ещё ' + (diff.length - 15) : '') : '✓ Всё сходится: ' + items.length + ' позиций') + (moved.length ? '\nℹ Сошлось с LINKO после отгрузки во время сверки: ' + moved.map(i => i.name).slice(0, 5).join(', ') + (moved.length > 5 ? ' и ещё ' + (moved.length - 5) : '') : '') + (rec.comment ? '\n💬 ' + rec.comment : ''));
+  return { ok: true, diff: diff.length, total: items.length };
+}
+// reminders after the deadline: once a day per store keeper
+function storesRemind_() {
+  const P = PropertiesService.getScriptProperties(), now = new Date(), day = Utilities.formatDate(now, CFG.TZ, 'yyyy-MM-dd'), hm = Utilities.formatDate(now, CFG.TZ, 'HH:mm');
+  if (Utilities.formatDate(now, CFG.TZ, 'u') === '7') return; // воскресенье
+  if (P.getProperty('cntrem_' + day) === 'all') return;
+  const f = ghRaw_('stores.json'); if (f.code !== 200) return;
+  const S = JSON.parse(f.text); if (!S || !S.list || !S.list.length || hm < (S.deadline || '10:00')) return;
+  const late = S.list.filter(s => !P.getProperty('cntdone_' + day + '_' + s.who) && !P.getProperty('cntrem_' + day + '_' + s.who));
+  late.forEach(s => {
+    try { UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: s.who, text: '⏰ Сверка склада ' + s.warehouse + ' должна быть до ' + (S.deadline || '10:00') + '. Откройте «Мой кабинет» и отправьте сверку.' }), muteHttpExceptions: true }); } catch (e) { /* not reachable */ }
+    P.setProperty('cntrem_' + day + '_' + s.who, '1');
+  });
+  if (late.length) notify_('⏰ Нет сверки склада к ' + (S.deadline || '10:00') + ': ' + late.map(s => s.warehouse + ' (' + s.name + ')').join(', '));
+  if (S.list.every(s => P.getProperty('cntdone_' + day + '_' + s.who) || P.getProperty('cntrem_' + day + '_' + s.who))) P.setProperty('cntrem_' + day, 'all');
 }
 function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 

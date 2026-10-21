@@ -43,7 +43,7 @@ const ATK = {
           const done = { at: m.at, comment: m.comment || '', photo: m.photo || '' };
           if (m.src === 'x') { const t = ATK.all().find(x => String(x.id) === String(m.id) && x.agent === m.agent); if (t && t.status !== 'closed') { t.status = 'done'; t.done = done; n++; } }
           if (m.src === 'ag') { await CRMLocal.request('POST', '/api/ag/tasks', { id: Number(m.id), agent_done: true }).catch(() => {}); ATK.marks()[m.id] = done; n++; }
-        }
+        } else if (m && window.INBOX_HANDLERS?.[m.act]) { if (await INBOX_HANDLERS[m.act](m)) n++; } // e.g. «count» — stock counts (wcount.js)
         seen[path] = 1;
       }
       if (fresh.length) CRMLocal.touch();
@@ -71,7 +71,7 @@ const ATK = {
 
 // pull the agents' marks on start, then every 5 minutes while the CRM is open
 (() => {
-  const run = () => ATK.pull().then(n => { if (n) { toast(`Новые отметки агентов: ${n} — Агенты → Задания агентам`); if (typeof AC !== 'undefined') AC.publish({ force: true }).catch(() => {}); if (location.hash === '#/atk') route(); } }).catch(e => console.warn('inbox', e));
+  const run = () => ATK.pull().then(n => { if (n) { toast(`Новые отметки агентов: ${n} — Агенты → Задания агентам`); if (typeof AC !== 'undefined') AC.publish({ force: true }).catch(() => {}); if (location.hash === '#/atk' || location.hash === '#/wcount') route(); } }).catch(e => console.warn('inbox', e));
   Promise.resolve(CRMLocal.ready).then(() => setTimeout(run, 8000));
   setInterval(() => { if (document.visibilityState === 'visible' || (typeof AC !== 'undefined' && AC.office())) run(); }, 5 * 60000);
 })();

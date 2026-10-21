@@ -87,9 +87,60 @@
   const chatBtn = () => (inTg ? '<button class="btn gray" type="button" data-chat="1">💬 Чат с руководителем</button>' : S?.bot ? `<a class="btn gray" href="https://t.me/${esc(S.bot)}" target="_blank" rel="noopener">💬 Чат с руководителем</a>` : S?.boss ? `<a class="btn gray" href="https://t.me/${esc(S.boss)}" target="_blank" rel="noopener">💬 Написать руководителю</a>` : '');
   const search = () => { const i = $('#meQ'); if (i) i.oninput = () => { q = i.value; draw(); const j = $('#meQ'); j.focus(); j.setSelectionRange(j.value.length, j.value.length); }; };
 
+
+  // ---------- store keeper's cabinet (role 'store'): the daily blind stock count ----------
+  // The list has product names only. «Начать сверку» asks the auto-loader to keep LINKO «Всего» of this minute; the counts are kept on
+  // the phone while counting (the app may close), «Отправить» sends them. A recount asked by the supervisor shows only those items.
+  const CNT = { get: () => store.get('mital_cnt'), set: v => store.set('mital_cnt', v) };
+  async function storePost(body) {
+    const r = await fetch(link.u, { method: 'POST', body: JSON.stringify({ ...(link.tg ? { tg: link.tg } : { k: link.k }), ...body }) });
+    const j = await r.json(); if (j.error) throw new Error(j.error); return j;
+  }
+  function drawStore(body) {
+    const nav = document.querySelector('nav.tabs'); if (nav) nav.hidden = true;
+    const t0 = new Date().toLocaleDateString('sv-SE'), hm = iso => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const rec = S.recount && S.recount.length ? S.recount : null, list = rec ? rec.map(r => ({ ...((S.items || []).find(i => i.art === r.art) || {}), ...r, brand: '' })) : (S.items || []);
+    let st = CNT.get(); if (st && (st.day !== t0 || !!st.partial !== !!rec)) { st = null; CNT.set(null); }
+    $('#meName').textContent = 'Склад ' + S.warehouse;
+    $('#meSub').textContent = `${S.name} · сверка до ${S.deadline || '10:00'}${S.today ? ` · сегодня отправлено в ${hm(S.today.at)}` : ''}`;
+    if (!st) {
+      body.innerHTML = panel(rec ? '↻ Пересчёт по просьбе руководителя' : 'Сверка склада', `
+        ${rec ? `<p>Пересчитайте ${rec.length} поз.:</p><ul>${rec.map(r => `<li>${esc(r.name)}</li>`).join('')}</ul>` : S.today ? `<p class="pos"><b>✓ Сегодняшняя сверка отправлена в ${hm(S.today.at)}</b></p><p class="mut">Если нужно — можно пересчитать и отправить заново.</p>` : `<p>Пересчитайте все товары склада (${list.length} поз.) и отправьте до <b>${esc(S.deadline || '10:00')}</b>. Считайте то, что физически лежит на складе, включая отложенное под заказы.</p>`}
+        <p class="mut">Нажмите «Начать», когда готовы считать — с этой минуты CRM сравнит с остатком LINKO.</p>
+        <div class="bar"><button class="btn" id="scStart" style="padding:12px 20px;font-size:16px">▶ ${rec ? 'Начать пересчёт' : S.today ? 'Начать сверку заново' : 'Начать сверку'}</button></div><small id="scE" class="neg" role="alert"></small>`) + (chatBtn() ? `<div class="bar">${chatBtn()}</div>` : '');
+      $('#scStart').onclick = async e => { e.target.disabled = true; try { const j = await storePost({ act: 'count_start' }); CNT.set({ day: t0, start: j.at, partial: !!rec, counts: {} }); drawStore(body); } catch (err) { e.target.disabled = false; $('#scE').textContent = err.message; } };
+      return;
+    }
+    const filled = list.filter(i => st.counts[i.art] !== undefined && st.counts[i.art] !== '').length;
+    const groups = new Map(); for (const i of list) { const k = i.brand || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
+    body.innerHTML = `<div class="bar" style="position:sticky;top:52px;z-index:4;background:var(--bg,#eef2f5);padding:8px 0"><input id="scQ" type="search" placeholder="Поиск товара" value="${esc(q)}" style="flex:1;min-width:0"><b id="scN">${filled} / ${list.length}</b></div>
+      ${panel(rec ? 'Пересчёт' : 'Пересчитайте товары', [...groups].map(([g, L]) => `${g ? `<h4 style="margin:14px 0 6px">${esc(g)}</h4>` : ''}${L.map(i => `<label class="sc-row" data-n="${esc((i.name + ' ' + i.art).toLowerCase())}" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line,#dde3e8)"><span style="flex:1;min-width:0">${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></span><input type="number" inputmode="numeric" min="0" step="1" data-a="${esc(i.art)}" value="${st.counts[i.art] ?? ''}" style="width:90px;font-size:18px;text-align:right;padding:8px"></label>`).join('')}`).join(''), 'Пусто — ещё не посчитано. Если товара нет — поставьте 0.')}
+      ${panel('Отправить', `<div class="form"><label style="grid-column:1/-1">Комментарий (необязательно)<textarea id="scC" rows="2" maxlength="500" placeholder="например: 2 коробки повреждены"></textarea></label><label style="grid-column:1/-1">Фото (необязательно)<input id="scP" type="file" accept="image/*" capture="environment"></label></div>
+        <div class="bar"><button class="btn gray" id="scZero">Поставить 0 в пустые</button><button class="btn gray" id="scX">Отменить</button><span class="spacer"></span><button class="btn" id="scGo">Отправить сверку</button></div><small id="scE" class="neg" role="alert"></small>`)}`;
+    const upd = () => { const n = list.filter(i => st.counts[i.art] !== undefined && st.counts[i.art] !== '').length; $('#scN').textContent = n + ' / ' + list.length; };
+    body.querySelectorAll('input[data-a]').forEach(inp => inp.oninput = () => { const v = inp.value.trim(); if (v === '') delete st.counts[inp.dataset.a]; else st.counts[inp.dataset.a] = Math.max(0, Math.round(Number(v)) || 0); CNT.set(st); upd(); });
+    $('#scQ').oninput = e => { q = e.target.value; const s = q.toLowerCase(); body.querySelectorAll('.sc-row').forEach(r => { r.style.display = !s || r.dataset.n.includes(s) ? 'flex' : 'none'; }); };
+    $('#scQ').dispatchEvent(new Event('input'));
+    $('#scZero').onclick = () => { const empty = list.filter(i => st.counts[i.art] === undefined); if (!empty.length) return; if (!confirm(`Поставить 0 для ${empty.length} непосчитанных позиций?`)) return; for (const i of empty) st.counts[i.art] = 0; CNT.set(st); drawStore(body); };
+    $('#scX').onclick = () => { if (!confirm('Отменить сверку? Введённые цифры удалятся.')) return; CNT.set(null); drawStore(body); };
+    $('#scGo').onclick = async e => {
+      const empty = list.filter(i => st.counts[i.art] === undefined);
+      if (empty.length) return ($('#scE').textContent = `Не посчитано ${empty.length} поз. — введите количество или нажмите «Поставить 0 в пустые»`);
+      e.target.disabled = true; e.target.textContent = 'Отправляю…';
+      try {
+        const file = $('#scP').files[0], photo = file ? await shrink(file) : '';
+        const counts = {}; for (const i of list) counts[i.art] = st.counts[i.art];
+        await storePost({ act: 'count', counts, partial: !!rec, comment: $('#scC').value.trim(), photo });
+        CNT.set(null); q = ''; msg('Сверка отправлена руководителю ✓'); try { TGA?.HapticFeedback?.notificationOccurred('success'); } catch { /* not in Telegram */ }
+        S.today = { at: new Date().toISOString() }; if (rec) S.recount = []; drawStore(body); load();
+      } catch (err) { e.target.disabled = false; e.target.textContent = 'Отправить сверку'; $('#scE').textContent = err.message || 'Нет связи — попробуйте ещё раз, цифры сохранены'; }
+    };
+  }
+
   function draw() {
     const body = $('#meBody');
     if (!link) { body.innerHTML = '<div class="empty-state"><h3>Откройте кабинет из Telegram</h3><p>Нажмите кнопку «Мой кабинет» в боте MITAL — или откройте ссылку, которую прислал руководитель.</p></div>'; return; }
+    if (S && S.role === 'store') return drawStore(body);
     if (!S) { body.innerHTML = loading ? '<p class="mut">Загружаю…</p>' : '<div class="empty-state"><h3>Нет данных</h3><p>Причина — в сообщении выше. Если доступ закрыт, попросите руководителя прислать новую ссылку.</p></div>'; return; }
     const k = S.kpi, sp = pct(k.sold, k.plan), cp = pct(k.paid, k.pool), me = S.board.find(b => b.me);
     $('#meName').textContent = S.agent;
