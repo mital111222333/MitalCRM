@@ -1,6 +1,8 @@
 // Кабинет агента (me.html): the agent's own page. The personal link carries a secret code (k) and the address of the Google
 // auto-loader (u); the page asks u?agent=k and gets back only this agent's file, prepared by the supervisor's CRM (agentcab.js).
 // Read-only. The link is remembered on this phone, and the last data is kept so the page opens without internet.
+// Inside Telegram (Mini App from the bot's button) there is no link: the page sends Telegram's signed initData instead (u?tg=…),
+// the auto-loader checks the signature with the bot token and returns the file of that Telegram user.
 (() => {
   const $ = s => document.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -16,16 +18,18 @@
   const store = { get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked */ } } };
 
   // the personal link: #k=…&u=… (taken once, then remembered and removed from the address bar)
+  const TGA = window.Telegram?.WebApp, inTg = !!TGA?.initData, qs = new URLSearchParams(location.search);
   const h = new URLSearchParams(location.hash.slice(1));
-  if (h.get('k') && h.get('u')) { store.set('mital_me', { k: h.get('k'), u: h.get('u') }); history.replaceState(null, '', location.pathname); }
-  const link = store.get('mital_me');
+  if (h.get('k') && h.get('u')) { store.set('mital_me', { k: h.get('k'), u: h.get('u') }); history.replaceState(null, '', location.pathname + location.search); }
+  const link = inTg && qs.get('u') ? { tg: TGA.initData, u: qs.get('u') } : store.get('mital_me');
+  if (inTg) { try { TGA.ready(); TGA.expand(); if (TGA.colorScheme === 'dark') document.documentElement.dataset.theme = 'dark'; } catch { /* old Telegram */ } }
   let tab = 'main', q = '', S = store.get('mital_me_data'), loading = false;
 
   async function load() {
     if (!link) return;
     loading = true; $('#meUpd').disabled = true; $('#meUpd').textContent = 'Обновляю…';
     try {
-      const r = await fetch(link.u + (link.u.includes('?') ? '&' : '?') + 'agent=' + encodeURIComponent(link.k) + '&t=' + Date.now(), { cache: 'no-store' });
+      const r = await fetch(link.u + (link.u.includes('?') ? '&' : '?') + (link.tg ? 'tg=' + encodeURIComponent(link.tg) : 'agent=' + encodeURIComponent(link.k)) + '&t=' + Date.now(), { cache: 'no-store' });
       const j = await r.json();
       if (j.error) { msg(j.error, true); if (/закрыт|устарел|неверн/.test(j.error)) { S = null; store.set('mital_me_data', null); } }
       else { S = j; store.set('mital_me_data', j); msg(''); }
@@ -34,11 +38,13 @@
     draw();
   }
   const msg = (t, bad) => { const m = $('#meMsg'); m.textContent = t; m.className = bad ? 'neg' : 'mut'; m.hidden = !t; };
+  // the real Telegram chat with the supervisor (inside the Mini App it opens without leaving Telegram)
+  const chatBtn = () => (S?.boss ? `<a class="btn gray" href="https://t.me/${esc(S.boss)}" target="_blank" rel="noopener">💬 Написать руководителю</a>` : '');
   const search = () => { const i = $('#meQ'); if (i) i.oninput = () => { q = i.value; draw(); const j = $('#meQ'); j.focus(); j.setSelectionRange(j.value.length, j.value.length); }; };
 
   function draw() {
     const body = $('#meBody');
-    if (!link) { body.innerHTML = '<div class="empty-state"><h3>Нужна личная ссылка</h3><p>Откройте ссылку на кабинет, которую прислал руководитель в Telegram.</p></div>'; return; }
+    if (!link) { body.innerHTML = '<div class="empty-state"><h3>Откройте кабинет из Telegram</h3><p>Нажмите кнопку «Мой кабинет» в боте MITAL — или откройте ссылку, которую прислал руководитель.</p></div>'; return; }
     if (!S) { body.innerHTML = loading ? '<p class="mut">Загружаю…</p>' : '<div class="empty-state"><h3>Нет данных</h3><p>Причина — в сообщении выше. Если доступ закрыт, попросите руководителя прислать новую ссылку.</p></div>'; return; }
     const k = S.kpi, sp = pct(k.sold, k.plan), cp = pct(k.paid, k.pool), me = S.board.find(b => b.me);
     $('#meName').textContent = S.agent;
@@ -47,6 +53,7 @@
     if (tab === 'main') {
       const t = S.disc?.today, top = S.clients.filter(c => c.debt > 0 && (c.promise || c.pool > c.paid)).slice(0, 10);
       body.innerHTML = `<section class="panel w12" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><div style="font-size:32px" aria-hidden="true">🎓</div><div style="flex:1;min-width:200px"><h4 style="margin:0">MITAL Akademiya</h4><div class="sub">Курсы для агентов: продажи, работа с клиентами и долгами, товары</div></div><a class="btn" style="padding:10px 18px;white-space:nowrap;line-height:1.2" href="${ACADEMY}" target="_blank" rel="noopener">Перейти к курсам →</a></section>
+        ${chatBtn() ? `<div class="bar" style="margin-bottom:12px">${chatBtn()}</div>` : ''}
         <div class="kpis">
         ${tile('Продано', $$(k.sold), k.plan ? `план ${$$(k.plan)} · ${sp}%` : 'план не задан', sp === null ? '' : sp >= 100 ? 'good' : '')}
         ${tile('Собрано', $$(k.paid), k.pool ? `пул ${$$(k.pool)} · ${cp}% · осталось ${$$(Math.max(0, k.pool - k.paid))}` : 'пул не задан', cp === null ? '' : cp >= 100 ? 'good' : '')}
@@ -81,6 +88,8 @@
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-tab]').forEach(a => a.onclick = e => { e.preventDefault(); tab = a.dataset.tab; q = ''; draw(); scrollTo(0, 0); });
     $('#meUpd').onclick = load;
+    // links inside Telegram: t.me opens in Telegram itself (the chat), other links in the browser — not inside the small app window
+    document.addEventListener('click', e => { const a = e.target.closest('a[href^="http"]'); if (!a || !inTg) return; e.preventDefault(); if (a.href.startsWith('https://t.me/')) TGA.openTelegramLink(a.href); else TGA.openLink(a.href); });
     draw(); load();
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S && Date.now() - Date.parse(S.at || 0) > 10 * 60000) load(); });
   });
