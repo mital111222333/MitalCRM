@@ -17,6 +17,8 @@ const AC = {
   async sha(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join(''); },
   miniUrl() { const base = location.origin + location.pathname.replace(/[^/]*$/, ''); return `${base}me.html?u=${encodeURIComponent(AC.web())}`; },
   chatOf(agent) { const t = CRMLocal.ext().tg || {}; return t.token && t.chats?.[agent]?.id ? String(t.chats[agent].id) : ''; },
+  // the bot's @username: the agent's chat with the supervisor is the chat with this bot (answered from CRM → Чаты Telegram)
+  async bot() { if (AC._bot !== undefined) return AC._bot; try { AC._bot = (await TG.call('getMe')).username || ''; } catch { AC._bot = ''; } return AC._bot; },
   boss() { const m = String(CRMLocal.ext().tg?.me?.name || '').match(/@([A-Za-z0-9_]{4,})/); return m ? m[1] : ''; },
   link(code) { const base = location.origin + location.pathname.replace(/[^/]*$/, ''); return `${base}me.html#k=${encodeURIComponent(code)}&u=${encodeURIComponent(AC.web())}`; },
   office() { try { return localStorage.getItem('crm_office') === '1'; } catch { return false; } },
@@ -39,7 +41,7 @@ const AC = {
     const items = wh && stock ? stock.items.filter(i => i.cells[wh]).map(i => ({ name: i.name, art: i.art, brand: i.brand || '', available: i.cells[wh].available, total: i.cells[wh].total })).sort((x, y) => (x.brand || '').localeCompare(y.brand || '') || x.name.localeCompare(y.name)) : [];
     const whUp = wh && stock ? stock.warehouses.find(w => w.name === wh)?.upload?.taken_at || null : null;
     return {
-      v: 1, agent, boss: AC.boss() || null, at: new Date().toISOString(), data_at: d.upload.taken_at, period: { from: d.upload.period_from, to: d.forecast?.period_end || d.upload.period_to, days_left: d.forecast?.days_left ?? null },
+      v: 1, agent, boss: AC.boss() || null, bot: (CRMLocal.ext().tg?.token ? await AC.bot() : '') || null, at: new Date().toISOString(), data_at: d.upload.taken_at, period: { from: d.upload.period_from, to: d.forecast?.period_end || d.upload.period_to, days_left: d.forecast?.days_left ?? null },
       kpi: { sold: Math.round(a.sold), plan: Math.round(a.plan || 0), paid: Math.round(a.paid), pool: Math.round(a.pool || 0), debt: Math.round(a.debt), debtors: a.debtors || 0, akb: a.akb, okb: a.okb },
       board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [],
       disc: disc ? { start: disc.startTxt, rate: disc.rate, today: today ? { first: today.first || '', late: today.first ? DS.lateOf(today.first, disc.start) : 0 } : null, late: r?.late || 0, minutes: r?.lateMin || 0, fine: r?.fine || 0, route: r?.route ?? null, days } : null,
