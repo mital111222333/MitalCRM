@@ -23,7 +23,10 @@
   if (h.get('k') && h.get('u')) { store.set('mital_me', { k: h.get('k'), u: h.get('u') }); history.replaceState(null, '', location.pathname + location.search); }
   const link = inTg && qs.get('u') ? { tg: TGA.initData, u: qs.get('u') } : store.get('mital_me');
   if (inTg) { try { TGA.ready(); TGA.expand(); if (TGA.colorScheme === 'dark') document.documentElement.dataset.theme = 'dark'; } catch { /* old Telegram */ } }
-  let tab = 'main', q = '', S = store.get('mital_me_data'), loading = false;
+  let tab = 'main', q = '', S = store.get('mital_me_data'), loading = false, doing = null;
+  // tasks marked here but not yet seen by the supervisor's CRM: shown as «отправлено» until the next data comes
+  const marks = () => store.get('mital_me_marks') || {}, markKey = t => t.src + ':' + t.id;
+  const isOpen = t => (t.status === 'open' || t.status === 'returned') && !marks()[markKey(t)];
 
   async function load() {
     if (!link) return;
@@ -32,10 +35,25 @@
       const r = await fetch(link.u + (link.u.includes('?') ? '&' : '?') + (link.tg ? 'tg=' + encodeURIComponent(link.tg) : 'agent=' + encodeURIComponent(link.k)) + '&t=' + Date.now(), { cache: 'no-store' });
       const j = await r.json();
       if (j.error) { msg(j.error, true); if (/закрыт|устарел|неверн/.test(j.error)) { S = null; store.set('mital_me_data', null); } }
-      else { S = j; store.set('mital_me_data', j); msg(''); }
+      else { S = j; store.set('mital_me_data', j); msg(''); const m = marks(), keep = {}; for (const t of j.tasks || []) if (m[markKey(t)] && (t.status === 'open' || t.status === 'returned')) keep[markKey(t)] = m[markKey(t)]; store.set('mital_me_marks', keep); }
     } catch { msg(S ? 'Нет интернета — показаны последние сохранённые данные' : 'Нет интернета. Откройте страницу, когда появится связь.', !S); }
     loading = false; $('#meUpd').disabled = false; $('#meUpd').textContent = '🔄 Обновить';
     draw();
+  }
+  // a phone photo is large: shrink to 1280 px JPEG before sending
+  async function shrink(file) {
+    const img = await createImageBitmap(file), k = Math.min(1, 1280 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.72)); const buf = new Uint8Array(await blob.arrayBuffer()); let s = '';
+    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  async function sendDone(t, comment, file) {
+    const photo = file ? await shrink(file) : '';
+    const body = JSON.stringify({ ...(link.tg ? { tg: link.tg } : { k: link.k }), act: 'done', src: t.src, id: t.id, comment, photo });
+    const r = await fetch(link.u, { method: 'POST', body }); const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    const m = marks(); m[markKey(t)] = new Date().toISOString(); store.set('mital_me_marks', m);
   }
   const msg = (t, bad) => { const m = $('#meMsg'); m.textContent = t; m.className = bad ? 'neg' : 'mut'; m.hidden = !t; };
   // the real Telegram chat with the supervisor (inside the Mini App it opens without leaving Telegram)
@@ -50,10 +68,34 @@
     $('#meName').textContent = S.agent;
     $('#meSub').textContent = `Период ${dRu(S.period.from)} — ${dRu(S.period.to)}${S.period.days_left != null ? ` · осталось ${S.period.days_left} дн.` : ''} · план и рейтинг на ${hhmm(S.at)}${S.live?.debt ? ` · долги на ${hhmm(S.live.debt)}` : ''}${S.live?.stock ? ` · остатки на ${hhmm(S.live.stock)}` : ''}`;
     document.querySelectorAll('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
+    const openN = (S.tasks || []).filter(isOpen).length; $('#meTaskN').textContent = openN ? `(${openN})` : '';
+    if (tab === 'tasks') {
+      const T = S.tasks || [], ST = { open: ['info', 'в работе'], returned: ['crit', 'возвращено — доделать'], done: ['warn', 'на проверке'], closed: ['good', '✓ принято'] };
+      const item = t => { const sent = marks()[markKey(t)], st = sent ? ['warn', 'отправлено руководителю'] : ST[t.status] || ST.open;
+        return `<li><div><span class="pill ${st[0]}">${st[1]}</span> <b>${esc(t.title)}</b>${t.due ? ` <span class="mut">· до ${dRu(t.due)}</span>` : ''}${t.overdue && !sent ? ' <b class="neg">просрочено</b>' : ''}</div>
+          ${t.text ? `<div class="mut">${esc(t.text)}</div>` : ''}${t.progress ? `<div>Факт: <b>${esc(t.progress)}</b></div>` : ''}${t.back && t.status === 'returned' ? `<div class="neg">↩ ${esc(t.back)}</div>` : ''}
+          <div class="bar" style="margin-top:6px">${t.link ? `<a class="btn gray sm" href="${esc(t.link)}" target="_blank" rel="noopener">${t.kind === 'academy' ? '🎓 Открыть урок' : 'Открыть ссылку'}</a>` : ''}${isOpen(t) ? `<button class="btn sm" data-do="${esc(markKey(t))}">✅ Выполнено</button>` : ''}</div>
+          ${doing === markKey(t) ? `<div class="form" style="margin-top:8px"><label style="grid-column:1/-1">Комментарий<textarea id="dnC" rows="3" maxlength="1000" placeholder="Что сделано"></textarea></label><label style="grid-column:1/-1">Фото (необязательно)<input id="dnP" type="file" accept="image/*" capture="environment"></label></div><small id="dnE" class="neg" role="alert"></small><div class="bar"><button class="btn gray sm" id="dnX">Отмена</button><button class="btn sm" id="dnOk">Отправить руководителю</button></div>` : ''}</li>`; };
+      const open = T.filter(t => isOpen(t)), rest = T.filter(t => !isOpen(t));
+      body.innerHTML = panel(`Задания (${open.length} открыто)`, T.length ? `<ul class="notes">${[...open, ...rest].map(item).join('')}</ul>` : '<p class="mut">Заданий нет.</p>', 'Нажмите «Выполнено», напишите, что сделано, и приложите фото, если нужно — руководитель получит это сразу.');
+      body.querySelectorAll('[data-do]').forEach(b => b.onclick = () => { doing = b.dataset.do; draw(); });
+      const ok = $('#dnOk');
+      if (ok) {
+        $('#dnX').onclick = () => { doing = null; draw(); };
+        ok.onclick = async () => {
+          const t = T.find(x => markKey(x) === doing), comment = $('#dnC').value.trim(), file = $('#dnP').files[0];
+          if (!comment && !file) return ($('#dnE').textContent = 'Напишите комментарий или приложите фото');
+          ok.disabled = true; ok.textContent = 'Отправляю…';
+          try { await sendDone(t, comment, file); doing = null; msg('Отправлено руководителю ✓'); try { TGA?.HapticFeedback?.notificationOccurred('success'); } catch { /* not in Telegram */ } draw(); }
+          catch (e) { ok.disabled = false; ok.textContent = 'Отправить руководителю'; $('#dnE').textContent = e.message || 'Нет связи — попробуйте ещё раз'; }
+        };
+      }
+      return;
+    }
     if (tab === 'main') {
       const t = S.disc?.today, top = S.clients.filter(c => c.debt > 0 && (c.promise || c.pool > c.paid)).slice(0, 10);
       body.innerHTML = `<section class="panel w12" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><div style="font-size:32px" aria-hidden="true">🎓</div><div style="flex:1;min-width:200px"><h4 style="margin:0">MITAL Akademiya</h4><div class="sub">Курсы для агентов: продажи, работа с клиентами и долгами, товары</div></div><a class="btn" style="padding:10px 18px;white-space:nowrap;line-height:1.2" href="${ACADEMY}" target="_blank" rel="noopener">Перейти к курсам →</a></section>
-        ${chatBtn() ? `<div class="bar" style="margin-bottom:12px">${chatBtn()}</div>` : ''}
+        ${(S.tasks || []).filter(isOpen).length || chatBtn() ? `<div class="bar" style="margin-bottom:12px">${(S.tasks || []).filter(isOpen).length ? `<a class="btn" href="#" data-go="tasks">✅ Задания: ${(S.tasks || []).filter(isOpen).length} открыто</a>` : ''}${chatBtn()}</div>` : ''}
         <div class="kpis">
         ${tile('Продано', $$(k.sold), k.plan ? `план ${$$(k.plan)} · ${sp}%` : 'план не задан', sp === null ? '' : sp >= 100 ? 'good' : '')}
         ${tile('Собрано', $$(k.paid), k.pool ? `пул ${$$(k.pool)} · ${cp}% · осталось ${$$(Math.max(0, k.pool - k.paid))}` : 'пул не задан', cp === null ? '' : cp >= 100 ? 'good' : '')}
@@ -86,7 +128,8 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('[data-tab]').forEach(a => a.onclick = e => { e.preventDefault(); tab = a.dataset.tab; q = ''; draw(); scrollTo(0, 0); });
+    document.querySelectorAll('[data-tab]').forEach(a => a.onclick = e => { e.preventDefault(); tab = a.dataset.tab; q = ''; doing = null; draw(); scrollTo(0, 0); });
+    document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (!g) return; e.preventDefault(); tab = g.dataset.go; doing = null; draw(); scrollTo(0, 0); });
     $('#meUpd').onclick = load;
     // links inside Telegram: t.me opens in Telegram itself (the chat), other links in the browser — not inside the small app window
     document.addEventListener('click', e => { const a = e.target.closest('a[href^="http"]'); if (!a || !inTg) return; e.preventDefault(); if (a.href.startsWith('https://t.me/')) TGA.openTelegramLink(a.href); else TGA.openLink(a.href); });

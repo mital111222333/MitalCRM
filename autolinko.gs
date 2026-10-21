@@ -304,6 +304,18 @@ function live_(snap) {
 }
 // ---------- вход из Telegram: проверка подписи initData ключом бота (как требует Telegram), затем файл agents/tg/<id>.json ----------
 function tgAgent_(initData) {
+  const u = tgUser_(initData); if (u.error) return u;
+  const cache = CacheService.getScriptCache(), hit = cache.get('tg_' + u.id); if (hit) return JSON.parse(hit);
+  const f = ghRaw_('agents/tg/' + u.id + '.json');
+  if (f.code === 404) return { error: 'Доступ к кабинету не открыт — попросите руководителя' };
+  if (f.code !== 200) return { error: 'Не удалось получить данные, попробуйте через минуту' };
+  const out = JSON.stringify(live_(JSON.parse(f.text)));
+  if (out.length < 90000) cache.put('tg_' + u.id, out, 60);
+  return JSON.parse(out);
+}
+// ---------- отметки агентов: «Выполнено» из кабинета (комментарий, фото) → inbox/ в приватном репозитории + сообщение руководителю ----------
+// Агент определяется так же, как при открытии кабинета: по подписи Telegram или по личному коду. Писать агент может только это.
+function tgUser_(initData) {
   if (!CFG.TG_BOT) return { error: 'В скрипте не задан бот — скопируйте скрипт из CRM заново' };
   const pairs = String(initData).split('&').map(s => { const i = s.indexOf('='); return [decodeURIComponent(s.slice(0, i)), decodeURIComponent(s.slice(i + 1).replace(/\+/g, ' '))]; });
   const map = {}; pairs.forEach(p => { map[p[0]] = p[1]; });
@@ -311,18 +323,38 @@ function tgAgent_(initData) {
   const check = pairs.filter(p => p[0] !== 'hash').map(p => p[0] + '=' + p[1]).sort().join('\n');
   const hex = b => b.map(x => ((x + 256) % 256).toString(16).padStart(2, '0')).join('');
   const secret = Utilities.computeHmacSha256Signature(Utilities.newBlob(CFG.TG_BOT).getBytes(), Utilities.newBlob('WebAppData').getBytes());
-  const sign = hex(Utilities.computeHmacSha256Signature(Utilities.newBlob(check).getBytes(), secret));
-  if (sign !== map.hash) return { error: 'Не удалось подтвердить вход через Telegram — откройте кабинет кнопкой в боте ещё раз' };
+  if (hex(Utilities.computeHmacSha256Signature(Utilities.newBlob(check).getBytes(), secret)) !== map.hash) return { error: 'Не удалось подтвердить вход через Telegram — откройте кабинет кнопкой в боте ещё раз' };
   if (Date.now() / 1000 - Number(map.auth_date || 0) > 86400) return { error: 'Вход устарел — закройте и снова откройте кабинет в боте' };
   let user = {}; try { user = JSON.parse(map.user || '{}'); } catch (e) { user = {}; }
   if (!/^\d+$/.test(String(user.id || ''))) return { error: 'Telegram не передал пользователя' };
-  const cache = CacheService.getScriptCache(), hit = cache.get('tg_' + user.id); if (hit) return JSON.parse(hit);
-  const r = fetch_('https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/agents/tg/' + user.id + '.json', { headers: { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28' }, muteHttpExceptions: true });
-  if (r.getResponseCode() === 404) return { error: 'Доступ к кабинету не открыт — попросите руководителя' };
-  if (r.getResponseCode() !== 200) return { error: 'Не удалось получить данные, попробуйте через минуту' };
-  const out = JSON.stringify(live_(JSON.parse(r.getContentText())));
-  if (out.length < 90000) cache.put('tg_' + user.id, out, 60);
-  return JSON.parse(out);
+  return { id: String(user.id) };
+}
+function ghRaw_(path) {
+  const r = fetch_('https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/' + path, { headers: { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28' }, muteHttpExceptions: true });
+  return { code: r.getResponseCode(), text: r.getResponseCode() === 200 ? r.getContentText() : '' };
+}
+function doPost(e) {
+  let p = {}; try { p = JSON.parse((e && e.postData && e.postData.contents) || '{}'); } catch (err) { return json_({ error: 'Неверный запрос' }); }
+  try {
+    let path;
+    if (p.tg) { const u = tgUser_(p.tg); if (u.error) return json_(u); path = 'agents/tg/' + u.id + '.json'; }
+    else if (/^[A-Za-z0-9_-]{20,64}$/.test(String(p.k || ''))) path = 'agents/' + Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(p.k), Utilities.Charset.UTF_8).map(b => ((b + 256) % 256).toString(16).padStart(2, '0')).join('') + '.json';
+    else return json_({ error: 'Откройте кабинет кнопкой в боте' });
+    const f = ghRaw_(path); if (f.code !== 200) return json_({ error: 'Доступ к кабинету не открыт' });
+    const snap = JSON.parse(f.text), task = (snap.tasks || []).filter(t => t.src === p.src && String(t.id) === String(p.id))[0];
+    if (p.act !== 'done' || !task) return json_({ error: 'Задание не найдено — обновите кабинет' });
+    const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    let photo = '';
+    if (p.photo && /^[A-Za-z0-9+/=]+$/.test(p.photo) && p.photo.length < 2800000) { photo = 'inbox/photos/' + uid + '.jpg'; saveB64ToGithub_(photo, p.photo, 'Кабинет: фото к заданию'); }
+    const rec = { at: new Date().toISOString(), agent: snap.agent, act: 'done', src: p.src, id: p.id, title: task.title || '', comment: String(p.comment || '').slice(0, 1000), photo: photo };
+    saveB64ToGithub_('inbox/' + stamp + '/' + uid + '.json', Utilities.base64Encode(JSON.stringify(rec), Utilities.Charset.UTF_8), 'Кабинет: отметка агента');
+    const text = '✅ ' + snap.agent + ' выполнил задание\n' + rec.title + (rec.comment ? '\n💬 ' + rec.comment : '');
+    try {
+      if (photo && CFG.TG_BOT && CFG.TG_CHAT) UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendPhoto', { method: 'post', payload: { chat_id: String(CFG.TG_CHAT), caption: text.slice(0, 1000), photo: Utilities.newBlob(Utilities.base64Decode(p.photo), 'image/jpeg', 'photo.jpg') }, muteHttpExceptions: true });
+      else notify_(text);
+    } catch (err) { Logger.log('Отметка: сообщение не ушло ' + mask_(err.message || err)); }
+    return json_({ ok: true });
+  } catch (err) { return json_({ error: 'Не удалось сохранить: ' + mask_(err.message || err) }); }
 }
 function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 

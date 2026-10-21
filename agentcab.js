@@ -26,7 +26,9 @@ const AC = {
     const a = d.agents.find(x => x.agent === agent) || { sold: 0, plan: 0, paid: 0, pool: 0, debt: 0, akb: 0, okb: 0, debtors: 0 };
     const pct = (x, y) => (y > 0 ? Math.round(x / y * 100) : null);
     const board = d.agents.filter(x => x.agent !== 'Без агента').map(x => ({ agent: x.agent, sold: pct(x.sold, x.plan), paid: pct(x.paid, x.pool), amt: x.sold + x.paid }))
-      .map(x => ({ ...x, score: (x.sold ?? 0) + (x.paid ?? 0) })).sort((p, q) => q.score - p.score || q.amt - p.amt) // no plans yet: by sales and collection (amounts are not sent).map((x, i) => ({ place: i + 1, agent: x.agent, sold: x.sold, paid: x.paid, me: x.agent === agent }));
+      // no plans yet: by sales and collection — the amounts are only used for the order, they are not sent
+      .map(x => ({ ...x, score: (x.sold ?? 0) + (x.paid ?? 0) })).sort((p, q) => q.score - p.score || q.amt - p.amt)
+      .map((x, i) => ({ place: i + 1, agent: x.agent, sold: x.sold, paid: x.paid, me: x.agent === agent }));
     const prom = typeof NOTES !== 'undefined' ? NOTES.promises(d).filter(p => p.agent === agent && p.status !== 'kept') : [];
     const promBy = new Map(prom.map(p => [p.client, p]));
     const clients = d.clients.filter(c => c.agent === agent).map(c => ({ name: c.name, debt: Math.round(c.debt || 0), sold: Math.round(c.sold || 0), paid: Math.round(c.paid || 0), plan: Math.round(c.plan || 0), pool: Math.round(c.pool || 0), lastPay: c.lastPay || null, lastBuy: c.lastBuy || null, buyDays: c.buyDays ?? null, phone: c.phone || '', landmark: c.landmark || '', promise: promBy.get(c.name) ? { date: promBy.get(c.name).date, sum: promBy.get(c.name).sum } : null }))
@@ -39,7 +41,7 @@ const AC = {
     return {
       v: 1, agent, boss: AC.boss() || null, at: new Date().toISOString(), data_at: d.upload.taken_at, period: { from: d.upload.period_from, to: d.forecast?.period_end || d.upload.period_to, days_left: d.forecast?.days_left ?? null },
       kpi: { sold: Math.round(a.sold), plan: Math.round(a.plan || 0), paid: Math.round(a.paid), pool: Math.round(a.pool || 0), debt: Math.round(a.debt), debtors: a.debtors || 0, akb: a.akb, okb: a.okb },
-      board, clients,
+      board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [],
       disc: disc ? { start: disc.startTxt, rate: disc.rate, today: today ? { first: today.first || '', late: today.first ? DS.lateOf(today.first, disc.start) : 0 } : null, late: r?.late || 0, minutes: r?.lateMin || 0, fine: r?.fine || 0, route: r?.route ?? null, days } : null,
       // branch: the LINKO warehouse number of this warehouse, so the auto-loader can put fresh stock in (autolinko.gs live_)
       stock: wh ? { warehouse: wh, at: whUp, branch: Object.keys(CRMLocal.ext().linkoBranch || {}).find(b => CRMLocal.ext().linkoBranch[b] === wh) || null, items } : null,
