@@ -12,6 +12,7 @@
   const tile = (label, value, sub = '', tone = '') => `<div class="tile ${tone ? 'tone-' + tone : ''}"><div class="tl">${label}</div><div class="tv">${value}</div><div class="ts">${sub}</div></div>`;
   const panel = (title, body, sub = '') => `<section class="panel w12"><div class="ph"><div><h4>${title}</h4>${sub ? `<div class="sub">${sub}</div>` : ''}</div></div>${body}</section>`;
   const ACADEMY = 'https://mital111222333.github.io/academy/'; // MITAL Akademiya: courses for agents
+  const hhmm = v => (v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
   const store = { get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked */ } } };
 
   // the personal link: #k=…&u=… (taken once, then remembered and removed from the address bar)
@@ -41,7 +42,7 @@
     if (!S) { body.innerHTML = loading ? '<p class="mut">Загружаю…</p>' : '<div class="empty-state"><h3>Нет данных</h3><p>Причина — в сообщении выше. Если доступ закрыт, попросите руководителя прислать новую ссылку.</p></div>'; return; }
     const k = S.kpi, sp = pct(k.sold, k.plan), cp = pct(k.paid, k.pool), me = S.board.find(b => b.me);
     $('#meName').textContent = S.agent;
-    $('#meSub').textContent = `Период ${dRu(S.period.from)} — ${dRu(S.period.to)}${S.period.days_left != null ? ` · осталось ${S.period.days_left} дн.` : ''} · данные на ${new Date(S.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`;
+    $('#meSub').textContent = `Период ${dRu(S.period.from)} — ${dRu(S.period.to)}${S.period.days_left != null ? ` · осталось ${S.period.days_left} дн.` : ''} · план и рейтинг на ${hhmm(S.at)}${S.live?.debt ? ` · долги на ${hhmm(S.live.debt)}` : ''}${S.live?.stock ? ` · остатки на ${hhmm(S.live.stock)}` : ''}`;
     document.querySelectorAll('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
     if (tab === 'main') {
       const t = S.disc?.today, top = S.clients.filter(c => c.debt > 0 && (c.promise || c.pool > c.paid)).slice(0, 10);
@@ -67,7 +68,7 @@
       if (!S.stock) { body.innerHTML = '<div class="empty-state"><h3>Склад не назначен</h3><p>Попросите руководителя указать ваш склад.</p></div>'; return; }
       const L = S.stock.items.filter(i => !q || (i.name + ' ' + i.brand + ' ' + i.art).toLowerCase().includes(q.toLowerCase()));
       body.innerHTML = `<div class="bar"><input id="meQ" type="search" placeholder="Поиск товара, бренда, артикула" value="${esc(q)}" style="flex:1;min-width:0"></div>
-        ${panel(`Склад ${esc(S.stock.warehouse)} (${f0(L.length)})`, `<div class="tscroll"><table><thead><tr><th>Товар</th><th>Бренд</th><th class="n">Доступно</th><th class="n">Всего</th></tr></thead><tbody>${L.map(i => `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td>${esc(i.brand)}</td><td class="n ${i.available <= 0 ? 'neg' : ''}"><b>${f0(i.available)}</b></td><td class="n">${f0(i.total)}</td></tr>`).join('')}</tbody></table></div>`, `Остатки на ${dRu(S.stock.at)}. «Доступно» — без резерва под заказы.`)}`;
+        ${panel(`Склад ${esc(S.stock.warehouse)} (${f0(L.length)})`, `<div class="tscroll"><table><thead><tr><th>Товар</th><th>Бренд</th><th class="n">Доступно</th><th class="n">Всего</th></tr></thead><tbody>${L.map(i => `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td>${esc(i.brand)}</td><td class="n ${i.available <= 0 ? 'neg' : ''}"><b>${f0(i.available)}</b></td><td class="n">${f0(i.total)}</td></tr>`).join('')}</tbody></table></div>`, `Остатки на ${S.live?.stock ? hhmm(S.live.stock) + ' (обновляются каждые 5 минут)' : dRu(S.stock.at)}. «Доступно» — без резерва под заказы.`)}`;
       search();
     }
     if (tab === 'disc') {

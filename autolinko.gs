@@ -249,8 +249,57 @@ function agent_(code) {
   const r = fetch_('https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/agents/' + hex + '.json', { headers: { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28' }, muteHttpExceptions: true });
   if (r.getResponseCode() === 404) return { error: 'Доступ закрыт или ссылка устарела — попросите руководителя прислать новую' };
   if (r.getResponseCode() !== 200) return { error: 'Не удалось получить данные, попробуйте через минуту' };
-  const text = r.getContentText(); if (text.length < 90000) cache.put('ag_' + hex, text, 60); // минута: чтобы частые открытия не нагружали GitHub
-  return JSON.parse(text);
+  const out = JSON.stringify(live_(JSON.parse(r.getContentText()))); // + свежие остатки, долги и сегодняшний отчёт
+  if (out.length < 90000) cache.put('ag_' + hex, out, 60); // минута: чтобы частые открытия не нагружали GitHub
+  return JSON.parse(out);
+}
+// Свежие данные в кабинет агента: поверх файла, который подготовила CRM руководителя, подставляются остатки его склада и долги его
+// клиентов из linko-latest / linko-fast (обновляются каждые 5 минут) и сегодняшний первый отчёт из linko-extra. Ошибка здесь не мешает:
+// агент тогда видит данные из последнего расчёта CRM.
+function live_(snap) {
+  const read = name => { const r = fetch_('https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/' + name, { headers: { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28' }, muteHttpExceptions: true }); return r.getResponseCode() === 200 ? JSON.parse(r.getContentText()) : null; };
+  const live = {};
+  // 1) остатки склада агента
+  if (snap.stock && snap.stock.branch) try {
+    const L = read('linko-latest.json'), f = L && (L.files || []).filter(x => x.name === 'stock LINKO branch ' + snap.stock.branch + '.csv')[0];
+    if (f) {
+      const text = Utilities.newBlob(Utilities.base64Decode(f.b64)).getDataAsString('UTF-8').replace(/^﻿/, '');
+      const rows = Utilities.parseCsv(text, ';'), h = rows[0] || [], col = n => h.indexOf(n);
+      const iName = col('Продукт'), iArt = col('Aртикул'), iBrand = col('Бренд'), iTotal = col('Всего товаров'), iAv = col('Доступный');
+      const items = rows.slice(1).filter(r => r[iName]).map(r => ({ name: r[iName], art: r[iArt] || '', brand: r[iBrand] || '', available: n_(String(r[iAv]).replace(',', '.')), total: n_(String(r[iTotal]).replace(',', '.')) }))
+        .filter(i => i.total || i.available).sort((a, b) => a.brand.localeCompare(b.brand) || a.name.localeCompare(b.name));
+      if (items.length) { snap.stock.items = items; snap.stock.at = String(L.at || '').slice(0, 10); live.stock = L.at; }
+    }
+  } catch (e) { Logger.log('Кабинет, остатки: ' + mask_(e.message || e)); }
+  // 2) долги клиентов агента
+  try {
+    const F = read('linko-fast.json'), norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+    if (F && F.data && F.data.debtors) {
+      const debt = {};
+      F.data.debtors.forEach(d => { const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(x => /usd|\$|долл/i.test(x.name || ''))[0] || cs[0] || {}; debt[norm(d['client.name'])] = Math.round(Math.abs(n_(c.debt_total))); });
+      let sum = 0, cnt = 0;
+      (snap.clients || []).forEach(c => { const k = norm(c.name); c.debt = k in debt ? debt[k] : 0; sum += c.debt; if (c.debt > 0) cnt++; });
+      (snap.clients || []).sort((a, b) => b.debt - a.debt || a.name.localeCompare(b.name));
+      snap.kpi.debt = sum; snap.kpi.debtors = cnt; live.debt = F.at;
+    }
+  } catch (e) { Logger.log('Кабинет, долги: ' + mask_(e.message || e)); }
+  // 3) сегодняшний первый отчёт и штраф
+  if (snap.disc) try {
+    const X = read('linko-extra.json'), words = s => String(s || '').toLowerCase().split(/\s+/).filter(String).sort().join(' ');
+    const me = words(snap.agent), w = X && X.data && (X.data.workday || []).filter(r => words([r.first_name, r.second_name].join(' ')) === me)[0];
+    const t = w && String(w['first_done_task_time.date'] || ''), today = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd');
+    if (t && t.slice(0, 10) === today) {
+      const hm = t.slice(11, 16), m = s => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5)), late = Math.max(0, m(hm) - m(snap.disc.start || '08:45'));
+      const before = (snap.disc.days || []).filter(d => d.day === today)[0], was = before ? before.late || 0 : 0;
+      snap.disc.minutes = (snap.disc.minutes || 0) - was + late; snap.disc.fine = snap.disc.minutes * (snap.disc.rate || 0);
+      snap.disc.late = (snap.disc.late || 0) - (was ? 1 : 0) + (late ? 1 : 0);
+      snap.disc.today = { first: hm, late: late };
+      snap.disc.days = (snap.disc.days || []).filter(d => d.day !== today).concat([{ day: today, first: hm, late: late, plan: n_(w.total_tasks_by_market), done: n_(w.total_tasks_done_by_market) }]);
+      live.disc = X.at;
+    }
+  } catch (e) { Logger.log('Кабинет, дисциплина: ' + mask_(e.message || e)); }
+  snap.live = live;
+  return snap;
 }
 function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 

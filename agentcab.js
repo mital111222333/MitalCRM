@@ -36,7 +36,8 @@ const AC = {
       kpi: { sold: Math.round(a.sold), plan: Math.round(a.plan || 0), paid: Math.round(a.paid), pool: Math.round(a.pool || 0), debt: Math.round(a.debt), debtors: a.debtors || 0, akb: a.akb, okb: a.okb },
       board, clients,
       disc: disc ? { start: disc.startTxt, rate: disc.rate, today: today ? { first: today.first || '', late: today.first ? DS.lateOf(today.first, disc.start) : 0 } : null, late: r?.late || 0, minutes: r?.lateMin || 0, fine: r?.fine || 0, route: r?.route ?? null, days } : null,
-      stock: wh ? { warehouse: wh, at: whUp, items } : null,
+      // branch: the LINKO warehouse number of this warehouse, so the auto-loader can put fresh stock in (autolinko.gs live_)
+      stock: wh ? { warehouse: wh, at: whUp, branch: Object.keys(CRMLocal.ext().linkoBranch || {}).find(b => CRMLocal.ext().linkoBranch[b] === wh) || null, items } : null,
     };
   },
 
