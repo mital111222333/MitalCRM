@@ -14,12 +14,12 @@ const DS = {
   mins: t => (t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : null),
   noReason: c => !String(c || '').trim() || /^без причины$/i.test(String(c).trim()),
 
-  // today's working day from LINKO → the daily log (called whenever LINKO data is imported)
-  capture() {
+  // today's working day from LINKO → the daily log (called whenever LINKO data is imported); an archived day comes with its rows and date
+  capture(rowsIn, dayIn) {
     try {
-      if (!CRMLocal.engine || typeof LX === 'undefined' || !LX.has()) return;
-      const rows = LX.d('workday'); if (!rows.length) return;
-      const c = DS.cfg(), fallback = LX.st()?.to || UI.localDate(Date.now());
+      if (!CRMLocal.engine || typeof LX === 'undefined' || (!rowsIn && !LX.has())) return false;
+      const rows = rowsIn || LX.d('workday'); if (!rows.length) return false;
+      const c = DS.cfg(), fallback = dayIn || LX.st()?.to || UI.localDate(Date.now());
       let changed = false;
       for (const r of rows) {
         const agent = LX.agentName([r.first_name, r.second_name].filter(Boolean).join(' ')); if (!agent) continue;
@@ -34,7 +34,8 @@ const DS = {
       // keep about two plan periods
       const keep = UI.localDate(Date.now() - 70 * 864e5); for (const k of Object.keys(c.days)) if (k < keep) { delete c.days[k]; changed = true; }
       if (changed) CRMLocal.touch();
-    } catch (e) { console.warn('disc capture', e); }
+      return changed;
+    } catch (e) { console.warn('disc capture', e); return false; }
   },
 
   model() {
@@ -69,6 +70,8 @@ const DS = {
 
 EXT_PAGES.disc = async el => {
   await CRMLocal.ready; await LX.load(); DS.capture();
+  // days the CRM was not opened on: take them from the daily archive of the auto-loader (archive.js), then redraw once
+  if (typeof ARC !== 'undefined' && !ARC._filled) ARC.fillDisc().then(n => { if (n && location.hash === '#/disc') { toast(`Журнал дополнен из архива: ${n} дн.`); EXT_PAGES.disc(el); } }).catch(() => {});
   el.innerHTML = `<div class="page-head"><div><h2>Дисциплина</h2><div class="sub">Начало дня — первый фотоотчёт агента в LINKO (Персонал → Активность). Опоздания со штрафом, маршрут, отказы без причины — сегодня и за период плана</div></div></div><div id="dsBody"></div>`;
   const body = $('#dsBody', el);
   if (!LX.has() || (!LX.d('workper').length && !LX.d('workday').length)) { body.innerHTML = UI.empty('Нет данных о работе агентов', 'Нужны разделы LINKO «работа агентов» из автозагрузки (<a href="#/cloud">Данные → Синхронизация и настройки</a>).'); return; }
@@ -92,7 +95,7 @@ EXT_PAGES.disc = async el => {
     <label class="mut">Штраф за минуту, сум <input id="dsFine" type="number" min="0" step="100" value="${m.rate}" style="width:90px"></label>
     <label class="mut">Норма маршрута, % <input id="dsRoute" type="number" min="10" max="100" step="5" value="${Math.round(m.target * 100)}" style="width:64px"></label>
     <select id="dsAg" aria-label="Агент"><option value="">Все агенты</option>${all.map(r => `<option ${r.agent === DS.agent ? 'selected' : ''}>${esc(r.agent)}</option>`).join('')}</select></div>
-    ${m.days.length < 5 ? `<p class="mut">⚠ Журнал первых визитов ведётся с момента обновления CRM: пока в нём ${m.days.length} ${UI.plural(m.days.length, 'день', 'дня', 'дней')}. Дни, когда CRM ни разу не открывали, в журнал не попадают — откройте её хотя бы раз в рабочий день.</p>` : ''}
+    ${m.days.length < 5 ? `<p class="mut">⚠ Журнал первых визитов ведётся с момента обновления CRM: пока в нём ${m.days.length} ${UI.plural(m.days.length, 'день', 'дня', 'дней')}. Пропущенные дни CRM берёт из ежедневного архива автозагрузки (Данные → Архив данных), если он включён.</p>` : ''}
     <div class="grid">
     ${UI.panel(`Сегодня, ${UI.dateRu(t0)}`, today.length ? LX.table(['Агент', 'Первый отчёт', '#Опоздание, мин', '#Штраф', 'Последний', '#Визитов'], today.map(r => `<tr><td>${LX.ag(r.agent)}</td><td class="${r.late || r.wait ? 'neg' : ''}">${r.first ? esc(r.first) : r.wait ? `<b>нет отчёта</b> <small>· уже ${f(r.wait)} мин</small>` : r.off ? '<span class="mut">нет плана на сегодня</span>' : '<span class="mut">ещё рано</span>'}</td><td class="n ${r.late ? 'neg' : ''}">${r.late ? f(r.late) : r.first ? '✓' : '—'}</td><td class="n ${r.fine ? 'neg' : ''}">${r.fine ? '<b>' + sum(r.fine) + '</b>' : r.wait ? `<small class="mut">≥ ${sum(r.wait * m.rate)}</small>` : '—'}</td><td>${esc(r.last || '—')}</td><td class="n">${r.plan ? `${f(r.done)}/${f(r.plan)}` : f(r.done)}</td></tr>`)) : '<p class="mut">Нет данных за сегодня.</p>', { cls: 'w12', sub: `Первый фотоотчёт до ${esc(m.startTxt)}; каждая минута позже — ${sum(m.rate)}. Пока отчёта нет, штраф растёт и фиксируется по времени отчёта.` })}
     ${UI.panel('Агенты за период', R.length ? LX.table(['Агент', '#Замечаний', '#Опозданий', '#Минут опоздания', '#Штраф за период', '#Средний первый отчёт', '#Дней без визитов', '#Маршрут', '#Отказов', '#Без причины', '#Визитов вне плана'], R.map(r => `<tr><td>${LX.ag(r.agent)}</td><td class="n ${r.marks ? 'neg' : 'pos'}"><b>${r.marks || '✓'}</b></td><td class="n ${r.late ? 'neg' : ''}">${f(r.late)}<small class="mut"> из ${f(r.logged)}</small></td><td class="n">${r.lateMin ? f(r.lateMin) : '—'}</td><td class="n ${r.fine ? 'neg' : ''}">${r.fine ? '<b>' + sum(r.fine) + '</b>' : '—'}</td><td class="n">${DS.t(r.avgFirst)}</td><td class="n ${r.idle ? 'neg' : ''}">${f(r.idle)}</td><td class="n ${r.route !== null && r.route < m.target ? 'neg' : ''}">${pc(r.route)}<small class="mut"> ${f(r.done)}/${f(r.plan)}</small></td><td class="n">${f(r.rej)}</td><td class="n ${r.noWhy && r.noWhy / r.rej > 0.2 ? 'neg' : ''}">${f(r.noWhy)}${r.rej ? `<small class="mut"> (${pc(r.noWhy / r.rej)})</small>` : ''}</td><td class="n">${f(r.outside)}</td></tr>`)) : '<p class="mut">Нет данных.</p>', { cls: 'w12', sub: `Замечание — каждое из: были опоздания; маршрут ниже ${Math.round(m.target * 100)}%; больше 20% отказов без причины; дни с планом визитов, но без единого визита. Маршрут и отказы — из LINKO за весь период, опоздания — из журнала CRM.` })}

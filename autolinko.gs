@@ -1,7 +1,7 @@
 /**
  * MITAL CRM — автозагрузка из LINKO (Google Apps Script, бесплатно).
  * Каждые 5 минут (с 7 до 22) берёт из LINKO баланс клиентов (с начала периода плана по сегодня) и остатки всех складов
- * и кладёт их в ваш приватный репозиторий mitalcrm-data (файл linko-latest.json).
+ * и кладёт их в ваш приватный репозиторий mitalcrm-data (файл linko-latest.json), а копию каждого дня — в папку archive/.
  * Оплаты — тоже каждые 5 минут (файл linko-fast.json; какие разделы быстрые, решает CRM: "every": 5 в linko-jobs.json).
  * Раз в 30 минут — заказы, товары, возвраты, долги по срокам, работу агентов и др. (файл linko-extra.json).
  * CRM на любом устройстве, включая телефон, при открытии сама забирает эти данные.
@@ -69,7 +69,7 @@ function base_() {
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify([snap.error || '', snap.files]), Utilities.Charset.UTF_8));
   const last = Number(P.getProperty('savedAt') || 0);
   if (hash === P.getProperty('hash') && Date.now() - last < 3600 * 1000) { Logger.log('Без изменений — пропускаю'); return; }
-  saveToGithub_('linko-latest.json', JSON.stringify(snap));
+  const txt = JSON.stringify(snap); saveToGithub_('linko-latest.json', txt); try { archive_('latest', txt); } catch (e) { Logger.log('Архив: ' + mask_(e.message || e)); }
   P.setProperties({ hash: hash, savedAt: String(Date.now()) });
   Logger.log(snap.error ? 'Ошибка: ' + snap.error : 'Сохранено файлов: ' + snap.files.length);
 }
@@ -194,7 +194,7 @@ function fast_(all) {
   const body = JSON.stringify({ data: data, from: from });
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
   if (hash === P.getProperty('fastHash') && Date.now() - Number(P.getProperty('fastSavedAt') || 0) < 15 * 60000) return;
-  saveToGithub_('linko-fast.json', JSON.stringify({ at: new Date().toISOString(), from: from, to: to, data: data, errors: errors }));
+  const txt = JSON.stringify({ at: new Date().toISOString(), from: from, to: to, data: data, errors: errors }); saveToGithub_('linko-fast.json', txt); try { archive_('fast', txt); } catch (e) { Logger.log('Архив: ' + mask_(e.message || e)); }
   P.setProperties({ fastHash: hash, fastSavedAt: String(Date.now()) });
   Logger.log('Оплаты сохранены: ' + Object.keys(data).map(k => k + ' ' + data[k].length).join(', '));
 }
@@ -209,7 +209,7 @@ function extra_(all) {
   const body = JSON.stringify({ data: data, errors: errors });
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
   if (hash === P.getProperty('extraHash')) { Logger.log('Доп. данные без изменений'); return; }
-  saveToGithub_('linko-extra.json', JSON.stringify({ at: new Date().toISOString(), from: from, to: to, data: data, errors: errors }));
+  const txt = JSON.stringify({ at: new Date().toISOString(), from: from, to: to, data: data, errors: errors }); saveToGithub_('linko-extra.json', txt); try { archive_('extra', txt); } catch (e) { Logger.log('Архив: ' + mask_(e.message || e)); }
   P.setProperty('extraHash', hash);
   Logger.log('Доп. данные сохранены: ' + Object.keys(data).map(k => k + ' ' + data[k].length).join(', ') + (Object.keys(errors).length ? ' · ошибки: ' + Object.keys(errors).map(k => k + ' (' + String(errors[k]).slice(0, 80) + ')').join(', ') : ''));
 }
@@ -391,6 +391,27 @@ function stop_(data) {
   if (fresh.length) Logger.log('Стоп-отгрузка: сообщений ' + fresh.length);
 }
 
+// ---------- архив: всё, что пришло из LINKO, сохраняется по дням и никогда не удаляется ----------
+// archive/ГГГГ/ММ/ГГГГ-ММ-ДД/<latest|fast|extra>.json.gz — сжатая копия того же, что лежит в linko-*.json.
+// За день файл обновляется не чаще раза в 30 минут (после 21:00 — каждый раз), так что в архиве остаётся состояние на конец дня.
+function archive_(name, text) {
+  const P = PropertiesService.getScriptProperties(), now = new Date();
+  const day = Utilities.formatDate(now, CFG.TZ, 'yyyy-MM-dd'), hour = Number(Utilities.formatDate(now, CFG.TZ, 'H'));
+  let last = {}; try { last = JSON.parse(P.getProperty('arch_' + name) || '{}'); } catch (e) { last = {}; }
+  if (last.day === day && Date.now() - (last.at || 0) < 30 * 60000 && hour < 21) return;
+  const bytes = Utilities.gzip(Utilities.newBlob(text, 'application/json', name + '.json')).getBytes();
+  saveB64ToGithub_('archive/' + day.slice(0, 4) + '/' + day.slice(5, 7) + '/' + day + '/' + name + '.json.gz', Utilities.base64Encode(bytes), 'Архив ' + day + ': ' + name);
+  P.setProperty('arch_' + name, JSON.stringify({ day: day, at: Date.now() }));
+}
+function saveB64ToGithub_(path, b64, message) {
+  const url = 'https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/' + path;
+  const h = { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+  const cur = fetch_(url, { headers: h, muteHttpExceptions: true });
+  const sha = cur.getResponseCode() === 200 ? JSON.parse(cur.getContentText()).sha : undefined;
+  const body = { message: message, content: b64 }; if (sha) body.sha = sha;
+  const r = fetch_(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
+  if (r.getResponseCode() >= 300) throw new Error('GitHub не принял архив: ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
+}
 function notify_(text) {
   if (!CFG.TG_BOT || !CFG.TG_CHAT) return;
   UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: CFG.TG_CHAT, text: text }), muteHttpExceptions: true });
