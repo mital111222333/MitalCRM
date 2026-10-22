@@ -4,6 +4,8 @@
 // and shows only the discrepancies: shortage / surplus in units and in $ (cost from the stock uploads). «Пересчитать» sends chosen
 // items back to the store keeper. Store keepers get their cabinet as agents/tg/<telegram id>.json (role 'store'); stores.json lists
 // them for the auto-loader's reminder after the deadline.
+// Every discrepancy gets a decision when the count is accepted: «fix» (an accounting error, corrected in LINKO), «found» (found / mixed up),
+// «charge» (a shortage charged to the store keeper — CRM counts the amount at unit cost), «recount» (sent back). Stored per count as sub.dec.
 // Stored in the synced state: ext.wcount = { deadline: '10:00', remind: '09:00', stores: { [telegram id]: { name, wh, on, tgAt } }, subs: [ … ] }.
 window.EXT_PAGES = window.EXT_PAGES || {};
 window.INBOX_HANDLERS = window.INBOX_HANDLERS || {};
@@ -14,18 +16,21 @@ const WC = {
   day: iso => UI.localDate(Date.parse(iso)),
   hm: iso => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
   branchOf(wh) { const B = CRMLocal.ext().linkoBranch || {}; return Object.keys(B).find(b => B[b] === wh) || null; },
-  // cost of one unit (from the newest stock upload of the warehouse) to show discrepancies in $
+  DEC: { fix: '✓ Ошибка учёта — исправлю в LINKO', found: '🔎 Найдено / пересорт', charge: '💸 Недостача — удержать с завсклада', recount: '↻ Пересчитать' },
+  // cost of one unit: the newest stock upload of the warehouse (by article), else LINKO «Прибыль по товарам» (cost of sales ÷ units sold, by name)
   costs(wh) {
-    const S = CRMLocal.engine.getState(), u = (S.wh.uploads || []).filter(x => x.warehouse === wh).sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1))[0], m = new Map();
-    for (const r of u?.rows || []) if (r.cost > 0) m.set(String(r.art), r.cost);
-    return m;
+    const S = CRMLocal.engine.getState(), u = (S.wh.uploads || []).filter(x => x.warehouse === wh).sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1))[0], byArt = new Map(), byName = new Map();
+    for (const r of u?.rows || []) if (r.cost > 0) byArt.set(String(r.art), r.cost);
+    try { for (const p of (typeof LX !== 'undefined' ? LX.d('prods') : [])) { const n = LX.n(p.actual_sales_count) || LX.n(p.sales_count), c = LX.n(p.sales_net_cost); if (n > 0 && c > 0) byName.set(LX.norm(p.name), c / n); } } catch { /* no LINKO data */ }
+    return { get: (art, name) => byArt.get(String(art)) || (typeof LX !== 'undefined' ? byName.get(LX.norm(name)) : 0) || 0 };
   },
   view(sub) {
     const cost = WC.costs(sub.warehouse);
-    const rows = sub.items.map(i => ({ ...i, d: i.fact - i.linko, moved: i.fact !== i.linko && i.fact === i.now, cost: cost.get(String(i.art)) || 0 }));
+    const rows = sub.items.map(i => ({ ...i, d: i.fact - i.linko, moved: i.fact !== i.linko && i.fact === i.now, cost: cost.get(i.art, i.name) }));
     const diff = rows.filter(i => i.fact !== i.linko && !i.moved);
     const short = diff.filter(i => i.d < 0), plus = diff.filter(i => i.d > 0);
-    return { rows, diff, moved: rows.filter(i => i.moved), short, plus, shortSum: short.reduce((s, i) => s + -i.d * i.cost, 0), plusSum: plus.reduce((s, i) => s + i.d * i.cost, 0) };
+    const charged = Object.entries(sub.dec || {}).filter(([, d]) => d.k === 'charge').reduce((t, [, d]) => t + (Number(d.sum) || 0), 0);
+    return { rows, diff, moved: rows.filter(i => i.moved), short, plus, shortSum: short.reduce((s, i) => s + -i.d * i.cost, 0), plusSum: plus.reduce((s, i) => s + i.d * i.cost, 0), charged };
   },
 
   // a count from inbox/: a full count is a new record; a recount updates the items of that warehouse's last count of the day
@@ -92,12 +97,17 @@ EXT_PAGES.wcount = async el => {
       <div class="bar"><label class="mut">Сверка <select id="wcSel">${c.subs.slice().reverse().slice(0, 60).map(s => `<option value="${esc(s.id)}" ${s.id === sub.id ? 'selected' : ''}>${UI.dateRu(s.day)} · ${esc(s.warehouse)}${s.partial ? ' (пересчёт)' : ''}</option>`).join('')}</select></label>
         <span class="mut">посчитано позиций: ${f(sub.items.length)} · расхождений: <b>${f(V.diff.length)}</b> · недостача ${$$(V.shortSum)} · излишек ${$$(V.plusSum)}${sub.start_at ? '' : ' · ⚠ начало сверки не зафиксировано — сравнение с остатком на момент отправки'}</span></div>
       ${sub.comment ? `<p>💬 ${esc(sub.comment)}</p>` : ''}${sub.photo ? `<p><a href="#" data-ph="${esc(sub.photo)}">📷 фото со склада</a></p>` : ''}
-      ${V.diff.length ? LX.table(['', 'Товар', '#По LINKO', '#Факт', '#Разница', '#В $'], V.diff.sort((a, b) => a.d * (a.cost || 1) - b.d * (b.cost || 1)).map(i => `<tr><td><input type="checkbox" data-rc="${esc(i.art)}" ${sub.recount?.includes(i.art) ? 'checked' : ''} aria-label="Пересчитать"></td><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td class="n">${f(i.linko)}</td><td class="n"><b>${f(i.fact)}</b></td><td class="n ${i.d < 0 ? 'neg' : 'pos'}"><b>${i.d > 0 ? '+' : ''}${f(i.d)}</b></td><td class="n">${i.cost ? (i.d < 0 ? '−' : '+') + $$(Math.abs(i.d) * i.cost) : '—'}</td></tr>`)) : '<p class="pos"><b>✓ Всё сходится с LINKO</b></p>'}
+      ${V.diff.length ? LX.table(['Товар', '#По LINKO', '#Факт', '#Разница', '#В $', 'Решение'], V.diff.sort((a, b) => a.d * (a.cost || 1) - b.d * (b.cost || 1)).map(i => { const d = (sub.dec || {})[i.art] || {}, auto = i.d < 0 && i.cost ? Math.round(-i.d * i.cost * 100) / 100 : ''; return `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td class="n">${f(i.linko)}</td><td class="n"><b>${f(i.fact)}</b></td><td class="n ${i.d < 0 ? 'neg' : 'pos'}"><b>${i.d > 0 ? '+' : ''}${f(i.d)}</b></td><td class="n">${i.cost ? (i.d < 0 ? '−' : '+') + $$(Math.abs(i.d) * i.cost) : '—'}</td><td><select data-dec="${esc(i.art)}" aria-label="Решение"><option value="">— выберите —</option>${Object.entries(WC.DEC).filter(([k]) => k !== 'charge' || i.d < 0).map(([k, t]) => `<option value="${k}" ${d.k === k || (!d.k && sub.recount?.includes(i.art) && k === 'recount') ? 'selected' : ''}>${t}</option>`).join('')}</select>${i.d < 0 ? `<label class="mut" data-sumw="${esc(i.art)}" style="display:${d.k === 'charge' ? 'flex' : 'none'};gap:6px;align-items:center;margin-top:4px">сумма, $ <input type="number" min="0" step="0.01" data-sum="${esc(i.art)}" value="${d.k === 'charge' ? d.sum : auto}" placeholder="${auto ? '' : 'укажите'}" style="width:90px"></label>` : ''}</td></tr>`; })) : '<p class="pos"><b>✓ Всё сходится с LINKO</b></p>'}
+      ${V.charged ? `<p><b>💸 Удержание с завсклада по этой сверке: ${$$(V.charged)}</b></p>` : ''}
       ${V.moved.length ? `<details><summary class="mut">Сошлось с LINKO после отгрузки во время сверки (${V.moved.length})</summary><ul>${V.moved.map(i => `<li>${esc(i.name)}: на начало ${f(i.linko)}, после отгрузки ${f(i.now)}, факт ${f(i.fact)}</li>`).join('')}</ul></details>` : ''}
-      <div class="bar needs-edit" style="margin-top:10px">${sub.status === 'recount' ? `<span class="mut">↻ Отправлено на пересчёт: ${sub.recount.length} поз.</span>` : ''}<span class="spacer"></span>${V.diff.length ? '<button class="btn gray" id="wcRc">↻ Пересчитать отмеченные</button>' : ''}<button class="btn" id="wcOk"${sub.status === 'ok' ? ' disabled' : ''}>${sub.status === 'ok' ? '✓ Принято' : '✓ Принять сверку'}</button></div>`, { cls: 'w12', sub: 'Отметьте позиции и нажмите «Пересчитать» — завсклад получит только их. «Разница» = факт − LINKO: минус — недостача, плюс — излишек.' }) : UI.empty('Сверок ещё нет', 'Добавьте завскладов ниже и подключите им кабинет склада в Telegram.')}
+      <div class="bar needs-edit" style="margin-top:10px">${sub.status === 'recount' ? `<span class="mut">↻ Отправлено на пересчёт: ${sub.recount.length} поз.</span>` : ''}<span class="spacer"></span><button class="btn" id="wcOk">${sub.status === 'ok' ? '✓ Сохранить решения' : V.diff.length ? '✓ Принять с решениями' : '✓ Принять сверку'}</button></div>`, { cls: 'w12', sub: 'По каждому расхождению выберите решение. «Пересчитать» — позиция уйдёт завскладу на пересчёт; «Удержать» — сумма по себестоимости (можно поправить). «Разница» = факт − LINKO: минус — недостача, плюс — излишек.' }) : UI.empty('Сверок ещё нет', 'Добавьте завскладов ниже и подключите им кабинет склада в Telegram.')}
     <div class="grid">
     ${days.length ? UI.panel('По дням', `<div class="tscroll"><table><thead><tr><th>День</th>${stores.map(([, s]) => `<th class="n">${esc(s.wh)}</th>`).join('')}</tr></thead><tbody>${days.map(d => `<tr><td>${UI.dateRu(d)}</td>${stores.map(([who]) => { const s = c.subs.filter(x => x.who === who && x.day === d && !x.partial).at(-1); if (!s) return '<td class="n neg">нет</td>'; const v = WC.view(s); return `<td class="n ${v.diff.length ? 'neg' : 'pos'}">${v.diff.length ? v.diff.length + ' расх.' : '✓'} <small class="mut">${WC.hm(s.at)}</small></td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`, { cls: 'w7', sub: 'Последние 14 дней: расхождения и время отправки' }) : ''}
     ${often.length ? UI.panel('Расходятся постоянно', LX.table(['Склад', 'Товар', '#Раз за 14 дней', '#Сумма разниц'], often.slice(0, 20).map(e => `<tr><td>${esc(e.wh)}</td><td>${esc(e.name)}</td><td class="n"><b>${e.n}</b></td><td class="n ${e.sum < 0 ? 'neg' : 'pos'}">${e.sum > 0 ? '+' : ''}${f(e.sum)}</td></tr>`)), { cls: 'w5', sub: 'Повторяющаяся недостача одного товара — повод разобраться' }) : ''}
+    ${(() => { const ch = []; for (const x of c.subs) for (const [art, d] of Object.entries(x.dec || {})) if (d.k === 'charge' && Number(d.sum) > 0) ch.push({ m: x.day.slice(0, 7), day: x.day, who: x.name, wh: x.warehouse, name: x.items.find(i => i.art === art)?.name || art, d: (x.items.find(i => i.art === art)?.fact ?? 0) - (x.items.find(i => i.art === art)?.linko ?? 0), sum: Number(d.sum) });
+      if (!ch.length) return ''; const months = [...new Set(ch.map(x => x.m))].sort().reverse().slice(0, 3), people = [...new Set(ch.map(x => x.who + ' · ' + x.wh))];
+      return UI.panel('💸 Удержания с завскладов', `<div class="tscroll"><table><thead><tr><th>Завсклад</th>${months.map(m => `<th class="n">${m.slice(5, 7)}.${m.slice(0, 4)}</th>`).join('')}</tr></thead><tbody>${people.map(p => `<tr><td>${esc(p)}</td>${months.map(m => { const t = ch.filter(x => x.who + ' · ' + x.wh === p && x.m === m).reduce((a, x) => a + x.sum, 0); return `<td class="n">${t ? '<b>' + $$(t) + '</b>' : '—'}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>
+        <details><summary class="mut">Все удержания (${ch.length})</summary>${LX.table(['День', 'Завсклад', 'Товар', '#Недостача', '#Сумма'], ch.slice().reverse().map(x => `<tr><td>${UI.dateRu(x.day)}</td><td>${esc(x.who)}</td><td>${esc(x.name)}</td><td class="n">${f(x.d)}</td><td class="n">${$$(x.sum)}</td></tr>`), { max: '320px' })}</details>`, { cls: 'w12', sub: 'Суммы из решений «Недостача — удержать с завсклада», по месяцам' }); })()}
     ${UI.panel('Завсклады', `<div class="bar"><label class="mut">Сверка до <input id="wcDl" type="time" value="${esc(c.deadline || '10:00')}" style="width:110px"></label><label class="mut">Напомнить в <input id="wcRm" type="time" value="${esc(c.remind || '09:00')}" style="width:110px"></label><span class="mut">— утром бот напомнит каждому завскладу провести сверку (кто уже отправил — не получит); после срока напомнит ещё раз и сообщит вам, кто не прислал. По воскресеньям — нет.</span></div>
       ${stores.length ? LX.table(['Завсклад', 'Склад', 'Telegram', ''], stores.map(([who, s]) => `<tr><td>${esc(s.name)}</td><td>${esc(s.wh)}</td><td>${esc(chats[who]?.name || who)}${s.tgAt ? `<br><small class="mut">кабинет с ${UI.dateRu(s.tgAt.slice(0, 10))}</small>` : ''}</td><td><button class="btn sm" data-tgc="${esc(who)}">📦 ${s.tgAt ? 'Подключить заново' : 'Подключить в Telegram'}</button> <button class="btn gray sm" data-rm="${esc(who)}">Убрать</button></td></tr>`)) : '<p class="mut">Завскладов пока нет.</p>'}
       <div class="form" style="margin-top:10px"><label>Имя<input id="wcN" maxlength="60" placeholder="например: Ахмад"></label><label>Склад<select id="wcW">${whs.map(w => `<option>${esc(w)}</option>`).join('')}</select></label>
@@ -107,11 +117,25 @@ EXT_PAGES.wcount = async el => {
   const re = () => EXT_PAGES.wcount(el), save = async () => { CRMLocal.touch(); try { await WC.publish(); } catch (e) { toast(e.message); } };
   $('#wcPull', el).onclick = async () => { try { const n = await ATK.pull(); toast(n ? `Новое: ${n}` : 'Новых сверок нет'); re(); } catch (e) { toast(e.message); } };
   const s1 = $('#wcSel', el); if (s1) s1.onchange = e => { WC.sel = e.target.value; re(); };
-  const ok = $('#wcOk', el); if (ok) ok.onclick = async () => { sub.status = 'ok'; sub.recount = []; await save(); try { await WC.notify(sub.who, `✓ Сверка ${esc(sub.warehouse)} за ${UI.dateRu(sub.day)} принята`); } catch { /* Telegram not reachable */ } re(); };
-  const rc = $('#wcRc', el); if (rc) rc.onclick = async () => {
-    const arts = [...el.querySelectorAll('[data-rc]:checked')].map(b => b.dataset.rc); if (!arts.length) return toast('Отметьте позиции для пересчёта');
-    sub.status = 'recount'; sub.recount = arts; await save();
-    try { await WC.notify(sub.who, `↻ <b>Пересчитайте ${arts.length} поз.</b> на складе ${esc(sub.warehouse)}:\n${arts.map(a => '• ' + esc(sub.items.find(i => i.art === a)?.name || a)).join('\n')}`); toast('Отправлено на пересчёт'); } catch (e) { toast(e.message); } re();
+  el.querySelectorAll('[data-dec]').forEach(sel => sel.onchange = () => { const w = el.querySelector(`[data-sumw="${CSS.escape(sel.dataset.dec)}"]`); if (w) w.style.display = sel.value === 'charge' ? 'flex' : 'none'; });
+  const ok = $('#wcOk', el); if (ok) ok.onclick = async () => {
+    const dec = {}, missing = [], noSum = [];
+    for (const sel of el.querySelectorAll('[data-dec]')) {
+      const art = sel.dataset.dec; if (!sel.value) { missing.push(art); continue; }
+      const d = { k: sel.value };
+      if (sel.value === 'charge') { const v = Number(el.querySelector(`[data-sum="${CSS.escape(art)}"]`)?.value); if (!(v > 0)) { noSum.push(art); continue; } d.sum = Math.round(v * 100) / 100; }
+      dec[art] = d;
+    }
+    if (missing.length) return toast(`Выберите решение ещё для ${missing.length} поз.`);
+    if (noSum.length) return toast('Укажите сумму удержания');
+    const name = a => sub.items.find(i => i.art === a)?.name || a, rec = Object.keys(dec).filter(a => dec[a].k === 'recount'), charge = Object.keys(dec).filter(a => dec[a].k === 'charge');
+    sub.dec = dec; sub.recount = rec; sub.status = rec.length ? 'recount' : 'ok'; sub.decidedAt = new Date().toISOString(); await save();
+    const total = charge.reduce((t, a) => t + dec[a].sum, 0);
+    try {
+      if (rec.length) await WC.notify(sub.who, `↻ <b>Пересчитайте ${rec.length} поз.</b> на складе ${esc(sub.warehouse)}:\n${rec.map(a => '• ' + esc(name(a))).join('\n')}`);
+      else await WC.notify(sub.who, `✓ Сверка ${esc(sub.warehouse)} за ${UI.dateRu(sub.day)} принята${charge.length ? `\n💸 Удержание за недостачу: <b>$${UI.fmt0(total)}</b>\n${charge.map(a => '• ' + esc(name(a)) + ' — $' + UI.fmt0(dec[a].sum)).join('\n')}` : ''}`);
+    } catch { /* Telegram not reachable */ }
+    toast(rec.length ? `Отправлено на пересчёт: ${rec.length} поз.` : 'Сверка принята' + (total ? ` · удержание $${UI.fmt0(total)}` : '')); re();
   };
   $('#wcRm', el).onchange = async e => { if (!/^d{2}:d{2}$/.test(e.target.value) || e.target.value >= (c.deadline || '10:00')) { e.target.value = c.remind || '09:00'; return toast('Напоминание — раньше срока сверки'); } c.remind = e.target.value; await save(); toast('Напоминание в ' + c.remind); };
   $('#wcDl', el).onchange = async e => { if (!/^\d{2}:\d{2}$/.test(e.target.value)) { e.target.value = c.deadline || '10:00'; return toast('Время ЧЧ:ММ'); } c.deadline = e.target.value; await save(); toast('Срок сверки: ' + c.deadline); };
