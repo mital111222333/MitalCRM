@@ -407,20 +407,35 @@ function countAct_(p, snap) {
   notify_('📦 ' + snap.warehouse + (rec.partial ? ' — пересчёт ' : ' — сверка ') + t + ' (' + snap.name + ')\n' + (diff.length ? 'Расхождений: ' + diff.length + ' из ' + items.length + '\n' + lines.join('\n') + (diff.length > 15 ? '\n…и ещё ' + (diff.length - 15) : '') : '✓ Всё сходится: ' + items.length + ' позиций') + (moved.length ? '\nℹ Сошлось с LINKO после отгрузки во время сверки: ' + moved.map(i => i.name).slice(0, 5).join(', ') + (moved.length > 5 ? ' и ещё ' + (moved.length - 5) : '') : '') + (rec.comment ? '\n💬 ' + rec.comment : ''));
   return { ok: true, diff: diff.length, total: items.length };
 }
-// reminders after the deadline: once a day per store keeper
+// reminders (stores.json from the CRM): in the morning at «remind» (09:00) to every store keeper who has not sent today's count yet,
+// and after the «deadline» (10:00) once more to the late ones + the list to the supervisor. Once a day each; not on Sundays.
 function storesRemind_() {
   const P = PropertiesService.getScriptProperties(), now = new Date(), day = Utilities.formatDate(now, CFG.TZ, 'yyyy-MM-dd'), hm = Utilities.formatDate(now, CFG.TZ, 'HH:mm');
   if (Utilities.formatDate(now, CFG.TZ, 'u') === '7') return; // воскресенье
   if (P.getProperty('cntrem_' + day) === 'all') return;
+  if (hm < '07:00') return;
   const f = ghRaw_('stores.json'); if (f.code !== 200) return;
-  const S = JSON.parse(f.text); if (!S || !S.list || !S.list.length || hm < (S.deadline || '10:00')) return;
-  const late = S.list.filter(s => !P.getProperty('cntdone_' + day + '_' + s.who) && !P.getProperty('cntrem_' + day + '_' + s.who));
-  late.forEach(s => {
-    try { UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: s.who, text: '⏰ Сверка склада ' + s.warehouse + ' должна быть до ' + (S.deadline || '10:00') + '. Откройте «Мой кабинет» и отправьте сверку.' }), muteHttpExceptions: true }); } catch (e) { /* not reachable */ }
-    P.setProperty('cntrem_' + day + '_' + s.who, '1');
-  });
-  if (late.length) notify_('⏰ Нет сверки склада к ' + (S.deadline || '10:00') + ': ' + late.map(s => s.warehouse + ' (' + s.name + ')').join(', '));
-  if (S.list.every(s => P.getProperty('cntdone_' + day + '_' + s.who) || P.getProperty('cntrem_' + day + '_' + s.who))) P.setProperty('cntrem_' + day, 'all');
+  const S = JSON.parse(f.text); if (!S || !S.list || !S.list.length) return;
+  const remind = S.remind || '09:00', deadline = S.deadline || '10:00', done = s => P.getProperty('cntdone_' + day + '_' + s.who);
+  const send = (who, text) => {
+    const body = { chat_id: who, text: text };
+    if (S.app) body.reply_markup = { inline_keyboard: [[{ text: '📦 Открыть кабинет склада', web_app: { url: S.app } }]] };
+    try { UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true }); } catch (e) { /* not reachable */ }
+  };
+  // 1) morning reminder
+  if (hm >= remind && hm < deadline) {
+    S.list.filter(s => !done(s) && !P.getProperty('cntmorn_' + day + '_' + s.who)).forEach(s => {
+      send(s.who, '☀️ Доброе утро, ' + s.name + '! Проведите сверку склада ' + s.warehouse + ' до ' + deadline + ': откройте кабинет склада, нажмите «Начать сверку», пересчитайте товары и отправьте.');
+      P.setProperty('cntmorn_' + day + '_' + s.who, '1');
+    });
+    return;
+  }
+  if (hm < deadline) return;
+  // 2) after the deadline
+  const late = S.list.filter(s => !done(s) && !P.getProperty('cntrem_' + day + '_' + s.who));
+  late.forEach(s => { send(s.who, '⏰ Сверка склада ' + s.warehouse + ' должна была быть до ' + deadline + '. Откройте кабинет склада и отправьте сверку.'); P.setProperty('cntrem_' + day + '_' + s.who, '1'); });
+  if (late.length) notify_('⏰ Нет сверки склада к ' + deadline + ': ' + late.map(s => s.warehouse + ' (' + s.name + ')').join(', '));
+  if (S.list.every(s => done(s) || P.getProperty('cntrem_' + day + '_' + s.who))) P.setProperty('cntrem_' + day, 'all');
 }
 function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 

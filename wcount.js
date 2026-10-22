@@ -4,7 +4,7 @@
 // and shows only the discrepancies: shortage / surplus in units and in $ (cost from the stock uploads). «Пересчитать» sends chosen
 // items back to the store keeper. Store keepers get their cabinet as agents/tg/<telegram id>.json (role 'store'); stores.json lists
 // them for the auto-loader's reminder after the deadline.
-// Stored in the synced state: ext.wcount = { deadline: '10:00', stores: { [telegram id]: { name, wh, on, tgAt } }, subs: [ … ] }.
+// Stored in the synced state: ext.wcount = { deadline: '10:00', remind: '09:00', stores: { [telegram id]: { name, wh, on, tgAt } }, subs: [ … ] }.
 window.EXT_PAGES = window.EXT_PAGES || {};
 window.INBOX_HANDLERS = window.INBOX_HANDLERS || {};
 
@@ -55,7 +55,7 @@ const WC = {
       const file = { v: 1, role: 'store', who, name: s.name, warehouse: s.wh, branch: WC.branchOf(s.wh), deadline: c.deadline || '10:00', boss: AC.boss() || null, bot: bot || null, chat: typeof CHAT !== 'undefined' && CHAT.url ? CHAT.url() : null, at: new Date().toISOString(), recount: recount.map(a => ({ art: a, name: last.items.find(i => i.art === a)?.name || a })), items };
       await AC.gh(cl, 'PUT', 'agents/tg/' + who + '.json', { message: 'CRM: кабинет склада', content: AC.b64(JSON.stringify(file)) });
     }
-    await AC.gh(cl, 'PUT', 'stores.json', { message: 'CRM: склады и срок сверки', content: AC.b64(JSON.stringify({ deadline: c.deadline || '10:00', list: on.map(([who, s]) => ({ who, name: s.name, warehouse: s.wh })) })) });
+    await AC.gh(cl, 'PUT', 'stores.json', { message: 'CRM: склады и срок сверки', content: AC.b64(JSON.stringify({ deadline: c.deadline || '10:00', remind: c.remind || '09:00', app: AC.web() ? AC.miniUrl() : '', list: on.map(([who, s]) => ({ who, name: s.name, warehouse: s.wh })) })) });
     return on.length;
   },
   async connect(who) {
@@ -76,6 +76,8 @@ EXT_PAGES.wcount = async el => {
   let whs = []; try { whs = (await CRMLocal.request('GET', '/api/wh/warehouses')).map(w => w.name); } catch { /* none */ }
   const tg = CRMLocal.ext().tg || {}, chats = { ...(tg.seen || {}) }; for (const v of Object.values(tg.chats || {})) if (v?.id) chats[v.id] = v;
   const stores = Object.entries(c.stores);
+  // once per session: refresh the store keepers' cabinets and stores.json (reminder time, button address) without waiting for a change
+  if (!WC._pub && stores.length) { WC._pub = true; WC.publish().catch(() => { WC._pub = false; }); }
   const todayOf = who => c.subs.filter(s => s.who === who && s.day === t0 && !s.partial).at(-1);
   if (!WC.sel || !c.subs.some(s => s.id === WC.sel)) WC.sel = (c.subs.filter(s => s.day === t0).at(-1) || c.subs.at(-1))?.id || null;
   const sub = c.subs.find(s => s.id === WC.sel), V = sub ? WC.view(sub) : null;
@@ -96,7 +98,7 @@ EXT_PAGES.wcount = async el => {
     <div class="grid">
     ${days.length ? UI.panel('По дням', `<div class="tscroll"><table><thead><tr><th>День</th>${stores.map(([, s]) => `<th class="n">${esc(s.wh)}</th>`).join('')}</tr></thead><tbody>${days.map(d => `<tr><td>${UI.dateRu(d)}</td>${stores.map(([who]) => { const s = c.subs.filter(x => x.who === who && x.day === d && !x.partial).at(-1); if (!s) return '<td class="n neg">нет</td>'; const v = WC.view(s); return `<td class="n ${v.diff.length ? 'neg' : 'pos'}">${v.diff.length ? v.diff.length + ' расх.' : '✓'} <small class="mut">${WC.hm(s.at)}</small></td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`, { cls: 'w7', sub: 'Последние 14 дней: расхождения и время отправки' }) : ''}
     ${often.length ? UI.panel('Расходятся постоянно', LX.table(['Склад', 'Товар', '#Раз за 14 дней', '#Сумма разниц'], often.slice(0, 20).map(e => `<tr><td>${esc(e.wh)}</td><td>${esc(e.name)}</td><td class="n"><b>${e.n}</b></td><td class="n ${e.sum < 0 ? 'neg' : 'pos'}">${e.sum > 0 ? '+' : ''}${f(e.sum)}</td></tr>`)), { cls: 'w5', sub: 'Повторяющаяся недостача одного товара — повод разобраться' }) : ''}
-    ${UI.panel('Завсклады', `<div class="bar"><label class="mut">Сверка до <input id="wcDl" type="time" value="${esc(c.deadline || '10:00')}" style="width:110px"></label><span class="mut">— после этого времени бот напомнит завскладу и сообщит вам, кто не прислал (по воскресеньям — нет)</span></div>
+    ${UI.panel('Завсклады', `<div class="bar"><label class="mut">Сверка до <input id="wcDl" type="time" value="${esc(c.deadline || '10:00')}" style="width:110px"></label><label class="mut">Напомнить в <input id="wcRm" type="time" value="${esc(c.remind || '09:00')}" style="width:110px"></label><span class="mut">— утром бот напомнит каждому завскладу провести сверку (кто уже отправил — не получит); после срока напомнит ещё раз и сообщит вам, кто не прислал. По воскресеньям — нет.</span></div>
       ${stores.length ? LX.table(['Завсклад', 'Склад', 'Telegram', ''], stores.map(([who, s]) => `<tr><td>${esc(s.name)}</td><td>${esc(s.wh)}</td><td>${esc(chats[who]?.name || who)}${s.tgAt ? `<br><small class="mut">кабинет с ${UI.dateRu(s.tgAt.slice(0, 10))}</small>` : ''}</td><td><button class="btn sm" data-tgc="${esc(who)}">📦 ${s.tgAt ? 'Подключить заново' : 'Подключить в Telegram'}</button> <button class="btn gray sm" data-rm="${esc(who)}">Убрать</button></td></tr>`)) : '<p class="mut">Завскладов пока нет.</p>'}
       <div class="form" style="margin-top:10px"><label>Имя<input id="wcN" maxlength="60" placeholder="например: Ахмад"></label><label>Склад<select id="wcW">${whs.map(w => `<option>${esc(w)}</option>`).join('')}</select></label>
       <label>Его Telegram<select id="wcT"><option value="">— выберите —</option>${Object.values(chats).filter(ch => !c.stores[ch.id]).map(ch => `<option value="${esc(ch.id)}">${esc(ch.name)}</option>`).join('')}</select><small class="mut">Нет в списке? Пусть нажмёт «Старт» в боте, затем «Обновить список» в «Telegram агентам».</small></label></div>
@@ -111,6 +113,7 @@ EXT_PAGES.wcount = async el => {
     sub.status = 'recount'; sub.recount = arts; await save();
     try { await WC.notify(sub.who, `↻ <b>Пересчитайте ${arts.length} поз.</b> на складе ${esc(sub.warehouse)}:\n${arts.map(a => '• ' + esc(sub.items.find(i => i.art === a)?.name || a)).join('\n')}`); toast('Отправлено на пересчёт'); } catch (e) { toast(e.message); } re();
   };
+  $('#wcRm', el).onchange = async e => { if (!/^d{2}:d{2}$/.test(e.target.value) || e.target.value >= (c.deadline || '10:00')) { e.target.value = c.remind || '09:00'; return toast('Напоминание — раньше срока сверки'); } c.remind = e.target.value; await save(); toast('Напоминание в ' + c.remind); };
   $('#wcDl', el).onchange = async e => { if (!/^\d{2}:\d{2}$/.test(e.target.value)) { e.target.value = c.deadline || '10:00'; return toast('Время ЧЧ:ММ'); } c.deadline = e.target.value; await save(); toast('Срок сверки: ' + c.deadline); };
   $('#wcAdd', el).onclick = async () => {
     const name = $('#wcN', el).value.trim(), wh = $('#wcW', el).value, who = $('#wcT', el).value;
