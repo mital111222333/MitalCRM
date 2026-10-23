@@ -1,5 +1,5 @@
 // Архив данных (Данные → Архив данных): every day the Google auto-loader keeps a compressed copy of everything it took from LINKO
-// in the private data repository — archive/YYYY/MM/YYYY-MM-DD/{latest,fast,extra}.json.gz (balance and stock files; orders,
+// in the private data repository — archive/YYYY/MM/YYYY-MM-DD/{latest,fast,extra,visits}.json.gz (balance and stock files; orders,
 // payments, debts; agents' working day, refusals, frequency, profit…). Nothing there is ever deleted: it is the base for analysis.
 // This page lists the archive and downloads any day; ARC.fillDisc() fills the discipline log (disc.js) from archived days
 // the CRM was not opened on.
@@ -7,7 +7,7 @@ window.EXT_PAGES = window.EXT_PAGES || {};
 
 const ARC = {
   RE: /^archive\/\d{4}\/\d{2}\/(\d{4}-\d{2}-\d{2})\/([a-z]+)\.json\.gz$/,
-  NAMES: { latest: 'баланс и остатки', fast: 'заказы, оплаты, долги', extra: 'работа агентов, отказы и др.' },
+  NAMES: { latest: 'баланс и остатки', fast: 'заказы, оплаты, долги', extra: 'работа агентов, отказы и др.', visits: 'визиты агентов' },
   cfg() { const c = typeof CLOUD !== 'undefined' && CLOUD.cfg ? CLOUD.cfg() : null; return c && c.token && c.owner && c.repo ? c : null; },
   api(c, path) { return `https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/${path}`; },
   head(c, accept = 'application/vnd.github+json') { return { Authorization: 'Bearer ' + c.token, Accept: accept, 'X-GitHub-Api-Version': '2022-11-28' }; },

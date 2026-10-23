@@ -3,7 +3,8 @@
  * Каждые 5 минут (с 7 до 22) берёт из LINKO баланс клиентов (с начала периода плана по сегодня) и остатки всех складов
  * и кладёт их в ваш приватный репозиторий mitalcrm-data (файл linko-latest.json), а копию каждого дня — в папку archive/.
  * Оплаты — тоже каждые 5 минут (файл linko-fast.json; какие разделы быстрые, решает CRM: "every": 5 в linko-jobs.json).
- * Раз в 30 минут — заказы, товары, возвраты, долги по срокам, работу агентов и др. (файл linko-extra.json).
+ * Раз в 30 минут — заказы, товары, возвраты, долги по срокам, работу агентов и др. (файл linko-extra.json)
+ * и визиты агентов к клиентам — кто, к кому, во сколько вошёл и вышел, что сделал (файл linko-visits.json).
  * CRM на любом устройстве, включая телефон, при открытии сама забирает эти данные.
  * Кнопка «🔄 Обновить» в CRM: если скрипт опубликован как веб-приложение (см. doGet ниже), он по нажатию сразу
  * берёт ВСЁ из LINKO — баланс, остатки, заказы, оплаты, долги — одновременно (параллельно) и отдаёт прямо в CRM.
@@ -51,6 +52,7 @@ function run0_() {
   if (jobs) try { fast_(jobs); } catch (e) { Logger.log('Оплаты: ' + mask_(e.message || e)); }
   try { storesRemind_(); } catch (e) { Logger.log('Сверка, напоминание: ' + mask_(e.message || e)); }
   if (jobs) try { extra_(jobs); } catch (e) { Logger.log('Доп. данные: ' + mask_(e.message || e)); }
+  try { visits_(); } catch (e) { Logger.log('Визиты: ' + mask_(e.message || e)); }
 }
 
 function base_() {
@@ -591,14 +593,15 @@ function stop_(data) {
 // ---------- архив: всё, что пришло из LINKO, сохраняется по дням и никогда не удаляется ----------
 // archive/ГГГГ/ММ/ГГГГ-ММ-ДД/<latest|fast|extra>.json.gz — сжатая копия того же, что лежит в linko-*.json.
 // За день файл обновляется не чаще раза в 30 минут (после 21:00 — каждый раз), так что в архиве остаётся состояние на конец дня.
-function archive_(name, text) {
+// dayIn: a past day (yesterday's visits) — saved at once, without touching today's 30-minute limit
+function archive_(name, text, dayIn) {
   const P = PropertiesService.getScriptProperties(), now = new Date();
-  const day = Utilities.formatDate(now, CFG.TZ, 'yyyy-MM-dd'), hour = Number(Utilities.formatDate(now, CFG.TZ, 'H'));
+  const today = Utilities.formatDate(now, CFG.TZ, 'yyyy-MM-dd'), day = dayIn || today, hour = Number(Utilities.formatDate(now, CFG.TZ, 'H'));
   let last = {}; try { last = JSON.parse(P.getProperty('arch_' + name) || '{}'); } catch (e) { last = {}; }
-  if (last.day === day && Date.now() - (last.at || 0) < 30 * 60000 && hour < 21) return;
+  if (day === today && last.day === day && Date.now() - (last.at || 0) < 30 * 60000 && hour < 21) return;
   const bytes = Utilities.gzip(Utilities.newBlob(text, 'application/json', name + '.json')).getBytes();
   saveB64ToGithub_('archive/' + day.slice(0, 4) + '/' + day.slice(5, 7) + '/' + day + '/' + name + '.json.gz', Utilities.base64Encode(bytes), 'Архив ' + day + ': ' + name);
-  P.setProperty('arch_' + name, JSON.stringify({ day: day, at: Date.now() }));
+  if (day === today) P.setProperty('arch_' + name, JSON.stringify({ day: day, at: Date.now() }));
 }
 function saveB64ToGithub_(path, b64, message) {
   const url = 'https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/' + path;
@@ -608,6 +611,66 @@ function saveB64ToGithub_(path, b64, message) {
   const body = { message: message, content: b64 }; if (sha) body.sha = sha;
   const r = fetch_(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
   if (r.getResponseCode() >= 300) throw new Error('GitHub не принял архив: ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
+}
+// ---------- визиты агентов (LINKO «Клиенты → Маршруты»): план дня, кто к кому во сколько вошёл и вышел, что сделал ----------
+// Раз в 30 минут: сводка по всем агентам за сегодня (market/agent_plans/), по каждому агенту — его визиты за день
+// (market/agent_plans/<id>/) и подробности плана (market/detail_plan/). Ответы LINKO сохраняются целиком, без отбора полей,
+// в linko-visits.json и в архив (archive/…/visits.json.gz). В первый запуск дня ещё раз забирается вчерашний день целиком.
+function visits_() {
+  const P = PropertiesService.getScriptProperties(), now = new Date(), day = Utilities.formatDate(now, CFG.TZ, 'yyyy-MM-dd');
+  if (Date.now() - Number(P.getProperty('visitsAt') || 0) < CFG.EXTRA_MIN * 60000) return;
+  P.setProperty('visitsAt', String(Date.now()));
+  if (P.getProperty('visitsDay') !== day) {
+    const y = Utilities.formatDate(new Date(now.getTime() - 86400000), CFG.TZ, 'yyyy-MM-dd');
+    try { const v = visitsDay_(y); if (v.n) archive_('visits', JSON.stringify(v.snap), y); } catch (e) { Logger.log('Визиты за вчера: ' + mask_(e.message || e)); }
+    P.setProperty('visitsDay', day);
+  }
+  const v = visitsDay_(day);
+  if (!v.n && Object.keys(v.snap.errors).length) { P.deleteProperty('visitsAt'); Logger.log('Визиты: LINKO не ответил — ' + JSON.stringify(v.snap.errors).slice(0, 300)); return; }
+  const txt = JSON.stringify(v.snap);
+  saveToGithub_('linko-visits.json', txt); try { archive_('visits', txt); } catch (e) { Logger.log('Архив: ' + mask_(e.message || e)); }
+  Logger.log('Визиты сохранены: агентов ' + v.n + (Object.keys(v.snap.errors).length ? ' · ошибки: ' + Object.keys(v.snap.errors).join(', ') : ''));
+}
+function visitsDay_(day) {
+  const errors = {}, ask = u => ({ url: CFG.LINKO_API + u, headers: auth_(), muteHttpExceptions: true });
+  const read = (r, k) => {
+    if (r instanceof Error) { errors[k] = mask_(r.message); return null; }
+    const code = r.getResponseCode(); if (code !== 200) { errors[k] = 'LINKO ответил ' + code; return null; }
+    try { return visitsTrim_(JSON.parse(r.getContentText())); } catch (e) { errors[k] = 'не JSON'; return null; }
+  };
+  const res = fetchAll_([ask('market/agent_plans/?date=' + day), ask('staff/working_day/?begin_date=' + day + '&end_date=' + day + '&page=1&page_size=200')]);
+  const summary = read(res[0], 'summary'), wd = read(res[1], 'workday');
+  // agents: the leaves of the summary tree (branch → supervisor → agent) and the people of the working day
+  const ids = {};
+  const walk = (x, depth) => {
+    if (Array.isArray(x)) { x.forEach(y => walk(y, depth)); return; }
+    if (!x || typeof x !== 'object' || depth > 6) return;
+    const kids = x.child_data || x.childData;
+    if (Array.isArray(kids) && kids.length) { walk(kids, depth + 1); return; }
+    if (x.results) { walk(x.results, depth + 1); return; }
+    if (Number(x.id) > 0) ids[x.id] = ids[x.id] || String(x.user || x.name || [x.first_name, x.second_name].filter(String).join(' ') || x.id);
+  };
+  walk(summary, 0);
+  ((wd && (wd.results || wd)) || []).forEach(w => { const id = w && (w.id || (w.user && w.user.id)); if (Number(id) > 0 && !ids[id]) ids[id] = [w.first_name, w.second_name].filter(String).join(' ') || String(id); });
+  const list = Object.keys(ids).slice(0, 60), agents = {};
+  for (let i = 0; i < list.length; i += 10) {
+    const part = list.slice(i, i + 10), reqs = [];
+    part.forEach(id => { reqs.push(ask('market/agent_plans/' + id + '/?date=' + day + '&with_image=true')); reqs.push(ask('market/detail_plan/?user=' + id + '&date=' + day)); });
+    const out = fetchAll_(reqs);
+    part.forEach((id, j) => {
+      const plan = read(out[2 * j], 'plan_' + id), stats = read(out[2 * j + 1], 'stats_' + id);
+      if (plan == null && stats == null) { delete errors['plan_' + id]; delete errors['stats_' + id]; return; } // not an agent with a route
+      agents[id] = { name: ids[id], plan: plan, stats: stats };
+    });
+  }
+  return { n: Object.keys(agents).length, snap: { at: new Date().toISOString(), day: day, summary: summary, agents: agents, errors: errors } };
+}
+// LINKO answers are kept whole; only huge strings (embedded pictures) are cut, so the file stays small
+function visitsTrim_(x) {
+  if (typeof x === 'string') return x.length > 600 ? x.slice(0, 600) + '…' : x;
+  if (Array.isArray(x)) return x.map(visitsTrim_);
+  if (x && typeof x === 'object') { const o = {}; Object.keys(x).forEach(k => { o[k] = visitsTrim_(x[k]); }); return o; }
+  return x;
 }
 function notify_(text) {
   if (!CFG.TG_BOT || !CFG.TG_CHAT) return;
