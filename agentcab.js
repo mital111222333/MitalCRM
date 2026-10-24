@@ -36,7 +36,9 @@ const AC = {
     const clients = d.clients.filter(c => c.agent === agent).map(c => ({ name: c.name, debt: Math.round(c.debt || 0), sold: Math.round(c.sold || 0), paid: Math.round(c.paid || 0), plan: Math.round(c.plan || 0), pool: Math.round(c.pool || 0), lastPay: c.lastPay || null, lastBuy: c.lastBuy || null, buyDays: c.buyDays ?? null, phone: c.phone || '', landmark: c.landmark || '', promise: promBy.get(c.name) ? { date: promBy.get(c.name).date, sum: promBy.get(c.name).sum } : null }))
       .sort((x, y) => y.debt - x.debt || x.name.localeCompare(y.name));
     const r = disc?.rows.find(x => x.agent === agent), t0 = UI.localDate(Date.now()), today = disc ? DS.cfg().days[t0]?.[agent] || null : null;
-    const days = disc ? disc.days.map(dd => ({ day: dd, ...(DS.cfg().days[dd]?.[agent] || {}) })).filter(x => x.first || x.plan).map(x => ({ day: x.day, first: x.first || '', late: x.first ? DS.lateOf(x.first, disc.start) : 0, plan: x.plan || 0, done: x.done || 0 })) : [];
+    const days = disc ? disc.days.map(dd => ({ day: dd, ...(DS.cfg().days[dd]?.[agent] || {}), st: DS.status(dd, agent) })).filter(x => x.first || x.plan || DS.away(x.st)).map(x => ({ day: x.day, first: x.first || '', late: x.first ? DS.lateFor(x.day, agent, x.first, disc.start) : 0, plan: x.plan || 0, done: x.done || 0, st: x.st ? DS.ST[x.st].t : '' })) : [];
+    // statuses of today and the days ahead + the permanent free schedule: the auto-loader (autolinko.gs) does not fine such a day
+    const marks = disc ? Object.fromEntries(Object.keys(DS.cfg().abs).filter(dd => dd >= t0 && DS.cfg().abs[dd][agent]).map(dd => [dd, DS.cfg().abs[dd][agent]])) : {}, tSt = disc ? DS.status(t0, agent) : '';
     const wh = AC.cfg().agents[agent]?.wh || '';
     const items = wh && stock ? stock.items.filter(i => i.cells[wh]).map(i => ({ name: i.name, art: i.art, brand: i.brand || '', available: i.cells[wh].available, total: i.cells[wh].total })).sort((x, y) => (x.brand || '').localeCompare(y.brand || '') || x.name.localeCompare(y.name)) : [];
     const whUp = wh && stock ? stock.warehouses.find(w => w.name === wh)?.upload?.taken_at || null : null;
@@ -46,7 +48,7 @@ const AC = {
       v: 1, agent, boss: AC.boss() || null, bot: (CRMLocal.ext().tg?.token ? await AC.bot() : '') || null, at: new Date().toISOString(), data_at: d.upload.taken_at, period: { from: d.upload.period_from, to: d.forecast?.period_end || d.upload.period_to, days_left: d.forecast?.days_left ?? null },
       kpi: { sold: Math.round(a.sold), plan: Math.round(a.plan || 0), paid: Math.round(a.paid), pool: Math.round(a.pool || 0), debt: Math.round(a.debt), debtors: a.debtors || 0, akb: a.akb, okb: a.okb },
       board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [],
-      disc: disc ? { start: disc.startTxt, rate: disc.rate, today: today ? { first: today.first || '', late: today.first ? DS.lateOf(today.first, disc.start) : 0 } : null, late: r?.late || 0, minutes: r?.lateMin || 0, fine: r?.fine || 0, route: r?.route ?? null, days } : null,
+      disc: disc ? { start: disc.startTxt, rate: disc.rate, today: today || tSt ? { first: today?.first || '', late: today?.first ? DS.lateFor(t0, agent, today.first, disc.start) : 0, st: tSt ? DS.ST[tSt].t : '' } : null, marks, free: !!DS.cfg().free[agent], absent: r?.absent || 0, late: r?.late || 0, minutes: r?.lateMin || 0, fine: r?.fine || 0, route: r?.route ?? null, days } : null,
       // branch: the LINKO warehouse number of this warehouse, so the auto-loader can put fresh stock in (autolinko.gs live_)
       stock: wh ? { warehouse: wh, at: whUp, branch: Object.keys(CRMLocal.ext().linkoBranch || {}).find(b => CRMLocal.ext().linkoBranch[b] === wh) || null, items } : null,
     };

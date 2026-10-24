@@ -293,12 +293,15 @@ function live_(snap) {
     const me = words(snap.agent), w = X && X.data && (X.data.workday || []).filter(r => words([r.first_name, r.second_name].join(' ')) === me)[0];
     const t = w && String(w['first_done_task_time.date'] || ''), today = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd');
     if (t && t.slice(0, 10) === today) {
-      const hm = t.slice(11, 16), m = s => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5)), late = Math.max(0, m(hm) - m(snap.disc.start || '08:45'));
+      // a status of the day set by the manager (больничный, отпросился, свободный график…) — no fine
+      const st = (snap.disc.marks || {})[today] || (snap.disc.free ? 'free' : '');
+      const hm = t.slice(11, 16), m = s => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5)), late = st ? 0 : Math.max(0, m(hm) - m(snap.disc.start || '08:45'));
       const before = (snap.disc.days || []).filter(d => d.day === today)[0], was = before ? before.late || 0 : 0;
       snap.disc.minutes = (snap.disc.minutes || 0) - was + late; snap.disc.fine = snap.disc.minutes * (snap.disc.rate || 0);
       snap.disc.late = (snap.disc.late || 0) - (was ? 1 : 0) + (late ? 1 : 0);
-      snap.disc.today = { first: hm, late: late };
-      snap.disc.days = (snap.disc.days || []).filter(d => d.day !== today).concat([{ day: today, first: hm, late: late, plan: n_(w.total_tasks_by_market), done: n_(w.total_tasks_done_by_market) }]);
+      const stTxt = (snap.disc.today && snap.disc.today.st) || (before && before.st) || '';
+      snap.disc.today = { first: hm, late: late, st: stTxt };
+      snap.disc.days = (snap.disc.days || []).filter(d => d.day !== today).concat([{ day: today, first: hm, late: late, plan: n_(w.total_tasks_by_market), done: n_(w.total_tasks_done_by_market), st: stTxt }]);
       live.disc = X.at;
     }
   } catch (e) { Logger.log('Кабинет, дисциплина: ' + mask_(e.message || e)); }
