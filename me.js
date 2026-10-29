@@ -103,9 +103,18 @@
     let st = CNT.get(); if (st && (st.day !== t0 || !!st.partial !== !!rec)) { st = null; CNT.set(null); }
     $('#meName').textContent = 'Склад ' + S.warehouse;
     $('#meSub').textContent = `${S.name} · сверка до ${S.deadline || '10:00'}${S.today ? ` · сегодня отправлено в ${hm(S.today.at)}` : ''}`;
+    // the result of the day (from the auto-loader): ok / closed with a discrepancy — nothing more to send today
+    const R = S.round && S.round.status !== 'recount' ? S.round : null;
+    if (!st && R) {
+      body.innerHTML = R.status === 'ok'
+        ? panel('Сверка склада', `<p class="pos" style="font-size:18px"><b>✅ Сверка прошла успешно — склад в порядке</b></p><p class="mut">Отправлено в ${hm(R.at)}${R.round === 2 ? ' (после пересчёта)' : ''}. Спасибо!</p>`)
+        : panel('Сверка склада закрыта', `<p class="neg"><b>⚠️ Пересчёт не сошёлся по ${R.items.length} поз.</b></p><ul>${R.items.map(r => `<li>${esc(r.name)}</li>`).join('')}</ul><p class="mut">Расхождение зафиксировано, руководитель получил отчёт. Сегодня сверка больше не отправляется.</p>`);
+      if (chatBtn()) body.insertAdjacentHTML('beforeend', `<div class="bar">${chatBtn()}</div>`);
+      return;
+    }
     if (!st) {
-      body.innerHTML = panel(rec ? '↻ Пересчёт по просьбе руководителя' : 'Сверка склада', `
-        ${rec ? `<p>Пересчитайте ${rec.length} поз.:</p><ul>${rec.map(r => `<li>${esc(r.name)}</li>`).join('')}</ul>` : S.today ? `<p class="pos"><b>✓ Сегодняшняя сверка отправлена в ${hm(S.today.at)}</b></p><p class="mut">Если нужно — можно пересчитать и отправить заново.</p>` : `<p>Пересчитайте все товары склада (${list.length} поз.) и отправьте до <b>${esc(S.deadline || '10:00')}</b>. Считайте то, что физически лежит на складе, включая отложенное под заказы.</p>`}
+      body.innerHTML = panel(rec ? '↻ Есть расхождение — пересчитайте' : 'Сверка склада', `
+        ${rec ? `<p>По этим товарам цифры не сошлись. Пересчитайте их внимательно ещё раз (${rec.length} поз.) — <b>это последняя попытка</b>:</p><ul>${rec.map(r => `<li>${esc(r.name)}</li>`).join('')}</ul>` : S.today ? `<p class="pos"><b>✓ Сегодняшняя сверка отправлена в ${hm(S.today.at)}</b></p><p class="mut">Если нужно — можно пересчитать и отправить заново.</p>` : `<p>Пересчитайте все товары склада (${list.length} поз.) и отправьте до <b>${esc(S.deadline || '10:00')}</b>. Считайте то, что физически лежит на складе, включая отложенное под заказы.</p>`}
         <p class="mut">Нажмите «Начать», когда готовы считать — с этой минуты CRM сравнит с остатком LINKO.</p>
         <div class="bar"><button class="btn" id="scStart" style="padding:12px 20px;font-size:16px">▶ ${rec ? 'Начать пересчёт' : S.today ? 'Начать сверку заново' : 'Начать сверку'}</button></div><small id="scE" class="neg" role="alert"></small>`) + (chatBtn() ? `<div class="bar">${chatBtn()}</div>` : '');
       $('#scStart').onclick = async e => { e.target.disabled = true; try { const j = await storePost({ act: 'count_start' }); CNT.set({ day: t0, start: j.at, partial: !!rec, counts: {} }); drawStore(body); } catch (err) { e.target.disabled = false; $('#scE').textContent = err.message; } };
@@ -130,9 +139,13 @@
       try {
         const file = $('#scP').files[0], photo = file ? await shrink(file) : '';
         const counts = {}; for (const i of list) counts[i.art] = st.counts[i.art];
-        await storePost({ act: 'count', counts, partial: !!rec, comment: $('#scC').value.trim(), photo });
-        CNT.set(null); q = ''; msg('Сверка отправлена руководителю ✓'); try { TGA?.HapticFeedback?.notificationOccurred('success'); } catch { /* not in Telegram */ }
-        S.today = { at: new Date().toISOString() }; if (rec) S.recount = []; drawStore(body); load();
+        const j = await storePost({ act: 'count', counts, partial: !!rec, comment: $('#scC').value.trim(), photo });
+        CNT.set(null); q = '';
+        const at = new Date().toISOString(), items = j.items || [];
+        S.today = { at }; S.round = j.result ? { status: j.result, round: j.round, at, items } : null; S.recount = j.result === 'recount' ? items : [];
+        msg(j.result === 'ok' ? '✅ Сверка прошла успешно — склад в порядке' : j.result === 'recount' ? `↻ Есть расхождение: пересчитайте ${items.length} поз.` : j.result === 'final' ? '⚠️ Пересчёт не сошёлся — расхождение зафиксировано' : 'Сверка отправлена руководителю ✓', j.result === 'final');
+        try { TGA?.HapticFeedback?.notificationOccurred(j.result === 'ok' ? 'success' : 'warning'); } catch { /* not in Telegram */ }
+        drawStore(body); load();
       } catch (err) { e.target.disabled = false; e.target.textContent = 'Отправить сверку'; $('#scE').textContent = err.message || 'Нет связи — попробуйте ещё раз, цифры сохранены'; }
     };
   }
