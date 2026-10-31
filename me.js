@@ -90,62 +90,152 @@
 
   // ---------- store keeper's cabinet (role 'store'): the daily blind stock count ----------
   // The list has product names only. «Начать сверку» asks the auto-loader to keep LINKO «Всего» of this minute; the counts are kept on
-  // the phone while counting (the app may close), «Отправить» sends them. A recount asked by the supervisor shows only those items.
+  // the phone while counting (the app may close), «Отправить» sends them. A recount shows only the items that did not match.
+  // In a short count (setting in CRM) the auto-loader gives today's list: goods that moved since the last count + a few random ones.
+  // Counting: boxes × pieces in a box + loose pieces (the app multiplies); «0» per row when the item is not there — no «0 everywhere».
+  // Before sending, numbers far from the store keeper's OWN last count are asked once more (typos like 400 instead of 40).
   const CNT = { get: () => store.get('mital_cnt'), set: v => store.set('mital_cnt', v) };
   async function storePost(body) {
     const r = await fetch(link.u, { method: 'POST', body: JSON.stringify({ ...(link.tg ? { tg: link.tg } : { k: link.k }), ...body }) });
     const j = await r.json(); if (j.error) throw new Error(j.error); return j;
   }
+  // pieces in one box, from the product name (MITAL prices: 4–5 L — 4 pcs, but Mitanol 4 L — 5 pcs; 1–1.5 L — 12; 20 / 208 L — by
+  // the piece; ECO FILTER by code). The supervisor can override in CRM (S.packs: article or a part of the name → pieces).
+  // The same rule is in wcount.js (WC.pack) — change both together.
+  const FILTER_PACK = { 'OF-00202': 60, 'OF-00201': 60, 'OF-00205': 60, 'OF-00208': 50, 'OF-00301': 18, 'OF-00211': 40, 'OF-00221': 40, 'AF-00511': 60, 'AF-00512': 40 };
+  function packOf(i) {
+    const o = S.packs || {}, n = String(i.name || '').toUpperCase(), b = String(i.brand || '').toUpperCase();
+    if (o[i.art] > 0) return o[i.art];
+    for (const k in o) if (k.length >= 3 && o[k] > 0 && n.includes(k.toUpperCase())) return o[k];
+    for (const k in FILTER_PACK) if (n.includes(k)) return FILTER_PACK[k];
+    const m = n.match(/(\d+(?:[.,]\d+)?)\s*(?:LTR|LT|ЛИТРА|ЛИТР|Л|L)(?![A-ZА-ЯЁ])/), L = m ? Number(m[1].replace(',', '.')) : 0;
+    if (!L || L >= 20) return 1;
+    if (L <= 1.5) return 12;
+    if (L === 4 && /MITANOL|МИТАНОЛ/.test(n + ' ' + b)) return 5;
+    if (L === 4 || L === 5) return 4;
+    return 1;
+  }
+  // far from his own last count: ×4 or more either way and at least 10 pieces apart
+  const odd = (art, v) => { const p = (S.last || {})[art]; return p !== undefined && v !== undefined && Math.abs(v - p) >= 10 && (v >= p * 4 || v * 4 <= p) ? p : null; };
+  const shelfOrder = () => (S.order && S.order.length ? S.order : store.get('mital_cnt_order') || []);
+  const DOW = ['', 'понедельник', 'вторник', 'среду', 'четверг', 'пятницу', 'субботу', 'воскресенье'];
+  let ordering = null; // the shelf-order mode: { seq: [articles in the tapped order] }
+  if (!document.getElementById('scCss')) document.head.insertAdjacentHTML('beforeend', `<style id="scCss">
+    .sc-row{padding:10px 0;border-bottom:1px solid var(--line,#dde3e8)}.sc-row.sc-miss{border-left:4px solid #d9534f;padding-left:8px;background:rgba(217,83,79,.06)}
+    .sc-in{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}.sc-in input{width:68px;font-size:18px;text-align:right;padding:8px}
+    .sc-sum{min-width:56px;font-size:18px}.sc-w{display:block;color:#b8860b;margin-top:4px}.sc-pk{color:var(--accent,#1a73e8)}
+    .sc-ord{display:flex;align-items:center;gap:10px;padding:12px 6px;border-bottom:1px solid var(--line,#dde3e8);cursor:pointer;user-select:none}
+    .sc-ord b{min-width:30px;height:30px;border-radius:15px;display:inline-flex;align-items:center;justify-content:center;background:var(--line,#dde3e8)}.sc-ord.on b{background:var(--accent,#1a73e8);color:#fff}</style>`);
+
+  function drawOrder(body) {
+    const all = S.items || [], seq = ordering.seq, idx = a => seq.indexOf(a);
+    const rows = all.slice().sort((x, y) => { const a = idx(x.art), b = idx(y.art); return (a < 0) - (b < 0) || (a - b) || 0; });
+    body.innerHTML = panel('⇅ Порядок как на полках', `<p>Пройдите по складу и нажимайте товары <b>в том порядке, как они стоят</b> — по стеллажам, сверху вниз. Номер появится слева. Нажали не тот — нажмите ещё раз, номер снимется.</p>
+      <p class="mut">Отмечено ${seq.length} из ${all.length}. Неотмеченные будут в конце списка.</p>
+      ${rows.map(i => `<div class="sc-ord ${idx(i.art) >= 0 ? 'on' : ''}" data-o="${esc(i.art)}"><b>${idx(i.art) >= 0 ? idx(i.art) + 1 : ''}</b><span style="flex:1">${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></span></div>`).join('')}
+      <div class="bar" style="position:sticky;bottom:0;background:var(--bg,#eef2f5);padding:10px 0"><button class="btn gray" id="soX">Отмена</button><button class="btn gray" id="soR">Сбросить</button><span class="spacer"></span><button class="btn" id="soS">✓ Сохранить порядок</button></div><small id="soE" class="neg" role="alert"></small>`);
+    body.querySelectorAll('[data-o]').forEach(el => el.onclick = () => { const a = el.dataset.o, k = seq.indexOf(a); if (k >= 0) seq.splice(k, 1); else seq.push(a); const y = window.scrollY; drawOrder(body); window.scrollTo(0, y); });
+    $('#soX').onclick = () => { ordering = null; drawStore(body); };
+    $('#soR').onclick = () => { if (!seq.length || confirm('Сбросить порядок?')) { ordering.seq = []; drawOrder(body); } };
+    $('#soS').onclick = async e => {
+      e.target.disabled = true; store.set('mital_cnt_order', seq.slice()); S.order = seq.slice();
+      try { await storePost({ act: 'order', order: seq }); } catch (err) { $('#soE').textContent = 'Сохранено на этом телефоне; на сервер не ушло: ' + err.message; }
+      ordering = null; msg('✓ Порядок сохранён — теперь список идёт как на полках'); drawStore(body); window.scrollTo(0, 0);
+    };
+  }
+
   function drawStore(body) {
     const nav = document.querySelector('nav.tabs'); if (nav) nav.hidden = true;
+    if (ordering) return drawOrder(body);
     const t0 = new Date().toLocaleDateString('sv-SE'), hm = iso => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    const rec = S.recount && S.recount.length ? S.recount : null, list = rec ? rec.map(r => ({ ...((S.items || []).find(i => i.art === r.art) || {}), ...r, brand: '' })) : (S.items || []);
+    const rec = S.recount && S.recount.length ? S.recount : null;
     let st = CNT.get(); if (st && (st.day !== t0 || !!st.partial !== !!rec)) { st = null; CNT.set(null); }
+    const plan = !rec && S.plan && S.plan.short ? S.plan : null;
+    const want = rec ? null : st ? st.list : plan ? plan.list : null; // today's short list (null — everything)
+    const byArt = new Map((S.items || []).map(i => [i.art, i]));
+    let list = rec ? rec.map(r => ({ ...(byArt.get(r.art) || {}), ...r, brand: '' })) : want ? want.map(a => byArt.get(a) || { art: a, name: a, brand: '' }) : (S.items || []);
+    const ord = shelfOrder(), oi = new Map(ord.map((a, k) => [a, k]));
+    if (ord.length) list = list.slice().sort((x, y) => (oi.has(x.art) ? oi.get(x.art) : 1e6) - (oi.has(y.art) ? oi.get(y.art) : 1e6));
     $('#meName').textContent = 'Склад ' + S.warehouse;
     $('#meSub').textContent = `${S.name} · сверка до ${S.deadline || '10:00'}${S.today ? ` · сегодня отправлено в ${hm(S.today.at)}` : ''}`;
+    const ordBtn = `<button class="btn gray" id="scOrd">⇅ ${ord.length ? 'Изменить порядок полок' : 'Расставить как на полках'}</button>`;
     // the result of the day (from the auto-loader): ok / closed with a discrepancy — nothing more to send today
     const R = S.round && S.round.status !== 'recount' ? S.round : null;
     if (!st && R) {
       body.innerHTML = R.status === 'ok'
         ? panel('Сверка склада', `<p class="pos" style="font-size:18px"><b>✅ Сверка прошла успешно — склад в порядке</b></p><p class="mut">Отправлено в ${hm(R.at)}${R.round === 2 ? ' (после пересчёта)' : ''}. Спасибо!</p>`)
         : panel('Сверка склада закрыта', `<p class="neg"><b>⚠️ Пересчёт не сошёлся по ${R.items.length} поз.</b></p><ul>${R.items.map(r => `<li>${esc(r.name)}</li>`).join('')}</ul><p class="mut">Расхождение зафиксировано, руководитель получил отчёт. Сегодня сверка больше не отправляется.</p>`);
-      if (chatBtn()) body.insertAdjacentHTML('beforeend', `<div class="bar">${chatBtn()}</div>`);
+      body.insertAdjacentHTML('beforeend', `<div class="bar">${ordBtn}${chatBtn()}</div>`);
+      $('#scOrd').onclick = () => { ordering = { seq: shelfOrder().slice() }; drawStore(body); window.scrollTo(0, 0); };
       return;
     }
     if (!st) {
-      body.innerHTML = panel(rec ? '↻ Есть расхождение — пересчитайте' : 'Сверка склада', `
-        ${rec ? `<p>По этим товарам цифры не сошлись. Пересчитайте их внимательно ещё раз (${rec.length} поз.) — <b>это последняя попытка</b>:</p><ul>${rec.map(r => `<li>${esc(r.name)}</li>`).join('')}</ul>` : S.today ? `<p class="pos"><b>✓ Сегодняшняя сверка отправлена в ${hm(S.today.at)}</b></p><p class="mut">Если нужно — можно пересчитать и отправить заново.</p>` : `<p>Пересчитайте все товары склада (${list.length} поз.) и отправьте до <b>${esc(S.deadline || '10:00')}</b>. Считайте то, что физически лежит на складе, включая отложенное под заказы.</p>`}
-        <p class="mut">Нажмите «Начать», когда готовы считать — с этой минуты CRM сравнит с остатком LINKO.</p>
-        <div class="bar"><button class="btn" id="scStart" style="padding:12px 20px;font-size:16px">▶ ${rec ? 'Начать пересчёт' : S.today ? 'Начать сверку заново' : 'Начать сверку'}</button></div><small id="scE" class="neg" role="alert"></small>`) + (chatBtn() ? `<div class="bar">${chatBtn()}</div>` : '');
-      $('#scStart').onclick = async e => { e.target.disabled = true; try { const j = await storePost({ act: 'count_start' }); CNT.set({ day: t0, start: j.at, partial: !!rec, counts: {} }); drawStore(body); } catch (err) { e.target.disabled = false; $('#scE').textContent = err.message; } };
+      const what = rec ? `<p>По этим товарам цифры не сошлись. Пересчитайте их внимательно ещё раз (${rec.length} поз.) — <b>это последняя попытка</b>:</p><ul>${rec.map(r => `<li>${esc(r.name)}</li>`).join('')}</ul>`
+        : S.today ? `<p class="pos"><b>✓ Сегодняшняя сверка отправлена в ${hm(S.today.at)}</b></p><p class="mut">Если нужно — можно пересчитать и отправить заново.</p>`
+        : plan ? `<p>Сегодня <b>короткая сверка: ${list.length} товаров</b> из ${plan.total} — те, что двигались со вчерашней сверки, и несколько случайных. Отправьте до <b>${esc(S.deadline || '10:00')}</b>.</p>${S.fullDay ? `<p class="mut">Полная сверка всего склада — в ${DOW[S.fullDay] || 'понедельник'}.</p>` : ''}`
+        : `<p>Пересчитайте все товары склада (${list.length} поз.) и отправьте до <b>${esc(S.deadline || '10:00')}</b>. Считайте то, что физически лежит на складе, включая отложенное под заказы.</p>`;
+      body.innerHTML = panel(rec ? '↻ Есть расхождение — пересчитайте' : 'Сверка склада', `${what}
+        <p class="mut">Нажмите «Начать», когда готовы считать — с этой минуты CRM сравнит с остатком LINKO. Коробки можно вводить коробками — приложение само умножит.</p>
+        <div class="bar"><button class="btn" id="scStart" style="padding:12px 20px;font-size:16px">▶ ${rec ? 'Начать пересчёт' : S.today ? 'Начать сверку заново' : 'Начать сверку'}</button></div><small id="scE" class="neg" role="alert"></small>`) + `<div class="bar">${rec ? '' : ordBtn}${chatBtn()}</div>`;
+      $('#scStart').onclick = async e => { e.target.disabled = true; try { const j = await storePost({ act: 'count_start', partial: !!rec }); const pl = j.plan && j.plan.short ? j.plan.list : null; if (j.plan) S.plan = j.plan; CNT.set({ day: t0, start: j.at, partial: !!rec, counts: {}, box: {}, pcs: {}, list: pl }); drawStore(body); window.scrollTo(0, 0); } catch (err) { e.target.disabled = false; $('#scE').textContent = err.message; } };
+      const ob = $('#scOrd'); if (ob) ob.onclick = () => { ordering = { seq: shelfOrder().slice() }; drawStore(body); window.scrollTo(0, 0); };
       return;
     }
-    const filled = list.filter(i => st.counts[i.art] !== undefined && st.counts[i.art] !== '').length;
-    const groups = new Map(); for (const i of list) { const k = i.brand || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
+    st.box ||= {}; st.pcs ||= {};
+    const has = a => st.counts[a] !== undefined && st.counts[a] !== '';
+    const filled = list.filter(i => has(i.art)).length;
+    const groups = new Map(); for (const i of list) { const k = ord.length ? '' : i.brand || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
+    const row = i => { const pk = packOf(i), a = esc(i.art), v = st.counts[i.art], w = odd(i.art, v);
+      return `<div class="sc-row" data-r="${a}" data-n="${esc((i.name + ' ' + i.art).toLowerCase())}"><div>${esc(i.name)}<br><small class="mut">${a}${pk > 1 ? ` · <span class="sc-pk">📦 1 коробка = ${pk} шт</span>` : ''}</small></div>
+        <div class="sc-in">${pk > 1 ? `<input type="number" inputmode="numeric" min="0" step="1" placeholder="кор." aria-label="Коробок" data-b="${a}" value="${st.box[i.art] ?? ''}"><span class="mut">× ${pk} +</span>` : ''}<input type="number" inputmode="numeric" min="0" step="1" placeholder="шт" aria-label="Штук" data-p="${a}" value="${st.pcs[i.art] ?? (pk > 1 ? '' : v ?? '')}">
+          <b class="sc-sum" data-s="${a}">${v !== undefined ? '= ' + v : ''}</b><span class="spacer" style="flex:1"></span><button class="btn gray sm" type="button" data-z="${a}" title="Товара нет">0</button></div>
+        <small class="sc-w" data-w="${a}">${w !== null ? `⚠ Проверьте: в прошлый раз вы насчитали ${w}` : ''}</small></div>`; };
     body.innerHTML = `<div class="bar" style="position:sticky;top:52px;z-index:4;background:var(--bg,#eef2f5);padding:8px 0"><input id="scQ" type="search" placeholder="Поиск товара" value="${esc(q)}" style="flex:1;min-width:0"><b id="scN">${filled} / ${list.length}</b></div>
-      ${panel(rec ? 'Пересчёт' : 'Пересчитайте товары', [...groups].map(([g, L]) => `${g ? `<h4 style="margin:14px 0 6px">${esc(g)}</h4>` : ''}${L.map(i => `<label class="sc-row" data-n="${esc((i.name + ' ' + i.art).toLowerCase())}" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line,#dde3e8)"><span style="flex:1;min-width:0">${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></span><input type="number" inputmode="numeric" min="0" step="1" data-a="${esc(i.art)}" value="${st.counts[i.art] ?? ''}" style="width:90px;font-size:18px;text-align:right;padding:8px"></label>`).join('')}`).join(''), 'Пусто — ещё не посчитано. Если товара нет — поставьте 0.')}
+      <div class="bar"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="scOnly"> только непосчитанные</label><span class="spacer"></span>${rec ? '' : `<button class="btn gray sm" id="scOrd">⇅ Порядок полок</button>`}</div>
+      ${panel(rec ? 'Пересчёт' : want ? 'Короткая сверка' : 'Пересчитайте товары', [...groups].map(([g, L]) => `<div class="sc-g">${g ? `<h4 style="margin:14px 0 6px">${esc(g)}</h4>` : ''}${L.map(row).join('')}</div>`).join(''), 'Коробки — в «кор.», россыпь — в «шт», приложение сложит. Товара нет — нажмите «0».')}
       ${panel('Отправить', `<div class="form"><label style="grid-column:1/-1">Комментарий (необязательно)<textarea id="scC" rows="2" maxlength="500" placeholder="например: 2 коробки повреждены"></textarea></label><label style="grid-column:1/-1">Фото (необязательно)<input id="scP" type="file" accept="image/*" capture="environment"></label></div>
-        <div class="bar"><button class="btn gray" id="scZero">Поставить 0 в пустые</button><button class="btn gray" id="scX">Отменить</button><span class="spacer"></span><button class="btn" id="scGo">Отправить сверку</button></div><small id="scE" class="neg" role="alert"></small>`)}`;
-    const upd = () => { const n = list.filter(i => st.counts[i.art] !== undefined && st.counts[i.art] !== '').length; $('#scN').textContent = n + ' / ' + list.length; };
-    body.querySelectorAll('input[data-a]').forEach(inp => inp.oninput = () => { const v = inp.value.trim(); if (v === '') delete st.counts[inp.dataset.a]; else st.counts[inp.dataset.a] = Math.max(0, Math.round(Number(v)) || 0); CNT.set(st); upd(); });
-    $('#scQ').oninput = e => { q = e.target.value; const s = q.toLowerCase(); body.querySelectorAll('.sc-row').forEach(r => { r.style.display = !s || r.dataset.n.includes(s) ? 'flex' : 'none'; }); };
-    $('#scQ').dispatchEvent(new Event('input'));
-    $('#scZero').onclick = () => { const empty = list.filter(i => st.counts[i.art] === undefined); if (!empty.length) return; if (!confirm(`Поставить 0 для ${empty.length} непосчитанных позиций?`)) return; for (const i of empty) st.counts[i.art] = 0; CNT.set(st); drawStore(body); };
+        <div class="bar"><button class="btn gray" id="scX">Отменить</button><span class="spacer"></span><button class="btn" id="scGo">Отправить сверку</button></div><small id="scE" class="neg" role="alert"></small>`)}`;
+    const upd = () => { $('#scN').textContent = list.filter(i => has(i.art)).length + ' / ' + list.length; };
+    const filter = () => { const s = q.toLowerCase(), only = $('#scOnly').checked; body.querySelectorAll('.sc-row').forEach(r => { r.style.display = (!s || r.dataset.n.includes(s)) && (!only || !has(r.dataset.r)) ? '' : 'none'; }); body.querySelectorAll('.sc-g').forEach(g => { g.style.display = [...g.querySelectorAll('.sc-row')].some(r => r.style.display !== 'none') ? '' : 'none'; }); };
+    const sel = (k, a) => body.querySelector(`[data-${k}="${CSS.escape(a)}"]`);
+    const recalc = a => {
+      const i = list.find(x => x.art === a), pk = packOf(i), bI = sel('b', a), pI = sel('p', a), b = bI ? bI.value.trim() : '', p = pI.value.trim();
+      if (b === '') delete st.box[a]; else st.box[a] = Math.max(0, Math.round(Number(b)) || 0);
+      if (p === '') delete st.pcs[a]; else st.pcs[a] = Math.max(0, Math.round(Number(p)) || 0);
+      if (b === '' && p === '') delete st.counts[a]; else st.counts[a] = (st.box[a] || 0) * pk + (st.pcs[a] || 0);
+      CNT.set(st); const v = st.counts[a], w = odd(a, v);
+      sel('s', a).textContent = v !== undefined ? '= ' + v : ''; sel('w', a).textContent = w !== null ? `⚠ Проверьте: в прошлый раз вы насчитали ${w}` : '';
+      if (v !== undefined) sel('r', a).classList.remove('sc-miss'); upd();
+    };
+    body.querySelectorAll('input[data-b],input[data-p]').forEach(inp => inp.oninput = () => recalc(inp.dataset.b || inp.dataset.p));
+    body.querySelectorAll('[data-z]').forEach(bt => bt.onclick = () => { const a = bt.dataset.z, bI = sel('b', a); if (bI) bI.value = ''; sel('p', a).value = '0'; recalc(a); });
+    $('#scQ').oninput = e => { q = e.target.value; filter(); };
+    $('#scOnly').onchange = filter; filter();
+    const ob = $('#scOrd'); if (ob) ob.onclick = () => { ordering = { seq: shelfOrder().slice() }; drawStore(body); window.scrollTo(0, 0); };
     $('#scX').onclick = () => { if (!confirm('Отменить сверку? Введённые цифры удалятся.')) return; CNT.set(null); drawStore(body); };
     $('#scGo').onclick = async e => {
-      const empty = list.filter(i => st.counts[i.art] === undefined);
-      if (empty.length) return ($('#scE').textContent = `Не посчитано ${empty.length} поз. — введите количество или нажмите «Поставить 0 в пустые»`);
+      const empty = list.filter(i => !has(i.art));
+      if (empty.length) {
+        empty.forEach(i => sel('r', i.art)?.classList.add('sc-miss'));
+        $('#scE').textContent = `Не посчитано ${empty.length} поз. — они подсвечены красным. Если товара нет — нажмите «0» в строке.`;
+        q = ''; $('#scQ').value = ''; $('#scOnly').checked = true; filter(); sel('r', empty[0].art)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        try { TGA?.HapticFeedback?.notificationOccurred('error'); } catch { /* not in Telegram */ }
+        return;
+      }
+      const ask = list.map(i => ({ i, p: odd(i.art, st.counts[i.art]) })).filter(x => x.p !== null);
+      if (ask.length && !confirm(`Проверьте — сильно отличается от вашей прошлой сверки:\n${ask.slice(0, 8).map(x => `• ${x.i.name}: сейчас ${st.counts[x.i.art]}, в прошлый раз ${x.p}`).join('\n')}${ask.length > 8 ? `\n…и ещё ${ask.length - 8}` : ''}\n\nВсё верно — отправить?`)) { $('#scOnly').checked = false; filter(); sel('r', ask[0].i.art)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
       e.target.disabled = true; e.target.textContent = 'Отправляю…';
       try {
         const file = $('#scP').files[0], photo = file ? await shrink(file) : '';
         const counts = {}; for (const i of list) counts[i.art] = st.counts[i.art];
         const j = await storePost({ act: 'count', counts, partial: !!rec, comment: $('#scC').value.trim(), photo });
+        S.last = { ...(S.last || {}), ...counts };
         CNT.set(null); q = '';
         const at = new Date().toISOString(), items = j.items || [];
         S.today = { at }; S.round = j.result ? { status: j.result, round: j.round, at, items } : null; S.recount = j.result === 'recount' ? items : [];
         msg(j.result === 'ok' ? '✅ Сверка прошла успешно — склад в порядке' : j.result === 'recount' ? `↻ Есть расхождение: пересчитайте ${items.length} поз.` : j.result === 'final' ? '⚠️ Пересчёт не сошёлся — расхождение зафиксировано' : 'Сверка отправлена руководителю ✓', j.result === 'final');
         try { TGA?.HapticFeedback?.notificationOccurred(j.result === 'ok' ? 'success' : 'warning'); } catch { /* not in Telegram */ }
-        drawStore(body); load();
+        drawStore(body); window.scrollTo(0, 0); load();
       } catch (err) { e.target.disabled = false; e.target.textContent = 'Отправить сверку'; $('#scE').textContent = err.message || 'Нет связи — попробуйте ещё раз, цифры сохранены'; }
     };
   }
