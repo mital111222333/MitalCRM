@@ -5,12 +5,14 @@
 //   file in the data repo: crm-data.json.gz  =  gzip(JSON {app, savedAt, device, state})
 //   every device remembers the version (sha) it last saw; a change made elsewhere is pulled on open and when the tab comes back.
 window.CLOUD = (() => {
-  const LS = { cfg: 'crm_cloud', sha: 'crm_cloud_sha', dirty: 'crm_cloud_dirty', at: 'crm_cloud_at' };
+  // user: set when the unsent changes include your own edits, not only LINKO data the CRM loaded by itself
+  const LS = { cfg: 'crm_cloud', sha: 'crm_cloud_sha', dirty: 'crm_cloud_dirty', at: 'crm_cloud_at', user: 'crm_cloud_user' };
   const FILE = 'crm-data.json.gz';
   const get = k => { try { return localStorage.getItem(k); } catch { return null; } };
   const set = (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* storage blocked */ } };
-  let status = 'off', message = '', timer = null, busy = null, lastCheck = 0, conflict = null;
+  let status = 'off', message = '', timer = null, busy = null, lastCheck = 0, conflict = null, autoN = 0;
 
+  if (get(LS.dirty)) set(LS.user, '1'); // unsent changes left from before this page opened are always treated as yours
   const cfg = () => { try { const c = JSON.parse(get(LS.cfg) || 'null'); return c && c.owner && c.repo && c.token ? c : null; } catch { return null; } };
   const device = () => (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ? 'Телефон' : 'Компьютер') + ' · ' + (navigator.platform || '');
 
@@ -19,6 +21,8 @@ window.CLOUD = (() => {
     const m = location.hash.match(/^#\/cloud\?c=([^&]+)/);
     if (m) {
       const c = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(m[1])))));
+      if (c.lk) set('crm_linko_key', c.lk); // the LINKO key comes with the link, so this device also takes data live from LINKO
+      delete c.lk;
       if (c.owner && c.repo && c.token) { set(LS.cfg, JSON.stringify(c)); set(LS.sha, null); }
       history.replaceState(null, '', location.pathname + location.search + '#/cloud');
     }
@@ -81,7 +85,7 @@ window.CLOUD = (() => {
     if (r.status === 409 || r.status === 422) return { conflict: true };
     if (!r.ok) throw new Error(await explain(r));
     const d = await r.json();
-    set(LS.sha, d.content.sha); set(LS.dirty, null); set(LS.at, savedAt);
+    set(LS.sha, d.content.sha); set(LS.dirty, null); set(LS.user, null); set(LS.at, savedAt);
     return { ok: true, size: bytes.length };
   }
 
@@ -107,9 +111,11 @@ window.CLOUD = (() => {
 
   const rerender = () => { if (typeof route === 'function') route(); };
 
-  async function adopt(remote) {
+  // quiet: picked up by the 30-second check (live.js) — the page is redrawn when you are not busy with it, without a message
+  async function adopt(remote, quiet = false) {
     await CRMLocal.replaceFromCloud(remote.state);
-    set(LS.sha, remote.sha); set(LS.dirty, null); set(LS.at, remote.savedAt);
+    set(LS.sha, remote.sha); set(LS.dirty, null); set(LS.user, null); set(LS.at, remote.savedAt);
+    if (quiet) { dispatchEvent(new Event('crm:adopted')); return; }
     rerender();
     if (typeof toast === 'function' && remote.device) toast(`Данные обновлены: ${remote.device.split(' · ')[0].toLowerCase()}, ${new Date(remote.savedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`);
   }
@@ -138,7 +144,17 @@ window.CLOUD = (() => {
         if (dirty || force) {
           setStatus('saving');
           const r = await push(c, { force });
-          if (r.conflict) { const remote = await pull(c); return showConflict(remote); }
+          if (r.conflict) {
+            const remote = await pull(c);
+            // only LINKO data loaded by itself was unsent (two devices took the same new LINKO file at once):
+            // take the cloud version and load LINKO on top of it if it is still newer — nothing of yours is lost, no question asked
+            if (!get(LS.user) && !force && !remote.missing) {
+              await adopt(remote, true); setStatus('ok');
+              setTimeout(() => { if (window.LINKO_AUTO) { LINKO_AUTO.lastTry = 0; LINKO_AUTO.check({ quiet: true }); } }, 0);
+              return;
+            }
+            return showConflict(remote);
+          }
           return setStatus('ok');
         }
         if (!quiet) setStatus('loading');
@@ -149,7 +165,7 @@ window.CLOUD = (() => {
         if (remote.sha === known) { setStatus('ok'); window.LINKO_AUTO?.check(); return; }
         const summary = CRMLocal.engine.summary(), localEmpty = !summary.wh && !summary.ag && !summary.tasks;
         if (!known && !localEmpty) return showConflict(remote); // first connection on a device that already has its own data
-        await adopt(remote); setStatus('ok');
+        await adopt(remote, quiet); setStatus('ok');
         window.LINKO_AUTO?.check();
       } catch (e) { setStatus('error', e.message); if (!quiet) toast('Синхронизация: ' + e.message); }
       finally { busy = null; }
@@ -160,7 +176,7 @@ window.CLOUD = (() => {
   // called by static-api.js after every local save
   function changed() {
     if (!cfg()) return;
-    set(LS.dirty, '1'); setStatus('pending');
+    set(LS.dirty, '1'); if (!autoN) set(LS.user, '1'); setStatus('pending');
     clearTimeout(timer); timer = setTimeout(() => sync(), 3000);
   }
 
@@ -170,7 +186,7 @@ window.CLOUD = (() => {
     badge();
     new MutationObserver(() => { if (!document.querySelector('nav.top #cloudBadge') && document.querySelector('nav.top')) badge(); }).observe(document.getElementById('app'), { childList: true });
     if (cfg()) await sync({ quiet: false });
-    // no automatic pulling: newer data is fetched on open and by the «🔄 Обновить» button; only unsaved local changes are sent on their own
+    // newer versions from other devices are picked up every 30 seconds by live.js (and by «🔄 Обновить»); unsaved local changes are sent on their own
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden' && get(LS.dirty)) { clearTimeout(timer); sync({ quiet: true }); }
     });
@@ -195,6 +211,12 @@ window.CLOUD = (() => {
     status: () => ({ status, message, at: get(LS.at), dirty: !!get(LS.dirty) }),
     changed,
     sync,
+    // runs fn (loading LINKO data into the CRM) so that what it changes counts as loaded by itself, not as your edit
+    async auto(fn) {
+      autoN++;
+      try { const r = await fn(); await CRMLocal.save(); return r; }
+      finally { autoN--; }
+    },
     async connect(c) {
       const test = await pull(c); // throws a readable error if the key or the repo is wrong
       set(LS.cfg, JSON.stringify(c)); set(LS.sha, null);
@@ -202,7 +224,8 @@ window.CLOUD = (() => {
       return sync({ quiet: false });
     },
     disconnect() { set(LS.cfg, null); set(LS.sha, null); set(LS.dirty, null); set(LS.at, null); setStatus('off'); },
-    link() { const c = cfg(); return c ? `${location.origin}${location.pathname}#/cloud?c=${encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(c)))))}` : ''; },
+    // the LINKO key goes along, so the phone opened by this link also takes data live from LINKO
+    link() { const c = cfg(); if (!c) return ''; const lk = get('crm_linko_key'); return `${location.origin}${location.pathname}#/cloud?c=${encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(lk ? { ...c, lk } : c)))))}`; },
   };
 })();
 
@@ -234,6 +257,7 @@ EXT_PAGES.cloud = async el => {
     <div class="bar" style="margin-top:12px"><button class="btn" id="cGo">Подключить</button><span id="cMsg" role="status" class="mut"></span></div>`, { cls: 'w7' })}
   ${UI.panel(c ? 'Подключить телефон или другой компьютер' : 'Как получить ключ (5 минут, бесплатно)', c ? `
     <p class="mut" style="margin-top:0">Откройте камеру телефона и наведите на код — CRM откроется уже подключённой. Или отправьте ссылку себе в «Избранное» Telegram и откройте её на нужном устройстве.</p>
+    ${(() => { try { return localStorage.getItem('crm_linko_key'); } catch { return ''; } })() ? '<p class="mut">⚡ Вместе со ссылкой передаётся ключ LINKO: телефон тоже будет сам брать сегодняшние заказы, оплаты и долги прямо из LINKO каждые 30 секунд. Телефон, который уже подключён, — откройте на нём эту ссылку ещё раз.</p>' : ''}
     <div id="qr" style="background:#fff;padding:10px;width:max-content;border-radius:8px"></div>
     <div class="bar" style="margin-top:10px"><button class="btn gray" id="cCopy">Скопировать ссылку</button></div>
     <p class="mut" style="margin-bottom:0"><b>Никому не пересылайте эту ссылку:</b> в ней ключ к вашим данным.</p>` : `

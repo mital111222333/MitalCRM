@@ -30,6 +30,44 @@ const VZ = {
     if (j && j.day === day) VZ.cache[day] = j;
     return j && j.day === day ? j : null;
   },
+  // today straight from LINKO, the same requests as visits_ in autolinko.gs: the day summary (branch → supervisor → agent),
+  // the working day, then each agent's route and plan details, ten agents at a time
+  async fromLinko(day) {
+    const errors = {}, trim = x => typeof x === 'string' ? (x.length > 600 ? x.slice(0, 600) + '…' : x) : Array.isArray(x) ? x.map(trim) : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, trim(v)])) : x;
+    const read = async (p, k) => { try { return trim(await LIVE.api(p)); } catch (e) { errors[k] = String(e.message || e); if (e.auth) throw e; return null; } };
+    const [summary, wd] = await Promise.all([read('market/agent_plans/?date=' + day, 'summary'), read(`staff/working_day/?begin_date=${day}&end_date=${day}&page=1&page_size=200`, 'workday')]);
+    const ids = {};
+    const walk = (x, depth) => {
+      if (Array.isArray(x)) { x.forEach(y => walk(y, depth)); return; }
+      if (!x || typeof x !== 'object' || depth > 6) return;
+      const kids = x.child_data || x.childData;
+      if (Array.isArray(kids) && kids.length) { walk(kids, depth + 1); return; }
+      if (x.results) { walk(x.results, depth + 1); return; }
+      if (Number(x.id) > 0) ids[x.id] = ids[x.id] || String(x.user || x.name || [x.first_name, x.second_name].filter(String).join(' ') || x.id);
+    };
+    walk(summary, 0);
+    for (const w of (wd && (wd.results || wd)) || []) { const id = w && (w.id || w.user?.id); if (Number(id) > 0 && !ids[id]) ids[id] = [w.first_name, w.second_name].filter(String).join(' ') || String(id); }
+    const list = Object.keys(ids).slice(0, 60), agents = {};
+    for (let i = 0; i < list.length; i += 10) await Promise.all(list.slice(i, i + 10).map(async id => {
+      const [plan, stats] = await Promise.all([read(`market/agent_plans/${id}/?date=${day}&with_image=true`, 'plan_' + id), read(`market/detail_plan/?user=${id}&date=${day}`, 'stats_' + id)]);
+      if (plan == null && stats == null) { delete errors['plan_' + id]; delete errors['stats_' + id]; return; } // not an agent with a route
+      agents[id] = { name: ids[id], plan, stats };
+    }));
+    if (!Object.keys(agents).length && Object.keys(errors).length) return null;
+    return { at: new Date().toISOString(), day, summary, agents, errors, live: true };
+  },
+  // live.js calls this every 30 seconds while the page is open; LINKO is asked at most once a minute. true = something new
+  async refresh() {
+    const day = UI.localDate(Date.now());
+    if (VZ.day !== day || !window.LIVE?.key() || Date.now() - (VZ.liveAt || 0) < 55000) return false;
+    VZ.liveAt = Date.now();
+    const j = await VZ.fromLinko(day).catch(() => null), old = VZ.cache[day];
+    if (!j) return false;
+    const same = old && JSON.stringify(old.agents) === JSON.stringify(j.agents);
+    if (same) { old.at = j.at; return false; }
+    VZ.cache[day] = j; VZ.week = null;
+    return true;
+  },
   async days() {
     let d = [];
     try { d = ((await ARC.list()) || []).filter(f => f.name === 'visits').map(f => f.day); } catch { /* archive unavailable */ }
@@ -223,7 +261,7 @@ const VZ = {
 
 EXT_PAGES.visits = async el => {
   await CRMLocal.ready;
-  el.innerHTML = `<div class="page-head"><div><h2>Визиты агентов</h2><div class="sub">Из LINKO «Клиенты → Маршруты»: кто к кому пришёл, во сколько вошёл и вышел, что сделал — заказ, оплата, отказ, фото. Обновляется каждые 30 минут, каждый день сохраняется в архив.</div></div></div><div id="vzBody"><p class="mut">Загружаю визиты…</p></div>`;
+  el.innerHTML = `<div class="page-head"><div><h2>Визиты агентов</h2><div class="sub">Из LINKO «Клиенты → Маршруты»: кто к кому пришёл, во сколько вошёл и вышел, что сделал — заказ, оплата, отказ, фото. ${LIVE.key() ? 'Сегодняшний день — прямо из LINKO, обновляется сам каждую минуту' : 'Обновляется каждые 30 минут'}, каждый день сохраняется в архив.</div></div></div><div id="vzBody"><p class="mut">Загружаю визиты…</p></div>`;
   const body = $('#vzBody', el);
   if (!CLOUD.on()) { body.innerHTML = UI.empty('Синхронизация не настроена', 'Визиты приходят через тот же приватный репозиторий, что и данные CRM. Включите <a href="#/cloud">Данные → Синхронизация и настройки</a>.'); return; }
   const today = UI.localDate(Date.now());
@@ -256,9 +294,11 @@ EXT_PAGES.visits = async el => {
   const redraw = () => EXT_PAGES.visits(el);
   $('#vzDay', body).onchange = e => { VZ.day = e.target.value; redraw(); };
   if ($('#vzAg', body)) $('#vzAg', body).onchange = e => { VZ.agent = e.target.value; redraw(); };
-  $('#vzRe', body).onclick = () => { VZ.cache = {}; VZ.week = null; redraw(); };
+  $('#vzRe', body).onclick = () => { VZ.cache = {}; VZ.week = null; VZ.liveAt = 0; redraw(); };
   body.querySelectorAll('[data-tab]').forEach(x => x.onclick = e => { e.preventDefault(); VZ.tab = x.dataset.tab; redraw(); });
   body.querySelectorAll('[data-ag]').forEach(x => x.onclick = e => { e.preventDefault(); VZ.agent = x.dataset.ag; VZ.tab = 'agent'; redraw(); });
+  // opened on today: take it from LINKO right away instead of waiting for the next 30-second check
+  if (VZ.day === today && Date.now() - (VZ.liveAt || 0) > 55000) VZ.refresh().then(ch => { if (ch && el.isConnected) LIVE.redraw(); });
   if (VZ.tab === 'week' && VZ.week?.key !== key) {
     const W = await VZ.loadWeek(days);
     VZ.week = { key, W };

@@ -111,6 +111,7 @@
     get engine() { return engine; },
     flush: async () => { dirty = true; await flush(); },
     touch: schedule, // call after changing engine.getState().ext directly
+    save: flush, // write a pending change now (nothing to do when there is none)
     ext: () => engine.getState().ext,
     // replace everything with a state that came from the cloud: saved locally, but not sent back
     replaceFromCloud: async st => { engine.importState(st); GRACE.fix(engine.getState()); dirty = false; clearTimeout(timer); await idbPut(engine.getState()); lastSaved = new Date(); },

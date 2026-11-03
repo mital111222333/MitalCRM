@@ -13,7 +13,23 @@ const LX = {
   get(o, k) { if (o == null) return undefined; if (Object.prototype.hasOwnProperty.call(o, k)) return o[k]; return k.split('.').reduce((v, p) => (v == null ? undefined : v[p]), o); },
   pick(row, keys) { if (!keys || !keys.length || row == null || typeof row !== 'object') return row; const o = {}; for (const k of keys) { const v = LX.get(row, k); if (v !== undefined && v !== null && v !== '') o[k] = v; } return o; },
   st() { return CRMLocal.ext().lx || null; },
-  d(id) { return (LX.st()?.d || {})[id] || []; },
+  d(id) {
+    const base = (LX.st()?.d || {})[id] || [], L = LX.live, rows = L?.data?.[id];
+    if (!rows) return base;
+    const s = LX.st() || {};
+    const fileAt = L.src[id] === 'fast' ? s.fastAt || s.at : s.at;
+    if (fileAt && fileAt > L.at) return base; // the Google file (or «🔄 Обновить») is newer than the live answer
+    if (!L.date[id]) return rows; // a snapshot (debts, agents' day): the live one replaces it whole
+    if (s.from && s.from > L.day) return base; // a new plan period has not reached this device yet
+    const k = id + '|' + L.v + '|' + (s.at || '') + '|' + (s.fastAt || ''), m = LX._live || (LX._live = {});
+    if (m[id]?.k === k) return m[id].rows;
+    // today's rows come live from LINKO, the earlier days of the period stay from the files
+    const f = L.date[id], out = base.filter(r => LX.day(r[f]) !== L.day).concat(rows.filter(r => LX.day(r[f]) === L.day));
+    m[id] = { k, rows: out };
+    return out;
+  },
+  // today's sections straight from LINKO (live.js): { v, at, day, data: {id: rows}, date: {id: date field}, src: {id: 'fast'|'extra'} }; memory only
+  live: null,
   has() { const s = LX.st(); return !!(s && s.d && Object.keys(s.d).length); },
   // bookmark: one message per section; auto-loader: one file with all sections
   put(id, rows, meta = {}) {
@@ -44,8 +60,10 @@ const LX = {
     x.lx.fastAt = snap.at; LX.cache = null; CRMLocal.touch(); return true;
   },
   // when the payments were last taken from LINKO
-  payAt() { const s = LX.st(); return s ? s.fastAt || s.at : null; },
-  ordAt() { const s = LX.st(), fast = LX.jobs.find(j => j.id === 'orders')?.every; return s ? (fast && s.fastAt) || s.at : null; },
+  // …or straight from LINKO a moment ago (live.js), when that is newer
+  liveAt(id, f) { const L = LX.live; return L?.data?.[id] && (!f || L.at > f) ? L.at : f; },
+  payAt() { const s = LX.st(); return LX.liveAt('pays', s ? s.fastAt || s.at : null); },
+  ordAt() { const s = LX.st(), fast = LX.jobs.find(j => j.id === 'orders')?.every; return LX.liveAt('orders', s ? (fast && s.fastAt) || s.at : null); },
 
   // ---------- helpers ----------
   n: v => Number(v) || 0,
@@ -84,7 +102,7 @@ const LX = {
 
   // ---------- everything the pages need, computed once per data version ----------
   model() {
-    const key = (LX.st()?.at || '') + '|' + (LX.st()?.fastAt || '') + '|' + (CRMLocal.engine.getState().ag.uploads || []).length + '|' + (CRMLocal.engine.getState().wh.uploads || []).length;
+    const key = (LX.st()?.at || '') + '|' + (LX.st()?.fastAt || '') + '|' + (LX.live?.v || 0) + '|' + (CRMLocal.engine.getState().ag.uploads || []).length + '|' + (CRMLocal.engine.getState().wh.uploads || []).length;
     if (LX.cache && LX.cacheKey === key) return LX.cache;
     LX._ag = null; LX._br = null; LX.cacheKey = key;
     const orders = LX.d('orders'), items = LX.d('items'), pays = LX.d('pays'), rets = LX.d('returns');

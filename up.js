@@ -261,23 +261,28 @@ addEventListener('message', async e => {
 window.LINKO_AUTO = {
   busy: false, lastTry: 0,
   // orders, products, payments, debts by age, agents' day… — written by the script every 30 minutes
-  async extra() {
+  async extra({ quiet = false } = {}) {
     let changed = false;
     const snap = await CLOUD.readJson('linko-extra.json').catch(() => null), cur = CRMLocal.ext().lx;
     if (snap && snap.at && snap.data && !(cur && cur.at >= snap.at)) { await LX.load(); changed = LX.importSnap(snap) || changed; }
     // payments: every 5 minutes, in their own file
     const fast = await CLOUD.readJson('linko-fast.json').catch(() => null), c2 = CRMLocal.ext().lx;
     if (fast && fast.at && fast.data && !(c2 && c2.from === fast.from && ((c2.fastAt && c2.fastAt >= fast.at) || c2.at >= fast.at))) { await LX.load(); changed = LX.importFast(fast) || changed; }
-    if (changed && /^#\/lx/.test(location.hash) && !document.querySelector('.modal-bg') && typeof route === 'function') route();
+    if (changed && !quiet && /^#\/lx/.test(location.hash) && !document.querySelector('.modal-bg') && typeof route === 'function') route();
+    return changed;
   },
-  async check() {
-    if (LINKO_AUTO.busy || Date.now() - LINKO_AUTO.lastTry < 60000 || !window.CLOUD?.on()) return;
+  // quiet: the 30-second check (live.js) — no message and no redraw here, live.js redraws when you are not busy with the page.
+  // Returns true when something new was loaded.
+  async check({ quiet = false } = {}) {
+    if (LINKO_AUTO.busy || Date.now() - LINKO_AUTO.lastTry < 60000 || !window.CLOUD?.on()) return false;
     LINKO_AUTO.lastTry = Date.now(); LINKO_AUTO.busy = true;
     try {
-      const snap = await CLOUD.readJson('linko-latest.json'); if (!snap || !snap.at || !Array.isArray(snap.files)) return await LINKO_AUTO.extra();
-      await LINKO_AUTO.applyLatest(snap);
-      await LINKO_AUTO.extra();
-    } catch (e) { console.warn('LINKO auto', e); }
+      return await CLOUD.auto(async () => {
+        const snap = await CLOUD.readJson('linko-latest.json');
+        const a = snap && snap.at && Array.isArray(snap.files) ? await LINKO_AUTO.applyLatest(snap, { quiet }) : false;
+        return (await LINKO_AUTO.extra({ quiet })) || a;
+      });
+    } catch (e) { console.warn('LINKO auto', e); return false; }
     finally { LINKO_AUTO.busy = false; }
   },
   // balance + stock of every warehouse (the same files as a manual upload)
@@ -311,10 +316,12 @@ window.LINKO_AUTO = {
       catch (e) { throw new Error(e.name === 'AbortError' ? 'LINKO не ответил за 2 минуты' : 'скрипт Google недоступен (проверьте адрес веб-приложения и доступ «Все»)'); }
       let j; try { j = await r.json(); } catch { throw new Error('скрипт Google ответил не данными — опубликуйте его как веб-приложение с доступом «Все»'); }
       if (j.error) throw new Error(j.error);
-      await LINKO_AUTO.applyLatest(j.latest, { quiet: true });
-      await LX.load();
-      if (j.extra?.data) LX.importSnap(j.extra);
-      if (j.fast?.data) LX.importFast(j.fast);
+      await CLOUD.auto(async () => {
+        await LINKO_AUTO.applyLatest(j.latest, { quiet: true });
+        await LX.load();
+        if (j.extra?.data) LX.importSnap(j.extra);
+        if (j.fast?.data) LX.importFast(j.fast);
+      });
       const x = CRMLocal.ext(); x.linkoWeb = { ...x.linkoWeb, lastAt: j.at, lastMs: j.ms, lastErr: '' }; CRMLocal.touch();
       LINKO_AUTO.lastTry = Date.now();
       return j;
@@ -324,5 +331,5 @@ window.LINKO_AUTO = {
     } finally { clearTimeout(timer); LINKO_AUTO.busy = false; }
   },
 };
-// no timers: LINKO data is picked up when the CRM opens and when «🔄 Обновить» is pressed (refresh.js)
+// LINKO data is picked up when the CRM opens, every 30 seconds while it is open (live.js) and when «🔄 Обновить» is pressed (refresh.js)
 addEventListener('load', () => setTimeout(() => LINKO_AUTO.check(), 4000));

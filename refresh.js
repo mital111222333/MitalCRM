@@ -1,5 +1,5 @@
-// «🔄 Обновить» in the top bar: the platform no longer refreshes itself on a timer —
-// one press sends unsaved changes, pulls the newest cloud data and the newest LINKO data, and redraws the page.
+// «🔄 Обновить» in the top bar: the platform refreshes itself every 30 seconds (live.js) and the button shows how fresh
+// the LINKO data is; one press does it all right now — sends unsaved changes, pulls the newest cloud data and the newest LINKO data, and redraws the page.
 (() => {
   let running = false;
   const btn = () => document.getElementById('refreshBtn');
@@ -29,6 +29,7 @@
         try { live = await LINKO_AUTO.now(); } catch (e) { liveErr = String(e.message || e); }
       }
       if (!live && window.LINKO_AUTO) { LINKO_AUTO.lastTry = 0; for (let i = 0; i < 20 && LINKO_AUTO.busy; i++) await new Promise(r => setTimeout(r, 300)); await LINKO_AUTO.check(); }
+      if (window.LIVE?.key()) { try { await LIVE.pull(); } catch { /* the files above are shown */ } } // today's sections straight from LINKO
       const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]');
       if (!typing && typeof route === 'function') route();
       dispatchEvent(new Event('crm:refresh')); // ИИ-помощник пересчитывает подсказки
@@ -44,7 +45,7 @@
     } catch (e) {
       label('idle', 'Обновить');
       if (typeof toast === 'function') toast('Не удалось обновить: ' + (e && e.message || e));
-    } finally { running = false; const b = btn(); if (b) b.disabled = false; }
+    } finally { running = false; const b = btn(); if (b) b.disabled = false; window.LIVE?.paint(); }
   }
   window.REFRESH = { run };
 
