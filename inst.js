@@ -97,6 +97,8 @@ const INST = {
         <div style="display:flex;align-items:end;gap:6px;flex-wrap:wrap"><button class="btn gray sm" id="icAll" type="button">Всем месяцам эту сумму</button><button class="btn gray sm" id="icStep" type="button">↗ Нарастающая…</button></div>
         <div style="grid-column:1/-1"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><b>План по месяцам, $</b><span id="icSum" class="mut"></span></div>
           <div id="icPlan" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px;margin-top:6px;max-height:240px;overflow-y:auto;overflow-x:hidden"></div></div>
+        <label><b>Итого по договору, $</b><input id="icTot" type="number" min="0" step="100" style="font-weight:700"></label>
+        <div class="mut" style="display:flex;align-items:end;font-size:13px">Сумма всех месяцев. Введите свою — она разложится поровну по месяцам.</div>
         <label>Агент<input id="icG" value="${esc(x.agent)}" placeholder="кому напоминать"></label>
         <label>Рассрочка по договору, дней<input id="icD" type="number" min="1" value="${x.days || ''}" placeholder="${c.days} (как у всех)"></label>
         <label>Частей<input id="icP" type="number" min="1" max="12" value="${x.parts || ''}" placeholder="${c.parts}"></label>
@@ -124,8 +126,19 @@ const INST = {
       for (let i = 0; i < n; i++) if (!hand.has(i) || plan[i] == null) plan[i] = def;
       plan.length = n;
       $('#icPlan', m.el).innerHTML = plan.map((v, i) => `<label style="font-size:12px;margin:0">${i + 1}. ${esc(INST.monthName(start, i))}<input data-pm="${i}" type="number" min="0" step="50" value="${v}" style="width:100%;min-width:0;box-sizing:border-box;${hand.has(i) && v !== def ? 'border-color:var(--c4,#e9a23b)' : ''}"></label>`).join('');
-      $('#icSum', m.el).textContent = `Всего по договору: ${INST.money(plan.reduce((a, v) => a + v, 0))} за ${n} мес.`;
-      m.el.querySelectorAll('[data-pm]').forEach(e => e.oninput = () => { const i = +e.dataset.pm; plan[i] = Number(e.value) || 0; hand.add(i); $('#icSum', m.el).textContent = `Всего по договору: ${INST.money(plan.reduce((a, v) => a + v, 0))} за ${plan.length} мес.`; });
+      sums();
+      m.el.querySelectorAll('[data-pm]').forEach(e => e.oninput = () => { const i = +e.dataset.pm; plan[i] = Number(e.value) || 0; hand.add(i); sums(); });
+    };
+    const sums = () => {
+      const t = plan.reduce((a, v) => a + v, 0);
+      $('#icSum', m.el).textContent = `Всего по договору: ${INST.money(t)} за ${plan.length} мес.`;
+      if (document.activeElement !== $('#icTot', m.el)) $('#icTot', m.el).value = Math.round(t * 100) / 100;
+    };
+    // a total typed by hand: split evenly over the months in whole dollars, the rounding rest goes to the last month
+    $('#icTot', m.el).onchange = () => {
+      const t = Math.max(0, Number($('#icTot', m.el).value) || 0), n = plan.length, each = Math.floor(t / n);
+      plan.forEach((v, i) => { plan[i] = i === n - 1 ? Math.round((t - each * (n - 1)) * 100) / 100 : each; hand.add(i); });
+      $('#icM', m.el).value = each; drawPlan();
     };
     $('#icN', m.el).oninput = drawPlan; $('#icS', m.el).oninput = drawPlan; $('#icM', m.el).oninput = drawPlan;
     $('#icAll', m.el).onclick = () => { hand.clear(); drawPlan(); };
@@ -160,15 +173,20 @@ const INST = {
   ctView(st) {
     const c = INST.cfg(), got = new Map((st?.contracts || []).map(k => [k.id, k])), t0 = UI.localDate(Date.now());
     if (!c.contracts.length) return UI.empty('Договоров пока нет', 'Добавьте договор: клиент, его карточки в LINKO, сколько он должен закупать в месяц и на сколько месяцев.', '<button class="btn" id="icNew" type="button">＋ Договор</button>');
-    return `<div class="bar" style="margin-bottom:10px"><button class="btn" id="icNew" type="button">＋ Договор</button></div><div class="scroll"><table><thead><tr><th>Договор</th><th>Карточки LINKO</th><th>Агент</th><th class="num">План в месяц</th><th>Срок</th><th>Этот месяц</th><th>По месяцам</th><th></th></tr></thead><tbody>
+    const bar = (v, of, label) => { const p = of > 0 ? Math.min(100, Math.round(v / of * 100)) : v > 0 ? 100 : 0; return `<div style="font-size:13px">${label}</div><div style="height:6px;background:var(--line,#ddd);border-radius:3px;margin:3px 0 6px"><div style="width:${p}%;height:6px;border-radius:3px;background:${p >= 100 ? 'var(--good,#22c55e)' : 'var(--c4,#e9a23b)'}"></div></div>`; };
+    const lbl = x => UI.dm(x.from || x.m + '-01');
+    return `<div class="bar" style="margin-bottom:10px"><button class="btn" id="icNew" type="button">＋ Договор</button></div><div class="scroll"><table><thead><tr><th>Договор</th><th>Карточки LINKO</th><th>Агент</th><th class="num">План в месяц</th><th>Срок</th><th>Этот месяц</th><th>По месяцам</th><th class="num">С начала договора</th><th></th></tr></thead><tbody>
       ${c.contracts.map(k => {
-        const s = got.get(k.id), cur = s?.cur, pct = cur && cur.fact != null && cur.plan ? Math.min(100, Math.round(cur.fact / cur.plan * 100)) : null;
+        const s = got.get(k.id), cur = s?.cur, run = x => x.from ? x.from <= t0 && t0 <= x.to : x.m === t0.slice(0, 7);
         const state = !s ? '<span class="mut">считается…</span>' : !s.active ? (t0 < k.start ? '<span class="pill info">ещё не начался</span>' : '<span class="pill">закончился</span>') : s.daysLeft <= 30 ? `<span class="pill warn">осталось ${s.daysLeft} дн.</span>` : '';
         return `<tr><td><b>${esc(k.title || k.accounts.join(' + '))}</b> ${state}</td><td>${k.accounts.map(a => `<div>${esc(a)}${INST.spec(a) ? ' <span class="pill warn">спец</span>' : ''}</div>`).join('')}</td><td>${esc(k.agent || '—')}</td>
           <td class="num">${(() => { const P = INST.planOf(k), same = P.every(v => v === P[0]); return same ? INST.money(P[0]) : `${INST.money(Math.min(...P))}–${INST.money(Math.max(...P))}<div class="mut" style="font-size:12px">по месяцам</div>`; })()}<div class="mut" style="font-size:12px">всего ${INST.money(INST.planOf(k).reduce((a, v) => a + v, 0))}</div></td>
           <td>${UI.dateRu(k.start)} — ${s ? UI.dateRu(s.end) : k.months + ' мес.'}<div class="mut" style="font-size:12px">${k.months} мес.</div></td>
-          <td>${pct != null ? `<div>${INST.money(cur.fact)} из ${INST.money(cur.plan)}</div><div style="height:6px;background:var(--line,#ddd);border-radius:3px;margin-top:3px"><div style="width:${pct}%;height:6px;border-radius:3px;background:${pct >= 100 ? 'var(--good,#22c55e)' : 'var(--c4,#e9a23b)'}"></div></div>` : '—'}</td>
-          <td>${(s?.list || []).map(x => `<span class="pill ${x.fact == null ? '' : x.fact >= x.plan ? 'good' : x.m === t0.slice(0, 7) ? 'warn' : 'crit'}" title="${x.m}: ${x.fact == null ? 'данные ещё загружаются' : INST.money(x.fact) + ' из ' + INST.money(x.plan)}">${x.m.slice(5)}.${x.m.slice(2, 4)}${x.fact == null ? '' : ' ' + Math.round(x.fact / Math.max(1, x.plan) * 100) + '%'}</span>`).join(' ')}</td>
+          <td style="min-width:150px">${cur && cur.fact != null ? `${cur.from ? `<div class="mut" style="font-size:12px">${UI.dm(cur.from)}–${UI.dm(cur.to)}</div>` : ''}${bar(cur.fact, cur.plan, `Взял ${INST.money(cur.fact)} из ${INST.money(cur.plan)}`)}${bar(cur.paid || 0, cur.fact, `Оплатил <b>${INST.money(cur.paid || 0)}</b> из ${INST.money(cur.fact)}`)}` : '—'}</td>
+          <td><div style="display:grid;grid-template-columns:auto 1fr;gap:4px 6px;align-items:center">
+            <span class="mut" style="font-size:12px">Взял</span><div>${(s?.list || []).map(x => `<span class="pill ${x.fact == null ? '' : x.fact >= x.plan ? 'good' : run(x) ? 'warn' : 'crit'}" title="${lbl(x)}${x.to ? '–' + UI.dm(x.to) : ''}: ${x.fact == null ? 'данные ещё загружаются' : 'взял ' + INST.money(x.fact) + ' из ' + INST.money(x.plan)}">${lbl(x)}${x.fact == null ? '' : ' ' + Math.round(x.fact / Math.max(1, x.plan) * 100) + '%'}</span>`).join(' ')}</div>
+            <span class="mut" style="font-size:12px">Оплатил</span><div>${(s?.list || []).map(x => x.paid == null ? `<span class="pill">${lbl(x)}</span>` : `<span class="pill ${x.paid >= x.fact - 0.5 ? 'good' : x.paid > 0 || run(x) ? 'warn' : 'crit'}" title="${lbl(x)}${x.to ? '–' + UI.dm(x.to) : ''}: оплатил ${INST.money(x.paid)} из взятых ${INST.money(x.fact)}">${lbl(x)} ${INST.money(x.paid)}</span>`).join(' ')}</div></div></td>
+          <td class="num" style="font-size:13px">${s && s.bought != null ? `взял ${INST.money(s.bought)}<br>оплатил <b>${INST.money(s.paid)}</b><br><span class="${s.bought - s.paid > 0.5 ? 'neg' : 'pos'}">долг ${INST.money(Math.max(0, s.bought - s.paid))}</span>` : '—'}</td>
           <td><button class="btn gray sm" data-ct="${esc(k.id)}" type="button">Изменить</button></td></tr>`;
       }).join('')}</tbody></table></div>`;
   },

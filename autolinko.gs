@@ -778,7 +778,7 @@ function notify_(text) {
 // Каждый заказ клиента сам получает график: N частей (обычно 4) — через 7, 14, 21 день и последняя в день срока (обычно 30-й).
 // Сколько оплачено по каждому заказу, считается от текущего долга клиента из LINKO («Должники по срокам»): оплаты закрывают
 // самые старые заказы, поэтому долг лежит на самых новых. Долг больше, чем сумма известных заказов, — «старый долг», он весь просрочен.
-// Файлы в репозитории данных: inst-orders.json — заказы за 75 дней; inst-months.json — закупки клиентов по месяцам (для договоров);
+// Файлы в репозитории данных: inst-orders.json — заказы за 75 дней; inst-bal.json — что клиенты взяли и оплатили по месяцам договоров (из баланса LINKO);
 // inst-state.json — расчёт для CRM и готовые тексты. Каждое утро (час — из CRM) агенту приходят его клиенты, у которых сегодня
 // срок части или есть просрочка (и договоры, где месяц на исходе, а план не выбран), вам — сводка по всем агентам.
 const INST_KEEP = 75;
@@ -820,24 +820,39 @@ function instLedger_(orders, today) {
   if (txt !== f.text) saveToGithub_('inst-orders.json', txt);
   return list;
 }
-// purchases per client per month for the contracts: months inside the 75 days come from inst-orders, older ones
-// (back to the earliest contract start, at most 13 months) are taken from LINKO once, one month per run
+// a contract month is the period from the start date: 30.10–29.11, 30.11–29.12… (the day is kept; 31 → the last day of a short month)
+function instPeriod_(start, i) {
+  const y = Number(start.slice(0, 4)), m0 = Number(start.slice(5, 7)) - 1, d = Number(start.slice(8, 10));
+  const at = k => { const last = new Date(Date.UTC(y, m0 + k + 1, 0)).getUTCDate(); return Utilities.formatDate(new Date(Date.UTC(y, m0 + k, Math.min(d, last))), 'UTC', 'yyyy-MM-dd'); };
+  return { from: at(i), to: instDay_(at(i + 1), -1) };
+}
+// what every client bought (sold − returns) and paid in each contract month — from the LINKO client balance of exactly that period
+// («Оплачено» counts cash, card and bank alike): inst-bal.json = { "<from>|<to>": { "<клиент>": { s, p } }, at: { "<from>|<to>": ms } }.
+// The running period is asked again every hour, one that ended in the last 5 days every 6 hours, older ones once; up to 4 per run.
 function instMonths_(L, R, today) {
   const cs = (R.contracts || []).filter(c => c.start && c.months > 0); if (!cs.length) return {};
-  const f = ghRaw_('inst-months.json'); let M = {}; if (f.code === 200) try { M = JSON.parse(f.text) || {}; } catch (e) { M = {}; }
-  const cutM = instDay_(today, -INST_KEEP).slice(0, 7), nowM = today.slice(0, 7), add = (o, k, v) => { o[k] = instR2_((o[k] || 0) + v); };
-  const ym = (m, n) => Utilities.formatDate(new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + n, 1)), 'UTC', 'yyyy-MM');
-  for (let m = ym(cutM, 1); m <= nowM; m = ym(m, 1)) M[m] = {};
-  L.forEach(o => { const m = o.d.slice(0, 7); if (m > cutM && instUsd_(o.cur)) add(M[m], o.c, o.s); });
-  let first = cs.map(c => c.start.slice(0, 7)).sort()[0]; if (first < ym(nowM, -13)) first = ym(nowM, -13);
-  for (let m = first; m <= cutM; m = ym(m, 1)) {
-    if (M[m]) continue;
-    const end = instDay_(ym(m, 1) + '-01', -1), sums = {};
-    instFetch_(m + '-01', end).forEach(o => { if (instUsd_(o.cur)) add(sums, o.c, o.s); });
-    M[m] = sums; break; // one old month per run
-  }
-  const txt = JSON.stringify(M); if (txt !== f.text) saveToGithub_('inst-months.json', txt);
-  return M;
+  const f = ghRaw_('inst-bal.json'); let B = {}; if (f.code === 200) try { B = JSON.parse(f.text) || {}; } catch (e) { B = {}; }
+  const at = B.at || {}, need = {};
+  cs.forEach(c => { for (let i = 0; i < Number(c.months); i++) { const p = instPeriod_(c.start, i); if (p.from > today) break; need[p.from + '|' + p.to] = p; } });
+  const age = k => Date.now() - (at[k] || 0);
+  const stale = k => { const p = need[k]; if (!B[k]) return true; if (p.to >= today) return age(k) > 3600000; return p.to >= instDay_(today, -5) && age(k) > 6 * 3600000; };
+  const keys = Object.keys(need).filter(stale).sort((a, b) => (need[b].to >= today) - (need[a].to >= today) || (a < b ? 1 : -1)).slice(0, 4); // running ones first, then the newest
+  if (!keys.length) return B;
+  keys.forEach(k => {
+    const p = need[k], to = p.to < today ? p.to : today, out = {};
+    const q = 'only_out_stock=False&is_only_delivered=False&last_status=False&exclude_closed_clients=false&only_payment_with_invoice=false&begin_date=' + p.from + '&end_date=' + to;
+    all_('stats/client_balances_expanded/?' + q + '&page=1&page_size=500').forEach(c => {
+      const u = (c.currencies || []).filter(x => instUsd_(x.name))[0]; if (!u) return;
+      const s = instR2_(n_(u.order) - Math.abs(n_(u.order_return))), pd = instR2_(Math.abs(n_(u.payment)));
+      if (s || pd) out[c.name] = { s: s, p: pd };
+    });
+    B[k] = out; at[k] = Date.now();
+  });
+  // periods no contract needs any more are dropped, so the file stays small
+  Object.keys(B).forEach(k => { if (k !== 'at' && !need[k]) { delete B[k]; delete at[k]; } });
+  B.at = at;
+  saveToGithub_('inst-bal.json', JSON.stringify(B));
+  return B;
 }
 // one order's schedule: parts of s/N due weekly (7, 14, 21…) with the last one on the term day; with a short term — evenly
 function instPlan_(o, left, days, parts, today) {
@@ -882,30 +897,30 @@ function instCalc_(R, L, debtors, M, today) {
 // contracts: the purchase plan of each month (c.plan[i]; a contract without it — the same c.monthly every month)
 // against what the contract's accounts bought that month
 function instPlanOf_(c, i) { return Array.isArray(c.plan) && c.plan[i] != null ? Number(c.plan[i]) || 0 : Number(c.monthly) || 0; }
+// fact — what the accounts bought in that contract month, paid — what they paid in it (null: LINKO not asked yet)
 function instContracts_(R, M, today) {
-  const nowM = today.slice(0, 7);
+  const days = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 864e5);
   return (R.contracts || []).filter(c => c.start && c.months > 0).map(c => {
-    const y = Number(c.start.slice(0, 4)), m0 = Number(c.start.slice(5, 7)) - 1, list = [], acc = (c.accounts || []).map(instNorm_);
-    const end = instDay_(Utilities.formatDate(new Date(Date.UTC(y, m0 + Number(c.months), Number(c.start.slice(8, 10)))), 'UTC', 'yyyy-MM-dd'), -1);
+    const list = [], acc = (c.accounts || []).map(instNorm_), end = instPeriod_(c.start, Number(c.months) - 1).to;
     for (let i = 0; i < Number(c.months); i++) {
-      const m = Utilities.formatDate(new Date(Date.UTC(y, m0 + i, 1)), 'UTC', 'yyyy-MM'); if (m > nowM) break;
-      const got = M[m] || null; let fact = null;
-      if (got) { fact = 0; Object.keys(got).forEach(n => { if (acc.indexOf(instNorm_(n)) >= 0) fact += got[n]; }); fact = instR2_(fact); }
-      list.push({ m: m, plan: instPlanOf_(c, i), fact: fact });
+      const p = instPeriod_(c.start, i); if (p.from > today) break;
+      const got = M[p.from + '|' + p.to] || null; let fact = null, paid = null;
+      if (got) { fact = 0; paid = 0; Object.keys(got).forEach(n => { if (acc.indexOf(instNorm_(n)) >= 0) { fact += got[n].s || 0; paid += got[n].p || 0; } }); fact = instR2_(fact); paid = instR2_(paid); }
+      list.push({ m: p.from.slice(0, 7), from: p.from, to: p.to, plan: instPlanOf_(c, i), fact: fact, paid: paid });
     }
     let total = 0; for (let i = 0; i < Number(c.months); i++) total += instPlanOf_(c, i);
-    const cur = list.filter(x => x.m === nowM)[0] || null, daysLeft = Math.round((Date.parse(end + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 864e5);
+    const sum = k => instR2_(list.reduce((a, x) => a + (x[k] || 0), 0));
+    const cur = list.filter(x => x.from <= today && today <= x.to)[0] || null;
     return { id: c.id, title: c.title || (c.accounts || []).join(' + '), accounts: c.accounts || [], monthly: Number(c.monthly) || 0, total: instR2_(total), months: Number(c.months), start: c.start, end: end,
-      active: today >= c.start && today <= end, daysLeft: daysLeft, cur: cur, list: list, agent: c.agent || '' };
+      active: today >= c.start && today <= end, daysLeft: days(today, end), curLeft: cur ? days(today, cur.to) + 1 : null, cur: cur, list: list,
+      bought: sum('fact'), paid: sum('paid'), agent: c.agent || '' };
   });
 }
 function instTexts_(R, clients, contracts, today) {
   const f = v => '$' + Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' '), dm = d => d.slice(8, 10) + '.' + d.slice(5, 7);
-  const monthEnd = instDay_(Utilities.formatDate(new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 1)), 'UTC', 'yyyy-MM-dd'), -1);
-  const leftM = Math.round((Date.parse(monthEnd + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 864e5) + 1;
-  // a contract worth a reminder: the month is ending (10 days or less) and the plan is not bought, or the contract ends within 30 days
-  const ctAlert = c => c.active && ((c.cur && c.cur.fact != null && c.cur.fact < c.cur.plan && leftM <= 10) || c.daysLeft <= 30);
-  const ctLine = c => '📄 Договор «' + c.title + '»: ' + (c.cur && c.cur.fact != null ? 'в этом месяце взял ' + f(c.cur.fact) + ' из ' + f(c.cur.plan) + (c.cur.fact < c.cur.plan ? ', осталось ' + f(c.cur.plan - c.cur.fact) + ' за ' + leftM + ' дн.' : ' ✓') : 'план в этом месяце ' + f(c.cur ? c.cur.plan : c.monthly)) + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
+  // a contract worth a reminder: its month is ending (10 days or less) and the plan is not bought, or the contract ends within 30 days
+  const ctAlert = c => c.active && ((c.cur && c.cur.fact != null && c.cur.fact < c.cur.plan && c.curLeft <= 10) || c.daysLeft <= 30);
+  const ctLine = c => '📄 Договор «' + c.title + '»: ' + (c.cur && c.cur.fact != null ? 'с ' + dm(c.cur.from) + ' по ' + dm(c.cur.to) + ' взял ' + f(c.cur.fact) + ' из ' + f(c.cur.plan) + (c.cur.fact < c.cur.plan ? ', осталось ' + f(c.cur.plan - c.cur.fact) + ' за ' + c.curLeft + ' дн.' : ' ✓') + ', оплатил ' + f(c.cur.paid || 0) : 'план в этом месяце ' + f(c.cur ? c.cur.plan : c.monthly)) + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
   const due = clients.filter(c => c.late > 0.5 || c.today > 0.5);
   const one = (c, i) => {
     const L = [(i + 1) + ') ' + c.name + (c.type === 'contract' ? ' [договор]' : c.type === 'spec' ? ' [спец]' : '') + ' · долг ' + f(c.debt)];
