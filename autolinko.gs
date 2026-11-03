@@ -918,9 +918,11 @@ function instContracts_(R, M, today) {
 }
 function instTexts_(R, clients, contracts, today) {
   const f = v => '$' + Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' '), dm = d => d.slice(8, 10) + '.' + d.slice(5, 7);
-  // a contract worth a reminder: its month is ending (10 days or less) and the plan is not bought, or the contract ends within 30 days
-  const ctAlert = c => c.active && ((c.cur && c.cur.fact != null && c.cur.fact < c.cur.plan && c.curLeft <= 10) || c.daysLeft <= 30);
-  const ctLine = c => '📄 Договор «' + c.title + '»: ' + (c.cur && c.cur.fact != null ? 'с ' + dm(c.cur.from) + ' по ' + dm(c.cur.to) + ' взял ' + f(c.cur.fact) + ' из ' + f(c.cur.plan) + (c.cur.fact < c.cur.plan ? ', осталось ' + f(c.cur.plan - c.cur.fact) + ' за ' + c.curLeft + ' дн.' : ' ✓') + ', оплатил ' + f(c.cur.paid || 0) : 'план в этом месяце ' + f(c.cur ? c.cur.plan : c.monthly)) + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
+  // a contract worth a reminder: its month is ending (10 days or less) and the month's sum is not bought or not paid
+  // (the client both buys and pays the contract sum every month), or the contract ends within 30 days
+  const ctAlert = c => c.active && ((c.cur && c.cur.fact != null && (c.cur.fact < c.cur.plan || (c.cur.paid || 0) < c.cur.plan) && c.curLeft <= 10) || c.daysLeft <= 30);
+  const ctLine = c => '📄 Договор «' + c.title + '»: ' + (c.cur && c.cur.fact != null ? 'с ' + dm(c.cur.from) + ' по ' + dm(c.cur.to) + ' взял ' + f(c.cur.fact) + ' из ' + f(c.cur.plan) + ', оплатил ' + f(c.cur.paid || 0) + ' из ' + f(c.cur.plan) +
+    ((c.cur.paid || 0) < c.cur.plan ? ' — осталось оплатить ' + f(c.cur.plan - (c.cur.paid || 0)) + ' за ' + c.curLeft + ' дн.' : ' ✓') : 'план в этом месяце ' + f(c.cur ? c.cur.plan : c.monthly)) + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
   const due = clients.filter(c => c.late > 0.5 || c.today > 0.5);
   const one = (c, i) => {
     const L = [(i + 1) + ') ' + c.name + (c.type === 'contract' ? ' [договор]' : c.type === 'spec' ? ' [спец]' : '') + ' · долг ' + f(c.debt)];
