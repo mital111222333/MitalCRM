@@ -193,6 +193,7 @@ function fast_(all) {
   const to = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(to), data = {}, errors = {};
   runJobs_(jobs, from, to, data, errors);
   try { stop_(data); } catch (e) { Logger.log('Стоп-отгрузка: ' + mask_(e.message || e)); }
+  try { inst_(data); } catch (e) { Logger.log('Рассрочка: ' + mask_(e.message || e)); }
   if (!Object.keys(data).length) return;
   const body = JSON.stringify({ data: data, from: from });
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
@@ -771,4 +772,184 @@ function visitsTrim_(x) {
 function notify_(text) {
   if (!CFG.TG_BOT || !CFG.TG_CHAT) return;
   UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: CFG.TG_CHAT, text: text }), muteHttpExceptions: true });
+}
+
+// ---------- рассрочка по заказам и договоры (правила — inst-rules.json из CRM «Деньги → 📅 Рассрочка и договоры») ----------
+// Каждый заказ клиента сам получает график: N частей (обычно 4) — через 7, 14, 21 день и последняя в день срока (обычно 30-й).
+// Сколько оплачено по каждому заказу, считается от текущего долга клиента из LINKO («Должники по срокам»): оплаты закрывают
+// самые старые заказы, поэтому долг лежит на самых новых. Долг больше, чем сумма известных заказов, — «старый долг», он весь просрочен.
+// Файлы в репозитории данных: inst-orders.json — заказы за 75 дней; inst-months.json — закупки клиентов по месяцам (для договоров);
+// inst-state.json — расчёт для CRM и готовые тексты. Каждое утро (час — из CRM) агенту приходят его клиенты, у которых сегодня
+// срок части или есть просрочка (и договоры, где месяц на исходе, а план не выбран), вам — сводка по всем агентам.
+const INST_KEEP = 75;
+function inst_(data) {
+  if (!data.orders || !data.debtors) return;
+  const r = ghRaw_('inst-rules.json'); if (r.code !== 200) return; // в CRM ещё не включено
+  const R = JSON.parse(r.text); if (!R || !R.on) return;
+  const today = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd');
+  const L = instLedger_(data.orders, today);
+  let M = {}; try { M = instMonths_(L, R, today); } catch (e) { Logger.log('Договоры, закупки по месяцам: ' + mask_(e.message || e)); }
+  const S = instCalc_(R, L, data.debtors, M, today);
+  const P = PropertiesService.getScriptProperties();
+  const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify([S.clients, S.contracts, S.texts]), Utilities.Charset.UTF_8));
+  if (hash !== P.getProperty('instHash')) { saveToGithub_('inst-state.json', JSON.stringify(S)); P.setProperty('instHash', hash); }
+  instSend_(R, S, today);
+}
+function instDay_(d, n) { return Utilities.formatDate(new Date(Date.parse(d + 'T12:00:00Z') + n * 864e5), 'UTC', 'yyyy-MM-dd'); }
+function instNorm_(s) { return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim(); }
+function instR2_(v) { return Math.round(v * 100) / 100; }
+function instUsd_(cur) { return !cur || /usd|\$|долл/i.test(cur); }
+// a LINKO order (picked or whole) → { id, d, c, cid, a, s, cur }; cancelled / fully returned → null
+function instOrder_(o) {
+  if (!o || o.id == null || /cancel|reject|отмен|отклон/i.test(String(o.status))) return null;
+  const s = n_(get2_(o, 'total_price')) - n_(get2_(o, 'total_return_price'));
+  if (!(s > 0.005)) return null;
+  return { id: o.id, d: String(get2_(o, 'created_date') || '').slice(0, 10), c: String(get2_(o, 'client.name') || ''), cid: get2_(o, 'client.id') || null,
+    a: [get2_(o, 'user.first_name'), get2_(o, 'user.second_name')].filter(String).join(' '), s: instR2_(s), cur: String(get2_(o, 'currency.name') || '') };
+}
+function instFetch_(from, to) { return all_('sales/order/?begin_date=' + from + '&end_date=' + to + '&page=1&page_size=500').map(instOrder_).filter(Boolean); }
+// orders of the last 75 days: the period file has only orders since the plan start, so older ones are kept here
+function instLedger_(orders, today) {
+  const f = ghRaw_('inst-orders.json'), cut = instDay_(today, -INST_KEEP), map = {};
+  let old = null; if (f.code === 200) try { old = JSON.parse(f.text); } catch (e) { old = null; }
+  if (old && Array.isArray(old.orders)) old.orders.forEach(o => { map[o.id] = o; });
+  else instFetch_(cut, today).forEach(o => { map[o.id] = o; }); // first run: 75 days from LINKO at once
+  orders.forEach(o => { const x = instOrder_(o); if (x) map[x.id] = x; else if (o && o.id != null) delete map[o.id]; });
+  const list = Object.keys(map).map(k => map[k]).filter(o => o.d >= cut).sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : n_(a.id) - n_(b.id)));
+  const txt = JSON.stringify({ orders: list });
+  if (txt !== f.text) saveToGithub_('inst-orders.json', txt);
+  return list;
+}
+// purchases per client per month for the contracts: months inside the 75 days come from inst-orders, older ones
+// (back to the earliest contract start, at most 13 months) are taken from LINKO once, one month per run
+function instMonths_(L, R, today) {
+  const cs = (R.contracts || []).filter(c => c.start && c.monthly > 0); if (!cs.length) return {};
+  const f = ghRaw_('inst-months.json'); let M = {}; if (f.code === 200) try { M = JSON.parse(f.text) || {}; } catch (e) { M = {}; }
+  const cutM = instDay_(today, -INST_KEEP).slice(0, 7), nowM = today.slice(0, 7), add = (o, k, v) => { o[k] = instR2_((o[k] || 0) + v); };
+  const ym = (m, n) => Utilities.formatDate(new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + n, 1)), 'UTC', 'yyyy-MM');
+  for (let m = ym(cutM, 1); m <= nowM; m = ym(m, 1)) M[m] = {};
+  L.forEach(o => { const m = o.d.slice(0, 7); if (m > cutM && instUsd_(o.cur)) add(M[m], o.c, o.s); });
+  let first = cs.map(c => c.start.slice(0, 7)).sort()[0]; if (first < ym(nowM, -13)) first = ym(nowM, -13);
+  for (let m = first; m <= cutM; m = ym(m, 1)) {
+    if (M[m]) continue;
+    const end = instDay_(ym(m, 1) + '-01', -1), sums = {};
+    instFetch_(m + '-01', end).forEach(o => { if (instUsd_(o.cur)) add(sums, o.c, o.s); });
+    M[m] = sums; break; // one old month per run
+  }
+  const txt = JSON.stringify(M); if (txt !== f.text) saveToGithub_('inst-months.json', txt);
+  return M;
+}
+// one order's schedule: parts of s/N due weekly (7, 14, 21…) with the last one on the term day; with a short term — evenly
+function instPlan_(o, left, days, parts, today) {
+  const paid = o.s - left, part = o.s / parts, weekly = 7 * (parts - 1) < days, list = [];
+  for (let k = 1; k <= parts; k++) {
+    const due = instDay_(o.d, k === parts ? days : weekly ? 7 * k : Math.round(days * k / parts));
+    const st = paid >= part * k - 0.01 ? 'paid' : due < today ? 'late' : due === today ? 'today' : 'wait';
+    list.push({ d: due, s: instR2_(part), st: st });
+  }
+  const want = d => part * list.filter(p => p.d <= d).length;
+  const late = Math.max(0, part * list.filter(p => p.d < today).length - paid), now = Math.max(0, want(today) - paid) - late;
+  return { id: o.id, d: o.d, s: o.s, a: o.a, paid: instR2_(paid), left: instR2_(left), late: instR2_(late), today: instR2_(now), parts: list };
+}
+function instCalc_(R, L, debtors, M, today) {
+  const own = {}, ctOf = {}, alias = R.alias || {}, agentOf = {};
+  Object.keys(R.clients || {}).forEach(k => { own[instNorm_(k)] = R.clients[k]; });
+  Object.keys(R.agentOf || {}).forEach(k => { agentOf[instNorm_(k)] = R.agentOf[k]; });
+  (R.contracts || []).forEach(c => (c.accounts || []).forEach(a => { ctOf[instNorm_(a)] = c; }));
+  const byC = {}; L.forEach(o => { if (instUsd_(o.cur)) (byC[instNorm_(o.c)] = byC[instNorm_(o.c)] || []).push(o); });
+  const clients = [];
+  debtors.forEach(d => {
+    const name = String(d['client.name'] || ''), k = instNorm_(name), x = own[k] || {}, ct = ctOf[k];
+    const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(v => /usd|\$|долл/i.test(v.name || ''))[0] || cs[0] || {};
+    const D = Math.abs(n_(c.debt_total)) || [c.debt_first, c.debt_second, c.debt_third, c.debt_fourth].reduce((a, v) => a + Math.abs(n_(v)), 0);
+    if (!(D > 0.5) || x.ex) return;
+    const days = Number(x.days || (ct && ct.days) || R.days || 30), parts = Math.max(1, Number(x.parts || (ct && ct.parts) || R.parts || 4));
+    const os = (byC[k] || []).slice().reverse(), orders = []; let left = D; // newest first: the debt sits on the newest orders
+    os.forEach(o => { const l = Math.min(o.s, Math.max(0, left)); left -= l; if (l > 0.005) orders.push(instPlan_(o, l, days, parts, today)); });
+    orders.reverse();
+    const old = instR2_(Math.max(0, left)), sum = key => instR2_(orders.reduce((a, o) => a + o[key], 0));
+    const next = orders.map(o => o.parts.filter(p => p.d > today && p.st !== 'paid')[0]).filter(Boolean).sort((a, b) => (a.d < b.d ? -1 : 1))[0] || null;
+    const lastA = (byC[k] || []).length ? byC[k][byC[k].length - 1].a : '';
+    const resp = [d['client.responsible_agent.first_name'], d['client.responsible_agent.second_name']].filter(String).join(' ');
+    clients.push({ name: name, agent: agentOf[k] || alias[lastA] || alias[resp] || lastA || resp || 'Без агента',
+      phone: d['client.phone'] || d['market.phone'] || '', debt: instR2_(D), old: old, late: instR2_(old + sum('late')), today: sum('today'), next: next,
+      type: ct ? 'contract' : /\bspe?t?s\b|спец/i.test(name) ? 'spec' : '', contract: ct ? ct.id : null, days: days, parts: parts, orders: orders });
+  });
+  clients.sort((a, b) => b.late - a.late || b.today - a.today || b.debt - a.debt);
+  const contracts = instContracts_(R, M, today);
+  return { at: new Date().toISOString(), day: today, days: R.days || 30, parts: R.parts || 4, clients: clients, contracts: contracts, texts: instTexts_(R, clients, contracts, today) };
+}
+// contracts: the purchase plan per month (monthly $) against what the contract's accounts bought that month
+function instContracts_(R, M, today) {
+  const nowM = today.slice(0, 7);
+  return (R.contracts || []).filter(c => c.start && c.months > 0).map(c => {
+    const y = Number(c.start.slice(0, 4)), m0 = Number(c.start.slice(5, 7)) - 1, list = [], acc = (c.accounts || []).map(instNorm_);
+    const end = instDay_(Utilities.formatDate(new Date(Date.UTC(y, m0 + Number(c.months), Number(c.start.slice(8, 10)))), 'UTC', 'yyyy-MM-dd'), -1);
+    for (let i = 0; i < Number(c.months); i++) {
+      const m = Utilities.formatDate(new Date(Date.UTC(y, m0 + i, 1)), 'UTC', 'yyyy-MM'); if (m > nowM) break;
+      const got = M[m] || null; let fact = null;
+      if (got) { fact = 0; Object.keys(got).forEach(n => { if (acc.indexOf(instNorm_(n)) >= 0) fact += got[n]; }); fact = instR2_(fact); }
+      list.push({ m: m, plan: Number(c.monthly) || 0, fact: fact });
+    }
+    const cur = list.filter(x => x.m === nowM)[0] || null, daysLeft = Math.round((Date.parse(end + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 864e5);
+    return { id: c.id, title: c.title || (c.accounts || []).join(' + '), accounts: c.accounts || [], monthly: Number(c.monthly) || 0, months: Number(c.months), start: c.start, end: end,
+      active: today >= c.start && today <= end, daysLeft: daysLeft, cur: cur, list: list, agent: c.agent || '' };
+  });
+}
+function instTexts_(R, clients, contracts, today) {
+  const f = v => '$' + Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' '), dm = d => d.slice(8, 10) + '.' + d.slice(5, 7);
+  const monthEnd = instDay_(Utilities.formatDate(new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 1)), 'UTC', 'yyyy-MM-dd'), -1);
+  const leftM = Math.round((Date.parse(monthEnd + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 864e5) + 1;
+  // a contract worth a reminder: the month is ending (10 days or less) and the plan is not bought, or the contract ends within 30 days
+  const ctAlert = c => c.active && ((c.cur && c.cur.fact != null && c.cur.fact < c.cur.plan && leftM <= 10) || c.daysLeft <= 30);
+  const ctLine = c => '📄 Договор «' + c.title + '»: ' + (c.cur && c.cur.fact != null ? 'в этом месяце взял ' + f(c.cur.fact) + ' из ' + f(c.cur.plan) + (c.cur.fact < c.cur.plan ? ', осталось ' + f(c.cur.plan - c.cur.fact) + ' за ' + leftM + ' дн.' : ' ✓') : 'план ' + f(c.monthly) + ' в месяц') + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
+  const due = clients.filter(c => c.late > 0.5 || c.today > 0.5);
+  const one = (c, i) => {
+    const L = [(i + 1) + ') ' + c.name + (c.type === 'contract' ? ' [договор]' : c.type === 'spec' ? ' [спец]' : '') + ' · долг ' + f(c.debt)];
+    L.push('   ' + [c.late > 0.5 ? '⚠ просрочено ' + f(c.late) : '', c.today > 0.5 ? '📅 сегодня ' + f(c.today) : ''].filter(String).join(' · ') + (c.phone ? ' · ☎ ' + c.phone : ''));
+    c.orders.forEach(o => {
+      const lateN = o.parts.filter(p => p.st === 'late').length, nowP = o.parts.filter(p => p.st === 'today')[0], n = o.parts.length;
+      L.push('   • №' + o.id + ' от ' + dm(o.d) + ' на ' + f(o.s) + ': оплачено ' + f(o.paid) + ', осталось ' + f(o.left) + (lateN ? ' — просрочено частей: ' + lateN + ' из ' + n : '') + (nowP ? (lateN ? ', ' : ' — ') + 'сегодня ' + (o.parts.indexOf(nowP) + 1) + '-я часть' : ''));
+    });
+    if (c.old > 0.5) L.push('   • старый долг (заказы старше ' + INST_KEEP + ' дней): ' + f(c.old));
+    if (c.next) L.push('   Следующая часть: ' + dm(c.next.d) + ' — ' + f(c.next.s));
+    const ct = c.contract != null && contracts.filter(x => x.id === c.contract)[0]; if (ct && ctAlert(ct)) L.push('   ' + ctLine(ct));
+    return L.join('\n');
+  };
+  const head = (list, who) => '📅 Оплаты по рассрочке — ' + dm(today) + (who ? ' · ' + who : '') + '\n' +
+    'Сегодня срок: ' + list.filter(c => c.today > 0.5).length + ' кл. — ' + f(list.reduce((a, c) => a + c.today, 0)) + ' · Просрочено: ' + list.filter(c => c.late > 0.5).length + ' кл. — ' + f(list.reduce((a, c) => a + c.late, 0));
+  const agents = {}, names = {};
+  due.forEach(c => { names[c.agent] = 1; }); contracts.filter(ctAlert).forEach(c => { if (c.agent) names[c.agent] = 1; });
+  Object.keys(names).forEach(a => {
+    const mine = due.filter(c => c.agent === a), cts = contracts.filter(c => ctAlert(c) && c.agent === a && !mine.some(x => x.contract === c.id));
+    agents[a] = head(mine, a) + (mine.length ? '\n\n' + mine.map(one).join('\n\n') : '') + (cts.length ? '\n\n' + cts.map(ctLine).join('\n') : '');
+  });
+  // to you: per agent, every client in one line, then the contracts that need attention
+  const byA = {}; due.forEach(c => { (byA[c.agent] = byA[c.agent] || []).push(c); });
+  const me = [head(due, ''), ''].concat(Object.keys(byA).sort().map(a => {
+    const l = byA[a];
+    return '👤 ' + a + ': сегодня ' + f(l.reduce((s, c) => s + c.today, 0)) + ', просрочено ' + f(l.reduce((s, c) => s + c.late, 0)) + '\n' +
+      l.map(c => '  • ' + c.name + ' — ' + [c.late > 0.5 ? 'просрочено ' + f(c.late) : '', c.today > 0.5 ? 'сегодня ' + f(c.today) : ''].filter(String).join(', ') + ' (долг ' + f(c.debt) + ')').join('\n');
+  })).join('\n');
+  const cts = contracts.filter(ctAlert);
+  return { me: me + (cts.length ? '\n\n' + cts.map(ctLine).join('\n') : '') + (R.crm ? '\n\nПодробно: ' + R.crm + '#/inst' : ''), agents: agents, due: due.length + cts.length };
+}
+// a long text in several Telegram messages (limit 4096)
+function instTg_(chat, text) {
+  const parts = []; let cur = '';
+  String(text).split('\n').forEach(l => { if ((cur + '\n' + l).length > 3800) { parts.push(cur); cur = l; } else cur = cur ? cur + '\n' + l : l; });
+  if (cur) parts.push(cur);
+  parts.forEach(p => UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: String(chat), text: p, disable_web_page_preview: true }), muteHttpExceptions: true }));
+}
+// once a day after the hour set in the CRM (not on Sunday unless allowed): to every agent with a linked chat and to you
+function instSend_(R, S, today) {
+  if (!CFG.TG_BOT || R.send === false) return;
+  const t = new Date(), hour = Number(Utilities.formatDate(t, CFG.TZ, 'H')), dow = Number(Utilities.formatDate(t, CFG.TZ, 'u'));
+  if (hour < Number(R.hour == null ? 9 : R.hour) || (dow === 7 && !R.sunday)) return;
+  const P = PropertiesService.getScriptProperties(); if (P.getProperty('instSent') === today) return;
+  P.setProperty('instSent', today); // first: a failure below must not send the same list again every 5 minutes
+  let n = 0;
+  if (R.agents !== false) Object.keys(S.texts.agents).forEach(a => { const ch = (R.chats || {})[a]; if (ch) { try { instTg_(ch, S.texts.agents[a]); n++; } catch (e) { Logger.log('Рассрочка, агенту ' + a + ': ' + mask_(e.message || e)); } } });
+  const me = R.me || CFG.TG_CHAT; if (me && S.texts.due) { try { instTg_(me, S.texts.me); n++; } catch (e) { Logger.log('Рассрочка, вам: ' + mask_(e.message || e)); } }
+  Logger.log('Рассрочка: напоминаний отправлено ' + n);
 }
