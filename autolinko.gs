@@ -823,7 +823,7 @@ function instLedger_(orders, today) {
 // purchases per client per month for the contracts: months inside the 75 days come from inst-orders, older ones
 // (back to the earliest contract start, at most 13 months) are taken from LINKO once, one month per run
 function instMonths_(L, R, today) {
-  const cs = (R.contracts || []).filter(c => c.start && c.monthly > 0); if (!cs.length) return {};
+  const cs = (R.contracts || []).filter(c => c.start && c.months > 0); if (!cs.length) return {};
   const f = ghRaw_('inst-months.json'); let M = {}; if (f.code === 200) try { M = JSON.parse(f.text) || {}; } catch (e) { M = {}; }
   const cutM = instDay_(today, -INST_KEEP).slice(0, 7), nowM = today.slice(0, 7), add = (o, k, v) => { o[k] = instR2_((o[k] || 0) + v); };
   const ym = (m, n) => Utilities.formatDate(new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + n, 1)), 'UTC', 'yyyy-MM');
@@ -879,7 +879,9 @@ function instCalc_(R, L, debtors, M, today) {
   const contracts = instContracts_(R, M, today);
   return { at: new Date().toISOString(), day: today, days: R.days || 30, parts: R.parts || 4, clients: clients, contracts: contracts, texts: instTexts_(R, clients, contracts, today) };
 }
-// contracts: the purchase plan per month (monthly $) against what the contract's accounts bought that month
+// contracts: the purchase plan of each month (c.plan[i]; a contract without it — the same c.monthly every month)
+// against what the contract's accounts bought that month
+function instPlanOf_(c, i) { return Array.isArray(c.plan) && c.plan[i] != null ? Number(c.plan[i]) || 0 : Number(c.monthly) || 0; }
 function instContracts_(R, M, today) {
   const nowM = today.slice(0, 7);
   return (R.contracts || []).filter(c => c.start && c.months > 0).map(c => {
@@ -889,10 +891,11 @@ function instContracts_(R, M, today) {
       const m = Utilities.formatDate(new Date(Date.UTC(y, m0 + i, 1)), 'UTC', 'yyyy-MM'); if (m > nowM) break;
       const got = M[m] || null; let fact = null;
       if (got) { fact = 0; Object.keys(got).forEach(n => { if (acc.indexOf(instNorm_(n)) >= 0) fact += got[n]; }); fact = instR2_(fact); }
-      list.push({ m: m, plan: Number(c.monthly) || 0, fact: fact });
+      list.push({ m: m, plan: instPlanOf_(c, i), fact: fact });
     }
+    let total = 0; for (let i = 0; i < Number(c.months); i++) total += instPlanOf_(c, i);
     const cur = list.filter(x => x.m === nowM)[0] || null, daysLeft = Math.round((Date.parse(end + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 864e5);
-    return { id: c.id, title: c.title || (c.accounts || []).join(' + '), accounts: c.accounts || [], monthly: Number(c.monthly) || 0, months: Number(c.months), start: c.start, end: end,
+    return { id: c.id, title: c.title || (c.accounts || []).join(' + '), accounts: c.accounts || [], monthly: Number(c.monthly) || 0, total: instR2_(total), months: Number(c.months), start: c.start, end: end,
       active: today >= c.start && today <= end, daysLeft: daysLeft, cur: cur, list: list, agent: c.agent || '' };
   });
 }
@@ -902,7 +905,7 @@ function instTexts_(R, clients, contracts, today) {
   const leftM = Math.round((Date.parse(monthEnd + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 864e5) + 1;
   // a contract worth a reminder: the month is ending (10 days or less) and the plan is not bought, or the contract ends within 30 days
   const ctAlert = c => c.active && ((c.cur && c.cur.fact != null && c.cur.fact < c.cur.plan && leftM <= 10) || c.daysLeft <= 30);
-  const ctLine = c => '📄 Договор «' + c.title + '»: ' + (c.cur && c.cur.fact != null ? 'в этом месяце взял ' + f(c.cur.fact) + ' из ' + f(c.cur.plan) + (c.cur.fact < c.cur.plan ? ', осталось ' + f(c.cur.plan - c.cur.fact) + ' за ' + leftM + ' дн.' : ' ✓') : 'план ' + f(c.monthly) + ' в месяц') + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
+  const ctLine = c => '📄 Договор «' + c.title + '»: ' + (c.cur && c.cur.fact != null ? 'в этом месяце взял ' + f(c.cur.fact) + ' из ' + f(c.cur.plan) + (c.cur.fact < c.cur.plan ? ', осталось ' + f(c.cur.plan - c.cur.fact) + ' за ' + leftM + ' дн.' : ' ✓') : 'план в этом месяце ' + f(c.cur ? c.cur.plan : c.monthly)) + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
   const due = clients.filter(c => c.late > 0.5 || c.today > 0.5);
   const one = (c, i) => {
     const L = [(i + 1) + ') ' + c.name + (c.type === 'contract' ? ' [договор]' : c.type === 'spec' ? ' [спец]' : '') + ' · долг ' + f(c.debt)];
