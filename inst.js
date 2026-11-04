@@ -31,7 +31,7 @@ const INST = {
     // LINKO user names (as in the orders) → the agent names of the CRM, for clients the balance file does not know yet
     const alias = {}; for (const o of LX.d('orders')) { const u = LX.person(o, 'user'); if (u && !alias[u]) { const a = LX.agentName(u); if (a && a !== u) alias[u] = a; } }
     const chats = {}; for (const [a, ch] of Object.entries(tg.chats || {})) if (ch?.id) chats[a] = String(ch.id);
-    return { v: 1, on: !!c.on, days: Number(c.days) || 30, parts: Number(c.parts) || 4, hour: Number(c.hour ?? 9), agents: c.agents !== false, sunday: !!c.sunday,
+    return { v: 1, on: !!c.on, days: Number(c.days) || 30, parts: Number(c.parts) || 4, hour: Number(c.hour ?? 9), agents: c.agents !== false, sunday: !!c.sunday, meXlsx: c.meXlsx !== false,
       me: tg.me?.id ? String(tg.me.id) : '', chats, agentOf, alias, clients: c.clients, contracts: c.contracts, crm: location.origin + location.pathname };
   },
   // inst-rules.json next to the synced data (same repository and key as «Синхронизация»)
@@ -199,21 +199,31 @@ const INST = {
         <label>Частей<input id="isP" type="number" min="1" max="12" value="${c.parts}"></label>
         <label>Присылать каждое утро в<select id="isH">${Array.from({ length: 14 }, (_, i) => i + 7).map(h => `<option value="${h}" ${h === Number(c.hour) ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="isA" ${c.agents !== false ? 'checked' : ''}> Каждому агенту — его клиенты</label>
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="isSun" ${c.sunday ? 'checked' : ''}> И в воскресенье</label></div>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="isSun" ${c.sunday ? 'checked' : ''}> И в воскресенье</label>
+        <label style="grid-column:1/-1;display:flex;gap:8px;align-items:center"><input type="checkbox" id="isX" ${c.meXlsx !== false ? 'checked' : ''}> Вам — один Excel-файл с полным отчётом вместо длинного списка</label></div>
+      <p class="mut">В файле: сводка и цифры по каждому агенту, кому платить сегодня, долгая просрочка (30+ дней) с подсказкой «что делать», все заказы в долг по частям, продажи и товары-лидеры, оплаты вчера и сегодня, что заканчивается на складе, договоры.</p>
       <p class="mut">Части: через 7, 14, 21 день после заказа и последняя — в день срока (при 30 днях и 4 частях: 7-й, 14-й, 21-й и 30-й день), каждая по ¼ суммы заказа. Утром приходят клиенты, у которых сегодня срок части или есть просрочка. Договоры попадают в напоминание, когда до конца месяца 10 дней и меньше, а закупка не выбрана, и за 30 дней до конца договора.</p>
       <p class="mut">Telegram: ${tg.token ? `бот подключён · ваш чат ${tg.me?.id ? '✓' : '<b class="neg">не выбран</b>'} · агентов с чатом: ${linked.length}` : '<b class="neg">бот не подключён</b>'} — <a href="#/tg">Telegram агентам</a>.</p>
       <details><summary><b>Чтобы приходило само, даже когда CRM закрыта</b> (один раз)</summary><ol class="steps"><li><a href="#/cloud">Синхронизация и настройки</a> → «📋 Скопировать готовый скрипт».</li><li>В script.google.com откройте файл автозагрузки, сотрите всё, вставьте, 💾.</li><li>Запустите <b>setup</b>. Первый раз скрипт возьмёт из LINKO заказы за 75 дней.</li></ol></details>
       <div class="bar"><button class="btn" id="isSave" type="button">Сохранить</button><span class="mut">${c.publishedAt ? 'Правила отправлены автозагрузке ' + new Date(c.publishedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span></div>`, { cls: 'w6' })}
       ${UI.panel('Как выглядит напоминание', st?.texts ? `<label class="mut">Кому <select id="isWho"><option value="">Вам (руководителю)</option>${agents.map(a => `<option ${a === INST.who ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></label>
         <div class="tgprev" id="isPrev" style="white-space:pre-wrap;margin-top:8px">${esc(INST.who && st.texts.agents[INST.who] ? st.texts.agents[INST.who] : st.texts.me)}</div>
-        <div class="bar" style="margin-top:8px"><button class="btn gray" id="isSend" type="button">✈ Отправить сейчас всем</button></div>` : '<p class="mut">Появится, когда автозагрузка первый раз посчитает графики (до 5 минут после включения).</p>', { cls: 'w6' })}</div>`;
+        <div class="bar" style="margin-top:8px;flex-wrap:wrap"><button class="btn gray" id="isSend" type="button">✈ Отправить сейчас всем</button>${c.meXlsx !== false ? '<button class="btn gray" id="isRep" type="button">📊 Прислать мне Excel-отчёт сейчас</button>' : ''}</div>` : '<p class="mut">Появится, когда автозагрузка первый раз посчитает графики (до 5 минут после включения).</p>', { cls: 'w6' })}</div>`;
   },
   async sendNow(st) {
     const tg = CRMLocal.ext().tg || {}, c = INST.cfg(); if (!tg.token) throw new Error('Сначала подключите бота: Telegram агентам');
     let n = 0;
     if (c.agents !== false) for (const [a, t] of Object.entries(st.texts.agents || {})) { const ch = tg.chats?.[a]?.id; if (ch) { await TG.send(ch, esc(t)); n++; } }
-    if (tg.me?.id) { await TG.send(tg.me.id, esc(st.texts.me)); n++; }
+    if (tg.me?.id) { if (c.meXlsx !== false) { await INST.report(); n++; } else { await TG.send(tg.me.id, esc(st.texts.me)); n++; } }
     return n ? `Отправлено: ${n}` : 'Некому отправить: привяжите чаты в «Telegram агентам»';
+  },
+  // the Excel report is made by the auto-loader (it has all the LINKO data): its web app (the «🔄 Обновить» button's address) sends it now
+  async report() {
+    const w = window.LINKO_AUTO?.web?.(); if (!w) throw new Error('Для отчёта сейчас нужна кнопка «Обновить» из LINKO: Синхронизация и настройки → «⚡ Кнопка «Обновить»». Утром отчёт придёт и без неё.');
+    let j; try { const r = await fetch(w.url + (w.url.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(w.key) + '&report=1&t=' + Date.now(), { redirect: 'follow', cache: 'no-store' }); j = await r.json(); }
+    catch { throw new Error('Скрипт Google не ответил — попробуйте через минуту'); }
+    if (j.error) throw new Error(/ключ кнопки/.test(j.error) ? 'Скрипт Google старый — скопируйте его заново (Синхронизация и настройки) и разверните новую версию веб-приложения' : j.error);
+    return j;
   },
 };
 
@@ -252,10 +262,11 @@ EXT_PAGES.inst = async el => {
   main.querySelectorAll('[data-ct]').forEach(b => b.onclick = () => INST.contractDialog(c.contracts.find(k => k.id === b.dataset.ct)));
   const sv = $('#isSave', main);
   if (sv) sv.onclick = () => {
-    Object.assign(c, { on: $('#isOn', main).checked, days: Number($('#isD', main).value) || 30, parts: Number($('#isP', main).value) || 4, hour: Number($('#isH', main).value), agents: $('#isA', main).checked, sunday: $('#isSun', main).checked });
+    Object.assign(c, { on: $('#isOn', main).checked, days: Number($('#isD', main).value) || 30, parts: Number($('#isP', main).value) || 4, hour: Number($('#isH', main).value), agents: $('#isA', main).checked, sunday: $('#isSun', main).checked, meXlsx: $('#isX', main).checked });
     INST.changed(c.on ? 'Включено — автозагрузка посчитает графики за 5 минут' : 'Выключено'); EXT_PAGES.inst(el);
   };
   const who = $('#isWho', main); if (who) who.onchange = () => { INST.who = who.value; $('#isPrev', main).textContent = INST.who ? st.texts.agents[INST.who] : st.texts.me; };
+  const rp = $('#isRep', main); if (rp) rp.onclick = async () => { rp.disabled = true; rp.textContent = 'Собираю отчёт…'; try { await INST.report(); toast('Отчёт отправлен вам в Telegram'); } catch (e) { toast(e.message); } finally { rp.disabled = false; rp.textContent = '📊 Прислать мне Excel-отчёт сейчас'; } };
   const sn = $('#isSend', main); if (sn) sn.onclick = async () => { if (!confirm('Отправить напоминания в Telegram сейчас — вам и агентам?')) return; sn.disabled = true; try { toast(await INST.sendNow(st)); } catch (e) { toast(e.message); } finally { sn.disabled = false; } };
 };
 

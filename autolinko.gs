@@ -241,6 +241,7 @@ function doGet(e) {
   if (p.agent) return json_(agent_(p.agent)); // кабинет агента: только его файл, без ключа кнопки
   if (p.tg) return json_(tgAgent_(p.tg));     // кабинет агента из Telegram (мини-приложение бота)
   if (!CFG.WEB_KEY || CFG.WEB_KEY.indexOf('ВСТАВЬТЕ') === 0 || p.k !== CFG.WEB_KEY) return json_({ error: 'Нет доступа: ключ кнопки не совпадает. Скопируйте скрипт из CRM заново.' });
+  if (p.report) { try { return json_(instReportNow_()); } catch (err) { return json_({ error: mask_(err.message || err) }); } } // «📊 Прислать отчёт сейчас»
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(60000)) return json_({ error: 'LINKO сейчас уже обновляется — нажмите ещё раз через минуту' });
   try { return json_(now_()); }
@@ -797,7 +798,7 @@ function inst_(data) {
   const P = PropertiesService.getScriptProperties();
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify([S.clients, S.contracts, S.texts]), Utilities.Charset.UTF_8));
   if (hash !== P.getProperty('instHash')) { saveToGithub_('inst-state.json', JSON.stringify(S)); P.setProperty('instHash', hash); }
-  instSend_(R, S, today);
+  instSend_(R, S, today, data);
 }
 function instDay_(d, n) { return Utilities.formatDate(new Date(Date.parse(d + 'T12:00:00Z') + n * 864e5), 'UTC', 'yyyy-MM-dd'); }
 function instNorm_(s) { return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim(); }
@@ -965,8 +966,9 @@ function instTg_(chat, text) {
   if (cur) parts.push(cur);
   parts.forEach(p => UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendMessage', { method: 'post', contentType: 'application/json', payload: JSON.stringify({ chat_id: String(chat), text: p, disable_web_page_preview: true }), muteHttpExceptions: true }));
 }
-// once a day after the hour set in the CRM (not on Sunday unless allowed): to every agent with a linked chat and to you
-function instSend_(R, S, today) {
+// once a day after the hour set in the CRM (not on Sunday unless allowed): to every agent with a linked chat his list, to you —
+// the Excel report (instReport_; as text if R.meXlsx is off or the file could not be made). F — linko-fast data of this run
+function instSend_(R, S, today, F) {
   if (!CFG.TG_BOT || R.send === false) return;
   const t = new Date(), hour = Number(Utilities.formatDate(t, CFG.TZ, 'H')), dow = Number(Utilities.formatDate(t, CFG.TZ, 'u'));
   if (hour < Number(R.hour == null ? 9 : R.hour) || (dow === 7 && !R.sunday)) return;
@@ -974,7 +976,13 @@ function instSend_(R, S, today) {
   P.setProperty('instSent', today); // first: a failure below must not send the same list again every 5 minutes
   let n = 0;
   if (R.agents !== false) Object.keys(S.texts.agents).forEach(a => { const ch = (R.chats || {})[a]; if (ch) { try { instTg_(ch, S.texts.agents[a]); n++; } catch (e) { Logger.log('Рассрочка, агенту ' + a + ': ' + mask_(e.message || e)); } } });
-  const me = R.me || CFG.TG_CHAT; if (me && S.texts.due) { try { instTg_(me, S.texts.me); n++; } catch (e) { Logger.log('Рассрочка, вам: ' + mask_(e.message || e)); } }
+  const me = R.me || CFG.TG_CHAT, text = () => { if (S.texts.due) try { instTg_(me, S.texts.me); n++; } catch (e) { Logger.log('Рассрочка, вам: ' + mask_(e.message || e)); } };
+  if (me && R.meXlsx !== false) {
+    try {
+      const x = ghRaw_('linko-extra.json'), X = x.code === 200 ? (JSON.parse(x.text).data || {}) : {};
+      const rep = instReport_(R, S, F || {}, X, today); instSendFile_(me, rep.blob, rep.caption); n++;
+    } catch (e) { Logger.log('Отчёт Excel не получился, отправляю текстом: ' + mask_(e.message || e)); text(); }
+  } else if (me) text();
   Logger.log('Рассрочка: напоминаний отправлено ' + n);
 }
 
@@ -1040,4 +1048,184 @@ function discNotify_() {
     if (me && (late.length || miss.length)) try { instTg_(me, '📋 Явка на ' + R.autoAbs + ', ' + today.slice(8, 10) + '.' + today.slice(5, 7) + '\n' + (miss.length ? '❗ Нет отчёта — невыход: ' + miss.join(', ') : '✓ Невыходов нет') + (late.length ? '\n⏰ Опоздали: ' + late.join('; ') : '\n✓ Опозданий нет') + '\nПодробно: CRM → Агенты → Дисциплина'); } catch (e) { Logger.log('Дисциплина, вам: ' + mask_(e.message || e)); }
   }
   if (changed) P.setProperty(key, JSON.stringify(sent));
+}
+
+// ---------- утренний Excel-отчёт руководителю (вместо длинного списка в Telegram) ----------
+// Один файл: сводка и цифры по агентам, кому платить сегодня, долгая просрочка с подсказкой «что делать», заказы в долг по частям,
+// продажи, оплаты, что заканчивается на складе, договоры. Строится прямо здесь (без Google Таблиц и Диска — новых разрешений не нужно)
+// из тех же данных, что и рассрочка: заказы, оплаты и должники из LINKO (linko-fast), рекомендация склада (linko-extra), расчёт inst_.
+// Приходит каждое утро вместе с напоминаниями (час — из CRM); кнопка в CRM присылает его сразу (doGet ?report=1).
+
+// a small .xlsx writer: sheets = [{ name, cols: [widths], rows: [[cell…]], freeze: rows, filter: [row, cols, lastRow] }], cell = value | { v, s }
+// styles: 0 text, 1 header, 2 money, 3 money red bold, 4 text red bold, 5 title, 6 money bold, 7 text bold, 8 percent,
+// 9 text on red, 10 money on red, 11 text on yellow, 12 money on yellow, 13 wrapped text, 14 grey note
+function xlsx_(sheets, fileName) {
+  const x = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+  const col = n => { let s = ''; n++; while (n) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+  const sheetXml = sh => {
+    const rows = sh.rows.map((r, i) => '<row r="' + (i + 1) + '">' + (r || []).map((c, j) => {
+      if (c == null || c === '') return '';
+      const o = typeof c === 'object' ? c : { v: c }; if (o.v == null || o.v === '') return o.s ? '<c r="' + col(j) + (i + 1) + '" s="' + o.s + '"/>' : '';
+      const ref = col(j) + (i + 1), st = o.s ? ' s="' + o.s + '"' : '';
+      return typeof o.v === 'number' && isFinite(o.v) ? '<c r="' + ref + '"' + st + '><v>' + o.v + '</v></c>' : '<c r="' + ref + '"' + st + ' t="inlineStr"><is><t xml:space="preserve">' + x(o.v) + '</t></is></c>';
+    }).join('') + '</row>').join('');
+    const freeze = sh.freeze ? '<sheetViews><sheetView workbookViewId="0"><pane ySplit="' + sh.freeze + '" topLeftCell="A' + (sh.freeze + 1) + '" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' : '';
+    const cols = sh.cols ? '<cols>' + sh.cols.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join('') + '</cols>' : '';
+    const af = sh.filter && sh.filter[2] > sh.filter[0] ? '<autoFilter ref="A' + sh.filter[0] + ':' + col(sh.filter[1] - 1) + sh.filter[2] + '"/>' : '';
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' + freeze + cols + '<sheetData>' + rows + '</sheetData>' + af + '</worksheet>';
+  };
+  const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="0%"/></numFmts>' +
+    '<fonts count="5"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFC00000"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font><font><i/><sz val="10"/><color rgb="FF707070"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDCE6F0"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFDE2E1"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/></patternFill></fill></fills>' +
+    '<borders count="2"><border/><border><bottom style="thin"><color rgb="FF9AA9B8"/></bottom></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="15">' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf>' +
+    '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" applyNumberFormat="1"/>' +
+    '<xf numFmtId="164" fontId="2" fillId="0" borderId="0" applyNumberFormat="1" applyFont="1"/>' +
+    '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" applyFont="1"/>' +
+    '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" applyFont="1"/>' +
+    '<xf numFmtId="164" fontId="1" fillId="0" borderId="0" applyNumberFormat="1" applyFont="1"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" applyFont="1"/>' +
+    '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" applyNumberFormat="1"/>' +
+    '<xf numFmtId="0" fontId="0" fillId="3" borderId="0" applyFill="1"/>' +
+    '<xf numFmtId="164" fontId="2" fillId="3" borderId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>' +
+    '<xf numFmtId="0" fontId="0" fillId="4" borderId="0" applyFill="1"/>' +
+    '<xf numFmtId="164" fontId="1" fillId="4" borderId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>' +
+    '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" applyFont="1"/>' +
+    '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+  const names = {}, safe = (n, i) => { let s = String(n).replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31) || 'Лист' + (i + 1); while (names[s]) s = s.slice(0, 28) + ' ' + i; names[s] = 1; return s; };
+  const list = sheets.map((sh, i) => ({ sh: sh, name: safe(sh.name, i) }));
+  const B = (path, text) => Utilities.newBlob(text, 'application/xml', path);
+  const files = [
+    B('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + list.map((s, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('') + '</Types>'),
+    B('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
+    B('xl/workbook.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + list.map((s, i) => '<sheet name="' + x(s.name) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>').join('') + '</sheets></workbook>'),
+    B('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + list.map((s, i) => '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>').join('') + '<Relationship Id="rId' + (list.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),
+    B('xl/styles.xml', styles),
+  ].concat(list.map((s, i) => B('xl/worksheets/sheet' + (i + 1) + '.xml', sheetXml(s.sh))));
+  return Utilities.zip(files, fileName).setContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+}
+
+// the report itself. R — inst-rules, S — the result of instCalc_, F — linko-fast data (orders, items, pays, debtors), X — linko-extra data
+function instReport_(R, S, F, X, today) {
+  const dm = d => (d ? d.slice(8, 10) + '.' + d.slice(5, 7) : ''), dRu = d => (d ? dm(d) + '.' + d.slice(0, 4) : '');
+  const days = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 864e5);
+  const yday = instDay_(today, -1), from = planFrom_(today), agentOf = {}, alias = R.alias || {};
+  Object.keys(R.agentOf || {}).forEach(k => { agentOf[instNorm_(k)] = R.agentOf[k]; });
+  const user = o => [get2_(o, 'user.first_name'), get2_(o, 'user.second_name')].filter(String).join(' ');
+  const agent = (client, u) => agentOf[instNorm_(client)] || alias[u] || u || 'Без агента';
+  const M = v => ({ v: Math.round(v || 0), s: 2 }), MR = v => (v > 0.5 ? { v: Math.round(v), s: 3 } : M(v)), H = t => ({ v: t, s: 1 }), MB = v => ({ v: Math.round(v || 0), s: 6 });
+  const MR0 = (v, plan) => (v + 0.5 < plan ? { v: Math.round(v), s: 3 } : { v: Math.round(v), s: 6 });
+  // how late each debtor is: the oldest overdue part; a debt older than the known orders counts as more than 75 days
+  const cl = S.clients.map(c => {
+    const lateParts = []; c.orders.forEach(o => o.parts.forEach(p => { if (p.st === 'late') lateParts.push(p.d); }));
+    const oldest = lateParts.sort()[0], lateDays = c.old > 0.5 ? Math.max(INST_KEEP + 1, oldest ? days(oldest, today) : 0) : oldest ? days(oldest, today) : 0;
+    return Object.assign({}, c, { lateDays: lateDays });
+  });
+  const todo = c => (c.lateDays >= 60 || c.old > 0.5 ? 'Стоп-отгрузка. Руководитель лично: погасить или забрать товар (возврат)' : c.lateDays >= 30 ? 'Визит руководителя с агентом, письменный график погашения' : 'Агенту: забрать оплату на этой неделе, новые заказы — только с оплатой');
+  // orders and payments of the plan period (linko-fast), in dollars
+  const ords = (F.orders || []).map(o => { const x = instOrder_(o); return x && instUsd_(x.cur) ? Object.assign(x, { agent: agent(x.c, x.a) }) : null; }).filter(Boolean);
+  const pays = (F.pays || []).filter(p => instUsd_(get2_(p, 'currency.name')) && n_(p.amount) > 0 && !p.order_return && !/return|возврат/i.test(String(p.type)))
+    .map(p => ({ d: String(p.created_date || p.accepted_time || '').slice(0, 10), t: String(p.created_date || '').slice(11, 16), c: String(get2_(p, 'client.name') || ''), s: n_(p.amount), u: user(p), type: String(p.payment_type || p.type || '') }))
+    .map(p => Object.assign(p, { agent: agent(p.c, p.u) }));
+  const agents = {}, A = a => (agents[a] = agents[a] || { debtors: 0, debt: 0, late: 0, today: 0, long: 0, longN: 0, sold: 0, ords: 0, ydSold: 0, paid: 0, ydPaid: 0, tdPaid: 0 });
+  cl.forEach(c => { const a = A(c.agent); a.debtors++; a.debt += c.debt; a.late += c.late; a.today += c.today; if (c.lateDays >= 30) { a.long += c.debt; a.longN++; } });
+  ords.forEach(o => { const a = A(o.agent); a.sold += o.s; a.ords++; if (o.d === yday) a.ydSold += o.s; });
+  pays.forEach(p => { const a = A(p.agent); a.paid += p.s; if (p.d === yday) a.ydPaid += p.s; if (p.d === today) a.tdPaid += p.s; });
+  const sum = (l, k) => l.reduce((s, x) => s + (x[k] || 0), 0), names = Object.keys(agents).sort(), all = names.map(n => agents[n]);
+  const due = cl.filter(c => c.late > 0.5 || c.today > 0.5).sort((a, b) => a.agent.localeCompare(b.agent) || b.late - a.late || b.today - a.today);
+  const long = cl.filter(c => c.lateDays >= 30 || c.old > 0.5).sort((a, b) => b.lateDays - a.lateDays || b.debt - a.debt);
+  const ctNeed = (S.contracts || []).filter(k => k.active && k.cur && k.cur.fact != null && ((k.cur.paid || 0) < k.cur.plan || k.cur.fact < k.cur.plan));
+  const sheets = [];
+
+  // 1) Сводка
+  const kpi = [
+    ['Долг клиентов всего', sum(cl, 'debt'), cl.length + ' кл.', 6], ['Просрочено по рассрочке', sum(cl, 'late'), cl.filter(c => c.late > 0.5).length + ' кл. — лист «Оплатить сегодня»', 3],
+    ['Срок оплаты сегодня', sum(cl, 'today'), cl.filter(c => c.today > 0.5).length + ' кл.', 6], ['Долгая просрочка (30+ дней)', sum(long, 'debt'), long.length + ' кл. — лист «Долгая просрочка»', 3],
+    ['Продажи с ' + dm(from), sum(ords, 's'), ords.length + ' заказов', 6], ['Оплаты с ' + dm(from), sum(pays, 's'), pays.length + ' оплат', 6],
+    ['Продажи вчера (' + dm(yday) + ')', sum(ords.filter(o => o.d === yday), 's'), ords.filter(o => o.d === yday).length + ' заказов', 6], ['Оплаты вчера (' + dm(yday) + ')', sum(pays.filter(p => p.d === yday), 's'), pays.filter(p => p.d === yday).length + ' оплат', 6],
+    ['Договоры: план месяца не выполнен', ctNeed.length, 'лист «Договоры»', 7],
+  ];
+  const sv = [[{ v: 'MITAL — отчёт на ' + dRu(today), s: 5 }], [{ v: 'Данные LINKO: заказы, оплаты, долги. Суммы в $. Рассрочка: ' + (R.parts || 4) + ' части за ' + (R.days || 30) + ' дней. Лучше смотреть на компьютере.', s: 14 }], []];
+  kpi.forEach(k => sv.push([{ v: k[0], s: 7 }, { v: Math.round(k[1]), s: k[3] }, { v: k[2], s: 14 }]));
+  sv.push([], [{ v: 'По агентам', s: 5 }]);
+  const hRow = sv.length + 1;
+  sv.push(['Агент', 'Клиентов с долгом', 'Долг', 'Просрочено', 'Срок сегодня', 'Долгая просрочка (30+ дн.)', 'Таких клиентов', 'Продажи за период', 'Заказов', 'Продажи вчера', 'Оплаты за период', 'Оплаты вчера', 'Оплаты сегодня'].map(H));
+  names.forEach(n => { const a = agents[n]; sv.push([n, a.debtors, M(a.debt), MR(a.late), M(a.today), MR(a.long), a.longN, M(a.sold), a.ords, M(a.ydSold), M(a.paid), M(a.ydPaid), M(a.tdPaid)]); });
+  sv.push([{ v: 'Итого', s: 7 }, sum(all, 'debtors'), MB(sum(all, 'debt')), MB(sum(all, 'late')), MB(sum(all, 'today')), MB(sum(all, 'long')), sum(all, 'longN'), MB(sum(all, 'sold')), sum(all, 'ords'), MB(sum(all, 'ydSold')), MB(sum(all, 'paid')), MB(sum(all, 'ydPaid')), MB(sum(all, 'tdPaid'))]);
+  sheets.push({ name: 'Сводка', cols: [34, 14, 13, 13, 13, 16, 12, 15, 10, 13, 15, 13, 13], rows: sv, filter: [hRow, 13, hRow + names.length] });
+
+  // 2) Оплатить сегодня (просрочка и срок сегодня), по агентам
+  const r2 = [['Агент', 'Клиент', 'Тип', 'Телефон', 'Долг', 'Просрочено', 'Срок сегодня', 'Дней просрочки', 'Следующая часть', 'Сумма', 'Заказов в долг'].map(H)];
+  due.forEach(c => { const red = c.lateDays >= 30; r2.push([c.agent, red ? { v: c.name, s: 4 } : c.name, c.type === 'contract' ? 'договор' : c.type === 'spec' ? 'спец' : '', c.phone || '', M(c.debt), MR(c.late), c.today > 0.5 ? { v: Math.round(c.today), s: 12 } : M(0), c.lateDays ? { v: c.lateDays, s: red ? 4 : 0 } : '', c.next ? dRu(c.next.d) : '', c.next ? M(c.next.s) : '', c.orders.length]); });
+  if (r2.length === 1) r2.push([{ v: 'Сегодня никто не должен платить, просрочек нет', s: 14 }]);
+  sheets.push({ name: 'Оплатить сегодня', cols: [24, 34, 9, 16, 12, 12, 12, 10, 14, 10, 10], rows: r2, freeze: 1, filter: [1, 11, r2.length] });
+
+  // 3) Долгая просрочка — что делать
+  const r3 = [['Агент', 'Клиент', 'Телефон', 'Долг', 'Просрочено', 'Дней просрочки', 'Долг старше ' + INST_KEEP + ' дн.', 'Что делать'].map(H)];
+  long.forEach(c => { const hot = c.lateDays >= 60 || c.old > 0.5; r3.push([hot ? { v: c.agent, s: 9 } : c.agent, hot ? { v: c.name, s: 9 } : c.name, c.phone || '', hot ? { v: Math.round(c.debt), s: 10 } : M(c.debt), MR(c.late), { v: c.lateDays, s: hot ? 4 : 0 }, c.old > 0.5 ? MR(c.old) : '', { v: todo(c), s: 13 }]); });
+  if (r3.length === 1) r3.push([{ v: 'Клиентов с просрочкой 30 дней и больше нет', s: 14 }]);
+  sheets.push({ name: 'Долгая просрочка', cols: [24, 34, 16, 12, 12, 10, 14, 60], rows: r3, freeze: 1, filter: [1, 8, r3.length] });
+
+  // 4) Заказы в долг: каждый заказ с остатком и его части
+  const r4 = [['Агент', 'Клиент', '№ заказа', 'Дата', 'Сумма', 'Оплачено', 'Осталось', 'Частей оплачено', 'Просрочено частей', 'Сегодня', 'Ближайший срок', 'Части (дата · сумма · статус)'].map(H)];
+  cl.forEach(c => c.orders.forEach(o => {
+    const paidN = o.parts.filter(p => p.st === 'paid').length, lateN = o.parts.filter(p => p.st === 'late').length, nx = o.parts.filter(p => p.st !== 'paid' && p.d >= today)[0];
+    r4.push([c.agent, c.name, String(o.id), dRu(o.d), M(o.s), M(o.paid), lateN ? { v: Math.round(o.left), s: 3 } : M(o.left), paidN + ' из ' + o.parts.length, lateN ? { v: lateN, s: 4 } : 0, o.today > 0.5 ? { v: Math.round(o.today), s: 12 } : '', nx ? dRu(nx.d) : '',
+      o.parts.map(p => dm(p.d) + ' · ' + Math.round(p.s) + ' · ' + ({ paid: 'оплачено', late: 'ПРОСРОЧЕНО', today: 'сегодня', wait: 'ждём' }[p.st] || p.st)).join('   ')]);
+  }));
+  sheets.push({ name: 'Заказы в долг', cols: [22, 30, 10, 11, 10, 10, 10, 10, 10, 9, 12, 90], rows: r4, freeze: 1, filter: [1, 12, r4.length] });
+
+  // 5) Продажи: по агентам и товары-лидеры периода
+  const r5 = [[{ v: 'Продажи с ' + dRu(from) + ' по ' + dRu(today) + ' (без возвратов)', s: 5 }], [], ['Агент', 'Заказов', 'Продажи', 'Вчера', 'Сегодня', 'Средний заказ'].map(H)];
+  names.forEach(n => { const l = ords.filter(o => o.agent === n); if (l.length) r5.push([n, l.length, M(sum(l, 's')), M(sum(l.filter(o => o.d === yday), 's')), M(sum(l.filter(o => o.d === today), 's')), M(sum(l, 's') / l.length)]); });
+  r5.push([{ v: 'Итого', s: 7 }, ords.length, MB(sum(ords, 's')), MB(sum(ords.filter(o => o.d === yday), 's')), MB(sum(ords.filter(o => o.d === today), 's')), '']);
+  const prod = {}; (F.items || []).forEach(i => { if (i.is_bonus || !instUsd_(get2_(i, 'currency.name'))) return; const k = String(i.product_name || '—'), q = n_(i.amount) - n_(i.return_amount); const p = (prod[k] = prod[k] || { q: 0, s: 0 }); p.q += q; p.s += q * n_(i.price); });
+  const top = Object.keys(prod).map(k => ({ k: k, q: prod[k].q, s: prod[k].s })).sort((a, b) => b.s - a.s).slice(0, 40);
+  if (top.length) { r5.push([], [{ v: 'Товары-лидеры периода', s: 5 }], ['Товар', 'Штук', 'Сумма'].map(H)); top.forEach(p => r5.push([p.k, Math.round(p.q), M(p.s)])); }
+  sheets.push({ name: 'Продажи', cols: [44, 10, 14, 12, 12, 13], rows: r5 });
+
+  // 6) Оплаты: вчера и сегодня по одной, затем по агентам за период
+  const r6 = [['Дата', 'Время', 'Агент', 'Клиент', 'Сумма', 'Тип'].map(H)];
+  pays.filter(p => p.d >= yday).sort((a, b) => (b.d + b.t).localeCompare(a.d + a.t)).forEach(p => r6.push([dRu(p.d), p.t, p.agent, p.c, M(p.s), p.type]));
+  if (r6.length === 1) r6.push([{ v: 'Вчера и сегодня оплат нет', s: 14 }]);
+  r6.push([], [{ v: 'Оплаты по агентам с ' + dRu(from), s: 5 }], ['Агент', 'Оплат', 'Сумма', 'Вчера', 'Сегодня'].map(H));
+  names.forEach(n => { const l = pays.filter(p => p.agent === n); if (l.length) r6.push([n, l.length, M(sum(l, 's')), M(sum(l.filter(p => p.d === yday), 's')), M(sum(l.filter(p => p.d === today), 's'))]); });
+  sheets.push({ name: 'Оплаты', cols: [12, 8, 26, 34, 12, 16], rows: r6, freeze: 1 });
+
+  // 7) Склад: что заканчивается (рекомендация LINKO)
+  const rec = ((X && X.recom) || []).map(r => ({ name: r.full_name || r.name || '—', brand: get2_(r, 'brand.name') || '', bal: n_(r.total_balance), day: n_(r.by_day), left: r.remain_days == null || r.remain_days === '' ? null : n_(r.remain_days), week: n_(r.week_recommendations), month: n_(r.month_recommendations) }))
+    .filter(r => r.day > 0 && r.left !== null && r.left <= 14).sort((a, b) => a.left - b.left);
+  const r7 = [['Товар', 'Бренд', 'Остаток, шт', 'Продаётся в день', 'Хватит на дней', 'Заказать на неделю', 'Заказать на месяц'].map(H)];
+  rec.forEach(r => r7.push([r.left <= 3 ? { v: r.name, s: 9 } : r.name, r.brand, Math.round(r.bal), Math.round(r.day * 10) / 10, { v: Math.round(r.left), s: r.left <= 3 ? 4 : 0 }, Math.round(r.week), Math.round(r.month)]));
+  if (r7.length === 1) r7.push([{ v: X && X.recom ? 'Товаров, которых хватит меньше чем на 2 недели, нет' : 'Нет рекомендации склада из LINKO', s: 14 }]);
+  sheets.push({ name: 'Склад — заканчивается', cols: [50, 16, 12, 12, 12, 14, 14], rows: r7, freeze: 1, filter: [1, 7, r7.length] });
+
+  // 8) Договоры
+  const r8 = [['Договор', 'Агент', 'Месяц договора', 'План месяца', 'Взял', 'Оплатил', 'Осталось оплатить', 'Дней до конца месяца', 'С начала: взял', 'С начала: оплатил', 'Конец договора'].map(H)];
+  (S.contracts || []).forEach(k => { const c = k.cur || {}; r8.push([k.title, k.agent || '', c.from ? dm(c.from) + '–' + dm(c.to) : '', M(c.plan), c.fact == null ? '' : MR0(c.fact, c.plan), c.paid == null ? '' : MR0(c.paid || 0, c.plan), c.plan ? MR(Math.max(0, c.plan - (c.paid || 0))) : '', k.curLeft == null ? '' : k.curLeft, M(k.bought), M(k.paid), { v: dRu(k.end) + (k.daysLeft <= 30 && k.daysLeft >= 0 ? ' (через ' + k.daysLeft + ' дн.)' : ''), s: k.daysLeft <= 30 ? 4 : 0 }]); });
+  if (r8.length === 1) r8.push([{ v: 'Договоров нет (их вносят в CRM: Деньги → Рассрочка и договоры → Договоры)', s: 14 }]);
+  sheets.push({ name: 'Договоры', cols: [32, 22, 14, 12, 12, 12, 14, 12, 14, 14, 22], rows: r8, freeze: 1 });
+
+  const f = v => '$' + Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const caption = '📊 Отчёт на ' + dRu(today) + '\nДолг клиентов ' + f(sum(cl, 'debt')) + ' · просрочено ' + f(sum(cl, 'late')) + ' (' + cl.filter(c => c.late > 0.5).length + ' кл.)\nСрок сегодня ' + f(sum(cl, 'today')) + ' · долгая просрочка 30+ дн.: ' + long.length + ' кл. — ' + f(sum(long, 'debt')) +
+    '\nВчера: продажи ' + f(sum(ords.filter(o => o.d === yday), 's')) + ', оплаты ' + f(sum(pays.filter(p => p.d === yday), 's')) + '\nПодробно — в файле' + (R.crm ? ' и в CRM: ' + R.crm + '#/inst' : '');
+  return { blob: xlsx_(sheets, 'MITAL_отчёт_' + dm(today).replace('.', '-') + '.xlsx'), caption: caption };
+}
+function instSendFile_(chat, blob, caption) {
+  const r = UrlFetchApp.fetch('https://api.telegram.org/bot' + CFG.TG_BOT + '/sendDocument', { method: 'post', payload: { chat_id: String(chat), caption: caption.slice(0, 1000), document: blob }, muteHttpExceptions: true });
+  if (r.getResponseCode() !== 200) throw new Error('Telegram не принял файл: ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 150));
+}
+// «📊 Прислать отчёт сейчас» из CRM: те же данные из файлов репозитория
+function instReportNow_() {
+  const read = p => { const r = ghRaw_(p); return r.code === 200 ? JSON.parse(r.text) : null; };
+  const R = read('inst-rules.json'); if (!R || !R.on) return { error: 'Рассрочка выключена в CRM' };
+  const S = read('inst-state.json'); if (!S) return { error: 'Расчёт ещё не готов — подождите 5 минут после включения' };
+  const chat = R.me || CFG.TG_CHAT; if (!chat || !CFG.TG_BOT) return { error: 'Не выбран ваш чат в «Telegram агентам»' };
+  const F = (read('linko-fast.json') || {}).data || {}, X = (read('linko-extra.json') || {}).data || {};
+  const rep = instReport_(R, S, F, X, Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'));
+  instSendFile_(chat, rep.blob, rep.caption);
+  return { ok: true };
 }
