@@ -106,7 +106,7 @@ const DS = {
       // keep about two plan periods (the sheet shows this month and the previous one)
       const keep = UI.localDate(Date.now() - 70 * 864e5); for (const o of [c.days, c.abs, c.notes]) for (const k of Object.keys(o)) if (k < keep) { delete o[k]; changed = true; }
       for (const [id, q] of Object.entries(c.req)) if ((q.to || '') < keep) { delete c.req[id]; changed = true; }
-      if (changed) CRMLocal.touch();
+      if (changed) CRMLocal.autoTouch();
       return changed;
     } catch (e) { console.warn('disc capture', e); return false; }
   },
@@ -181,7 +181,7 @@ const DS = {
     const bytes = new TextEncoder().encode(text); let bin = ''; for (const b of bytes) bin += String.fromCharCode(b);
     const r = await fetch(url, { method: 'PUT', headers: { ...h, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'CRM: правила дисциплины', content: btoa(bin), ...(sha ? { sha } : {}) }) });
     if (!r.ok) throw new Error('GitHub не принял правила дисциплины: ' + r.status);
-    DS.cfg().publishedAt = new Date().toISOString(); CRMLocal.touch(); return { ok: true };
+    DS.cfg().publishedAt = new Date().toISOString(); CRMLocal.autoTouch(); return { ok: true };
   },
   changed() { clearTimeout(DS._pt); DS._pt = setTimeout(() => DS.publish().catch(e => console.warn('disc publish', e)), 2000); },
 
@@ -200,7 +200,7 @@ INBOX_HANDLERS.absreq = m => {
   if (!m.uid || !m.agent || !DS.REQ.includes(m.type) || !/^\d{4}-\d{2}-\d{2}$/.test(m.from || '')) return false;
   const c = DS.cfg(); if (c.req[m.uid]) return false;
   c.req[m.uid] = { agent: m.agent, type: m.type, from: m.from, to: m.to && m.to >= m.from ? m.to : m.from, note: String(m.note || '').slice(0, 300), at: m.at, st: 'new' };
-  CRMLocal.touch(); return true;
+  CRMLocal.autoTouch(); return true;
 };
 
 // every import of LINKO data also updates the daily log

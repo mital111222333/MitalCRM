@@ -46,7 +46,7 @@ const ATK = {
         } else if (m && window.INBOX_HANDLERS?.[m.act]) { if (await INBOX_HANDLERS[m.act](m)) n++; } // e.g. «count» — stock counts (wcount.js)
         seen[path] = 1;
       }
-      if (fresh.length) CRMLocal.touch();
+      if (fresh.length) CRMLocal.autoTouch(); // marks pulled from the cabinets — not an edit of yours
       return n;
     } finally { ATK._busy = false; }
   },

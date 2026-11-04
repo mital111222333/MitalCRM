@@ -44,7 +44,7 @@ const INST = {
     const bytes = new TextEncoder().encode(text); let bin = ''; for (const b of bytes) bin += String.fromCharCode(b);
     const r = await fetch(url, { method: 'PUT', headers: { ...h, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'CRM: правила рассрочки и договоры', content: btoa(bin), ...(sha ? { sha } : {}) }) });
     if (!r.ok) throw new Error('GitHub не принял правила рассрочки: ' + r.status);
-    INST.cfg().publishedAt = new Date().toISOString(); CRMLocal.touch();
+    INST.cfg().publishedAt = new Date().toISOString(); CRMLocal.autoTouch();
     return { ok: true };
   },
   changed(msg = 'Правила рассрочки отправлены автозагрузке') { CRMLocal.touch(); clearTimeout(INST._t); INST._t = setTimeout(() => INST.publish().then(r => { if (!r.off) toast(msg); }).catch(e => toast(e.message)), 1200); },

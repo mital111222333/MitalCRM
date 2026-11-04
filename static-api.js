@@ -112,6 +112,10 @@
     flush: async () => { dirty = true; await flush(); },
     touch: schedule, // call after changing engine.getState().ext directly
     save: flush, // write a pending change now (nothing to do when there is none)
+    // a change the CRM makes by itself (the discipline log, «rules sent at», marks pulled from the cabinets…): it does not count as
+    // your edit, so two open tabs or devices do not get the «choose a version» question over it (cloud.js takes the cloud copy then).
+    // When an edit of yours is still waiting to be saved, everything stays yours — nothing of yours can be dropped.
+    autoTouch: () => (window.CLOUD?.auto && !dirty ? CLOUD.auto(async () => schedule()).catch(() => {}) : schedule()),
     ext: () => engine.getState().ext,
     // replace everything with a state that came from the cloud: saved locally, but not sent back
     replaceFromCloud: async st => { engine.importState(st); GRACE.fix(engine.getState()); dirty = false; clearTimeout(timer); await idbPut(engine.getState()); lastSaved = new Date(); },

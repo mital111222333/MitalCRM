@@ -322,11 +322,11 @@ window.LINKO_AUTO = {
         if (j.extra?.data) LX.importSnap(j.extra);
         if (j.fast?.data) LX.importFast(j.fast);
       });
-      const x = CRMLocal.ext(); x.linkoWeb = { ...x.linkoWeb, lastAt: j.at, lastMs: j.ms, lastErr: '' }; CRMLocal.touch();
+      const x = CRMLocal.ext(); x.linkoWeb = { ...x.linkoWeb, lastAt: j.at, lastMs: j.ms, lastErr: '' }; CRMLocal.autoTouch();
       LINKO_AUTO.lastTry = Date.now();
       return j;
     } catch (e) {
-      const x = CRMLocal.ext(); x.linkoWeb = { ...x.linkoWeb, lastErr: String(e.message || e).slice(0, 200) }; CRMLocal.touch();
+      const x = CRMLocal.ext(); x.linkoWeb = { ...x.linkoWeb, lastErr: String(e.message || e).slice(0, 200) }; CRMLocal.autoTouch();
       throw e;
     } finally { clearTimeout(timer); LINKO_AUTO.busy = false; }
   },

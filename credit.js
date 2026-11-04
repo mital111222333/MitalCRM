@@ -46,7 +46,7 @@ const CR = {
     const bytes = new TextEncoder().encode(text); let bin = ''; for (const b of bytes) bin += String.fromCharCode(b);
     const r = await fetch(url, { method: 'PUT', headers: { ...h, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'CRM: правила стоп-отгрузки', content: btoa(bin), ...(sha ? { sha } : {}) }) });
     if (!r.ok) throw new Error('GitHub не принял правила: ' + r.status);
-    CR.cfg().publishedAt = new Date().toISOString(); CRMLocal.touch();
+    CR.cfg().publishedAt = new Date().toISOString(); CRMLocal.autoTouch();
     return { ok: true };
   },
   changed() { CRMLocal.touch(); clearTimeout(CR._t); CR._t = setTimeout(() => CR.publish().then(r => { if (r.off) return; toast('Правила стоп-отгрузки отправлены автозагрузке'); }).catch(e => toast(e.message)), 1500); },
