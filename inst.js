@@ -13,7 +13,7 @@ window.EXT_PAGES = window.EXT_PAGES || {};
 const INST = {
   view: 'due', agent: '', who: '', open: new Set(),
   RULES: 'inst-rules.json', STATE: 'inst-state.json',
-  cfg() { const x = CRMLocal.ext(); const c = (x.inst ||= { on: false, days: 30, parts: 4, hour: 9, agents: true, sunday: false, clients: {}, contracts: [] }); c.clients ||= {}; c.contracts ||= []; return c; },
+  cfg() { const x = CRMLocal.ext(); const c = (x.inst ||= { on: false, days: 30, parts: 4, hour: 9, agents: true, sunday: false, clients: {}, contracts: [] }); c.clients ||= {}; c.contracts ||= []; c.orders ||= {}; return c; },
   cloud() { const c = typeof CLOUD !== 'undefined' && CLOUD.cfg ? CLOUD.cfg() : null; return c && c.token ? c : null; },
   // the account of the same shop: «doston gulnoz spes» ↔ «doston gulnoz»
   base: n => LX.norm(String(n || '').replace(/\b(spe?t?s|спец)\b/gi, '')),
@@ -32,7 +32,7 @@ const INST = {
     const alias = {}; for (const o of LX.d('orders')) { const u = LX.person(o, 'user'); if (u && !alias[u]) { const a = LX.agentName(u); if (a && a !== u) alias[u] = a; } }
     const chats = {}; for (const [a, ch] of Object.entries(tg.chats || {})) if (ch?.id) chats[a] = String(ch.id);
     return { v: 1, on: !!c.on, days: Number(c.days) || 30, parts: Number(c.parts) || 4, hour: Number(c.hour ?? 9), agents: c.agents !== false, sunday: !!c.sunday, meXlsx: c.meXlsx !== false,
-      me: tg.me?.id ? String(tg.me.id) : '', chats, agentOf, alias, clients: c.clients, contracts: c.contracts, crm: location.origin + location.pathname };
+      me: tg.me?.id ? String(tg.me.id) : '', chats, agentOf, alias, clients: c.clients, contracts: c.contracts, orders: c.orders, crm: location.origin + location.pathname };
   },
   // inst-rules.json next to the synced data (same repository and key as «Синхронизация»)
   async publish() {
