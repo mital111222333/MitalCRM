@@ -51,6 +51,7 @@ function run0_() {
   let jobs = null; try { jobs = jobs_(); } catch (e) { Logger.log('Список разделов: ' + mask_(e.message || e)); }
   if (jobs) try { fast_(jobs); } catch (e) { Logger.log('Оплаты: ' + mask_(e.message || e)); }
   try { storesRemind_(); } catch (e) { Logger.log('Сверка, напоминание: ' + mask_(e.message || e)); }
+  try { discNotify_(); } catch (e) { Logger.log('Дисциплина, сообщения: ' + mask_(e.message || e)); }
   if (jobs) try { extra_(jobs); } catch (e) { Logger.log('Доп. данные: ' + mask_(e.message || e)); }
   try { visits_(); } catch (e) { Logger.log('Визиты: ' + mask_(e.message || e)); }
 }
@@ -295,7 +296,7 @@ function live_(snap) {
     const t = w && String(w['first_done_task_time.date'] || ''), today = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd');
     if (t && t.slice(0, 10) === today) {
       // a status of the day set by the manager (больничный, отпросился, свободный график…) — no fine
-      const st = (snap.disc.marks || {})[today] || (snap.disc.free ? 'free' : '');
+      const st = (snap.disc.marks || {})[today] || (snap.disc.free ? 'free' : '') || (snap.disc.skip ? 'skip' : ''); // skip — not counted in discipline
       const hm = t.slice(11, 16), m = s => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5)), late = st ? 0 : Math.max(0, m(hm) - m(snap.disc.start || '08:45'));
       const before = (snap.disc.days || []).filter(d => d.day === today)[0], was = before ? before.late || 0 : 0;
       snap.disc.minutes = (snap.disc.minutes || 0) - was + late; snap.disc.fine = snap.disc.minutes * (snap.disc.rate || 0);
@@ -352,6 +353,7 @@ function doPost(e) {
     const snap = JSON.parse(f.text);
     if (p.act === 'count_start' || p.act === 'count') return json_(countAct_(p, snap)); // сверка склада
     if (p.act === 'order') return json_(cntOrder_(p, snap));                            // порядок товаров как на полках
+    if (p.act === 'absreq') return json_(absReq_(p, snap));                             // заявка агента на отсутствие (Дисциплина)
     const task = (snap.tasks || []).filter(t => t.src === p.src && String(t.id) === String(p.id))[0];
     if (p.act !== 'done' || !task) return json_({ error: 'Задание не найдено — обновите кабинет' });
     const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
@@ -972,4 +974,68 @@ function instSend_(R, S, today) {
   if (R.agents !== false) Object.keys(S.texts.agents).forEach(a => { const ch = (R.chats || {})[a]; if (ch) { try { instTg_(ch, S.texts.agents[a]); n++; } catch (e) { Logger.log('Рассрочка, агенту ' + a + ': ' + mask_(e.message || e)); } } });
   const me = R.me || CFG.TG_CHAT; if (me && S.texts.due) { try { instTg_(me, S.texts.me); n++; } catch (e) { Logger.log('Рассрочка, вам: ' + mask_(e.message || e)); } }
   Logger.log('Рассрочка: напоминаний отправлено ' + n);
+}
+
+// ---------- дисциплина: заявки агентов и сообщения в Telegram (правила — disc-rules.json из CRM «Агенты → Дисциплина») ----------
+// Заявка: агент в кабинете выбирает «больничный / командировка / отпросился…», дни и причину → inbox/ (CRM показывает её руководителю,
+// тот подтверждает или отклоняет — агенту приходит ответ) + сообщение руководителю сразу.
+// Опоздание: как только пришёл первый фотоотчёт позже начала дня — агенту «опоздание N мин, штраф …» (один раз в день).
+// Авто-невыход: в час из CRM (обычно 12:00) нет первого отчёта, а визиты в плане есть — агенту «отмечен невыход», вам — сводка явки.
+// Если отчёт потом всё же пришёл — агенту «невыход снят, считается опоздание». Не пишем: в воскресенье, при отметке дня
+// (больничный, командировка…), свободном графике и «без учёта». CRM считает то же самое по тем же правилам (disc.js).
+const ABS_TYPES = { leave: 'Отпросился на день', half: 'Полдня — отпросился', sick: 'Больничный', trip: 'Командировка', family: 'Семейные обстоятельства', other: 'Другая причина' };
+function absReq_(p, snap) {
+  if (!snap.disc || !snap.agent) return { error: 'Дисциплина для этого кабинета не включена' };
+  const type = String(p.type || ''), from = String(p.from || ''), to = String(p.to || from), note = String(p.note || '').trim().slice(0, 300);
+  if (!ABS_TYPES[type]) return { error: 'Выберите, что за отсутствие' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) return { error: 'Проверьте даты' };
+  if ((Date.parse(to) - Date.parse(from)) / 864e5 > 60) return { error: 'Не больше 60 дней за раз' };
+  if (!note) return { error: 'Напишите причину' };
+  const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  const rec = { at: new Date().toISOString(), agent: snap.agent, act: 'absreq', uid: uid, type: type, from: from, to: to, note: note };
+  saveB64ToGithub_('inbox/' + stamp + '/' + uid + '.json', Utilities.base64Encode(JSON.stringify(rec), Utilities.Charset.UTF_8), 'Кабинет: заявка на отсутствие');
+  const dm = d => d.slice(8, 10) + '.' + d.slice(5, 7);
+  try { notify_('📝 Заявка от ' + snap.agent + ': ' + ABS_TYPES[type] + ', ' + (from === to ? dm(from) : dm(from) + '–' + dm(to)) + '\nПричина: ' + note + '\nПодтвердить: CRM → Агенты → Дисциплина'); } catch (e) { Logger.log('Заявка: сообщение не ушло ' + mask_(e.message || e)); }
+  return { ok: true };
+}
+function discNotify_() {
+  if (!CFG.TG_BOT) return;
+  const t = new Date(), dow = Number(Utilities.formatDate(t, CFG.TZ, 'u')); if (dow === 7) return;
+  const mm = s => (s && /^\d{2}:\d{2}/.test(s) ? Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5)) : null);
+  const now = Number(Utilities.formatDate(t, CFG.TZ, 'H')) * 60 + Number(Utilities.formatDate(t, CFG.TZ, 'm'));
+  const r = ghRaw_('disc-rules.json'); if (r.code !== 200) return;
+  const R = JSON.parse(r.text); if (!R || R.notify === false) return;
+  const start = mm(R.start || '09:00'), auto = mm(R.autoAbs);
+  if (start === null || now < start || now > 16 * 60) return; // LINKO is asked from the start of the day until 16:00
+  const today = Utilities.formatDate(t, CFG.TZ, 'yyyy-MM-dd'), P = PropertiesService.getScriptProperties(), key = 'discsent_' + today;
+  P.deleteProperty('discsent_' + Utilities.formatDate(new Date(t.getTime() - 864e5), CFG.TZ, 'yyyy-MM-dd'));
+  let sent = {}; try { sent = JSON.parse(P.getProperty(key) || '{}'); } catch (e) { sent = {}; }
+  const words = s => String(s || '').toLowerCase().split(/\s+/).filter(String).sort().join(' '), alias = {};
+  Object.keys(R.alias || {}).forEach(k => { alias[words(k)] = R.alias[k]; });
+  const marks = (R.marks || {})[today] || {}, f0 = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' '), late = [], miss = [];
+  let changed = false;
+  const tell = (k, agent, text) => { if (sent[k]) return; sent[k] = 1; changed = true; const ch = (R.chats || {})[agent]; if (ch) try { instTg_(ch, text); } catch (e) { Logger.log('Дисциплина, агенту ' + agent + ': ' + mask_(e.message || e)); } };
+  all_('staff/working_day/?begin_date=' + today + '&end_date=' + today + '&page=1&page_size=200').forEach(w => {
+    const name = [w.first_name, w.second_name].filter(String).join(' '), agent = alias[words(name)] || name;
+    if (!agent || (R.skip || {})[agent] || (R.free || {})[agent] || marks[agent]) return;
+    const fr = String(get2_(w, 'first_done_task_time.date') || ''), first = fr.slice(0, 10) === today ? fr.slice(11, 16) : '', plan = n_(w.total_tasks_by_market);
+    if (first) {
+      const lm = Math.max(0, mm(first) - start);
+      if (lm > 0) {
+        late.push(agent + ' — ' + first + ' (' + lm + ' мин)');
+        tell('l_' + agent, agent, '⏰ ' + agent + ', первый фотоотчёт сегодня в ' + first + ', начало рабочего дня — ' + R.start + '.\nОпоздание ' + lm + ' мин' + (R.fine ? ', штраф ' + f0(lm * R.fine) + ' сум' : '') + '.\nЕсли была причина — отправьте заявку в кабинете: «Дисциплина» → «📝 Отсутствие».');
+      }
+      if (sent['a_' + agent]) tell('b_' + agent, agent, '✅ Первый фотоотчёт получен в ' + first + ' — невыход снят, считается опоздание.');
+    } else if (auto !== null && now >= auto && plan > 0) {
+      miss.push(agent);
+      tell('a_' + agent, agent, '❗ ' + agent + ', сегодня до ' + R.autoAbs + ' нет первого фотоотчёта — день отмечен как невыход.\nЕсли есть причина — отправьте заявку в кабинете: «Дисциплина» → «📝 Отсутствие».');
+    }
+  });
+  // to you: the attendance at the auto-невыход time, once a day
+  if (auto !== null && now >= auto && !sent.sum) {
+    sent.sum = 1; changed = true;
+    const me = R.me || CFG.TG_CHAT;
+    if (me && (late.length || miss.length)) try { instTg_(me, '📋 Явка на ' + R.autoAbs + ', ' + today.slice(8, 10) + '.' + today.slice(5, 7) + '\n' + (miss.length ? '❗ Нет отчёта — невыход: ' + miss.join(', ') : '✓ Невыходов нет') + (late.length ? '\n⏰ Опоздали: ' + late.join('; ') : '\n✓ Опозданий нет') + '\nПодробно: CRM → Агенты → Дисциплина'); } catch (e) { Logger.log('Дисциплина, вам: ' + mask_(e.message || e)); }
+  }
+  if (changed) P.setProperty(key, JSON.stringify(sent));
 }

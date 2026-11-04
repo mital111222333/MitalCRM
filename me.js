@@ -324,9 +324,37 @@
       search();
     }
     if (tab === 'disc') {
-      const D = S.disc;
-      body.innerHTML = D ? `<div class="kpis">${tile('Штрафы за период', f0(D.fine) + ' сум', `${D.minutes} мин опозданий · ${f0(D.rate)} сум за минуту`, D.fine ? 'bad' : 'good')}${tile('Опозданий', f0(D.late), `первый фотоотчёт до ${esc(D.start)}`, D.late ? 'warn' : 'good')}${tile('Маршрут', D.route != null ? Math.round(D.route * 100) + '%' : '—', 'визитов из плана за период')}</div>
-        ${panel('По дням', `<div class="tscroll"><table><thead><tr><th>День</th><th>Первый отчёт</th><th class="n">Опоздание</th><th class="n">Штраф</th><th class="n">Визиты</th></tr></thead><tbody>${D.days.slice().reverse().map(x => `<tr><td>${dRu(x.day)}</td><td class="${x.late || x.st === 'Невыход' ? 'neg' : ''}">${esc(x.first || '')}${x.st ? `${x.first ? ' · ' : ''}<b>${esc(x.st)}</b>` : x.first ? '' : x.plan ? 'нет отчёта' : '—'}</td><td class="n">${x.late ? x.late + ' мин' : x.first ? '✓' : ''}</td><td class="n ${x.late ? 'neg' : ''}">${x.late ? f0(x.late * D.rate) + ' сум' : ''}</td><td class="n">${x.plan ? `${x.done}/${x.plan}` : ''}</td></tr>`).join('')}</tbody></table></div>`)}` : '<p class="mut">Данных о дисциплине пока нет.</p>';
+      const D = S.disc, half = v => String(v).replace('.', ',');
+      const toneCss = { neg: 'color:#e0564a;font-weight:700', warn: 'color:#e9a23b;font-weight:600', pos: 'color:#3fbf73', st: 'font-weight:700', mut: 'opacity:.55' };
+      // the month as a calendar: 7 columns from Monday, each day — its number and code (Я, О15, Н, Б, К…); a tap shows the details
+      const t0 = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10); // Tashkent date
+      const cal = s => { const lead = (new Date(s.days[0].day + 'T12:00:00').getDay() + 6) % 7;
+        return `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center;font-size:12px">${['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map(w => `<div class="mut">${w}</div>`).join('')}${'<div></div>'.repeat(lead)}${s.days.map(x => `<div data-tip="${esc(dRu(x.day) + (x.tip ? ' · ' + x.tip : ''))}" style="border:1px solid var(--line,#ddd);border-radius:8px;padding:4px 2px;min-height:40px;cursor:pointer;${x.day === t0 ? 'outline:2px solid var(--oil,#f2b01e);' : ''}"><div class="mut" style="font-size:10px">${Number(x.day.slice(8))}</div><div style="${toneCss[x.tone] || ''}">${esc(x.code)}</div></div>`).join('')}</div>
+          <p class="mut" id="calTip" style="min-height:1.2em;margin:8px 0 0"></p>`; };
+      const types = D?.types || [];
+      body.innerHTML = D ? `${D.skip ? '<p class="mut">Вы не учитываетесь в дисциплине: штрафов и замечаний нет.</p>' : ''}<div class="kpis">${tile('Штрафы за период', f0(D.fine) + ' сум', `${D.minutes} мин опозданий · ${f0(D.rate)} сум за минуту`, D.fine ? 'bad' : 'good')}${tile('Опозданий', f0(D.late), `первый фотоотчёт до ${esc(D.start)}`, D.late ? 'warn' : 'good')}${tile('Невыходов', D.absent ? half(D.absent) : '0', D.autoAbs ? `нет отчёта до ${esc(D.autoAbs)} — невыход` : '', D.absent ? 'bad' : 'good')}${D.end ? tile('Ранний уход', f0(D.early || 0), `последний отчёт раньше ${esc(D.end)}`, D.early ? 'warn' : 'good') : ''}${tile('Маршрут', D.route != null ? Math.round(D.route * 100) + '%' : '—', 'визитов из плана за период')}</div>
+        ${D.sheet ? panel('Табель за месяц', cal(D.sheet) + `<p class="mut" style="margin:6px 0 0">Явка ${half(D.sheet.worked)} дн. · опозданий ${D.sheet.late} · ранний уход ${D.sheet.early} · невыходов ${half(D.sheet.absent)}</p>`, 'Я — на работе, О15 — опоздание 15 мин, Я↓ — ушли раньше, Н — невыход (Н* — нет отчёта, автоматически), ½ — полдня, Б — больничный, К — командировка, О — отпросились, С — семейные обстоятельства, ОТ — отпуск, В — выходной, Д — другая причина. Нажмите на день — подробности.') : ''}
+        ${types.length ? panel('📝 Отсутствие', `<div style="display:grid;gap:8px">
+            <label>Что<select id="arType" style="width:100%">${types.map(x => `<option value="${x.k}">${esc(x.t)}</option>`).join('')}</select></label>
+            <div style="display:flex;gap:8px"><label style="flex:1">С<input id="arFrom" type="date" value="${t0}" style="width:100%"></label><label style="flex:1">По<input id="arTo" type="date" value="${t0}" style="width:100%"></label></div>
+            <label>Причина<textarea id="arNote" rows="2" maxlength="300" style="width:100%" placeholder="Например: температура, справка будет; поездка на склад в Ташкент"></textarea></label>
+            <button class="btn" id="arSend" type="button">Отправить руководителю</button><p id="arMsg" class="mut" style="margin:0"></p></div>
+          ${(D.reqs || []).length ? `<div class="tscroll" style="margin-top:10px"><table><thead><tr><th>Заявка</th><th>Дни</th><th>Ответ</th></tr></thead><tbody>${D.reqs.map(q => `<tr><td>${esc(q.type)}${q.note ? `<div class="mut" style="font-size:12px">${esc(q.note)}</div>` : ''}</td><td>${q.from === q.to ? dm(q.from) : dm(q.from) + '–' + dm(q.to)}</td><td class="${q.st === 'ok' ? 'pos' : q.st === 'no' ? 'neg' : 'mut'}">${q.st === 'ok' ? '✓ подтверждена' : q.st === 'no' ? 'отклонена' : 'ждёт ответа'}</td></tr>`).join('')}</tbody></table></div>` : ''}`,
+          'Заранее или в тот же день: руководитель подтвердит — день отметится в табеле без штрафа. Ответ придёт в Telegram.') : ''}
+        ${panel('По дням', `<div class="tscroll"><table><thead><tr><th>День</th><th>Первый отчёт</th><th class="n">Опоздание</th><th class="n">Штраф</th><th class="n">Визиты</th></tr></thead><tbody>${D.days.slice().reverse().map(x => `<tr><td>${dRu(x.day)}</td><td class="${x.late || /^Невыход|без причины/.test(x.st) ? 'neg' : ''}">${esc(x.first || '')}${x.st ? `${x.first ? ' · ' : ''}<b>${esc(x.st)}</b>` : x.first ? '' : x.plan ? 'нет отчёта' : '—'}${x.early ? ` <small class="neg">· ушли раньше на ${x.early} мин</small>` : ''}${x.note ? `<div class="mut" style="font-size:12px">${esc(x.note)}</div>` : ''}</td><td class="n">${x.late ? x.late + ' мин' : x.first ? '✓' : ''}</td><td class="n ${x.late ? 'neg' : ''}">${x.late ? f0(x.late * D.rate) + ' сум' : ''}</td><td class="n">${x.plan ? `${x.done}/${x.plan}` : ''}</td></tr>`).join('')}</tbody></table></div>`)}` : '<p class="mut">Данных о дисциплине пока нет.</p>';
+      if (D) {
+        body.querySelectorAll('[data-tip]').forEach(c => c.onclick = () => { const t = $('#calTip'); if (t) t.textContent = c.dataset.tip; });
+        const send = $('#arSend');
+        if (send) send.onclick = async () => {
+          const msg = $('#arMsg'), from = $('#arFrom').value, to = $('#arTo').value || from, note = $('#arNote').value.trim();
+          if (!from || to < from) { msg.className = 'neg'; msg.textContent = 'Проверьте даты'; return; }
+          if (!note) { msg.className = 'neg'; msg.textContent = 'Напишите причину'; return; }
+          send.disabled = true; msg.className = 'mut'; msg.textContent = 'Отправляю…';
+          try { await storePost({ act: 'absreq', type: $('#arType').value, from, to, note }); msg.className = 'pos'; msg.textContent = '✓ Заявка отправлена руководителю. Ответ придёт в Telegram.'; $('#arNote').value = ''; }
+          catch (e) { msg.className = 'neg'; msg.textContent = e.message; }
+          finally { send.disabled = false; }
+        };
+      }
     }
   }
 
