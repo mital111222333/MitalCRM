@@ -640,16 +640,7 @@ function all_(u) { let out = [], next = u; while (next) { const j = get_(next); 
 function n_(v) { return Number(v) || 0; }
 function csv_(rows) { return '﻿' + rows.map(r => r.map(v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(';')).join('\n'); }
 
-function saveToGithub_(path, text) {
-  const url = 'https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/' + path;
-  const h = { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-  const cur = fetch_(url, { headers: h, muteHttpExceptions: true });
-  const sha = cur.getResponseCode() === 200 ? JSON.parse(cur.getContentText()).sha : undefined;
-  const body = { message: 'LINKO: автозагрузка', content: Utilities.base64Encode(text, Utilities.Charset.UTF_8) };
-  if (sha) body.sha = sha;
-  const r = fetch_(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
-  if (r.getResponseCode() >= 300) throw new Error('GitHub не принял файл: ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
-}
+function saveToGithub_(path, text) { saveB64ToGithub_(path, Utilities.base64Encode(text, Utilities.Charset.UTF_8), 'LINKO: автозагрузка'); }
 // ---------- стоп-отгрузка: заказ клиенту на стопе → сообщение в Telegram (правила — credit-rules.json из CRM) ----------
 // Клиент на стопе: долг больше его лимита или есть долг старше выбранного срока LINKO. Каждый заказ сообщается один раз.
 function stop_(data) {
@@ -702,14 +693,25 @@ function archive_(name, text, dayIn) {
   saveB64ToGithub_('archive/' + day.slice(0, 4) + '/' + day.slice(5, 7) + '/' + day + '/' + name + '.json.gz', Utilities.base64Encode(bytes), 'Архив ' + day + ': ' + name);
   if (day === today) P.setProperty('arch_' + name, JSON.stringify({ day: day, at: Date.now() }));
 }
+// GitHub refuses a write with 409 / 422 when the file changed after we read its version (sha): another copy of the script
+// wrote it at the same moment, or GitHub gave an old version from its cache. Then the current version (GitHub names it in the
+// answer, otherwise it is read again without the cache) is taken and the write is repeated — up to 4 times, a little apart.
 function saveB64ToGithub_(path, b64, message) {
   const url = 'https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/' + path;
   const h = { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-  const cur = fetch_(url, { headers: h, muteHttpExceptions: true });
-  const sha = cur.getResponseCode() === 200 ? JSON.parse(cur.getContentText()).sha : undefined;
-  const body = { message: message, content: b64 }; if (sha) body.sha = sha;
-  const r = fetch_(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
-  if (r.getResponseCode() >= 300) throw new Error('GitHub не принял архив: ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
+  const shaNow = () => { const cur = fetch_(url + '?t=' + Date.now(), { headers: h, muteHttpExceptions: true }); return cur.getResponseCode() === 200 ? JSON.parse(cur.getContentText()).sha : undefined; };
+  let sha = shaNow(), r = null;
+  for (let i = 0; i < 4; i++) {
+    const body = { message: message, content: b64 }; if (sha) body.sha = sha;
+    r = fetch_(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
+    const code = r.getResponseCode();
+    if (code < 300) return;
+    if (code !== 409 && code !== 422) break;
+    const m = r.getContentText().match(/is at ([0-9a-f]{40})/);
+    Utilities.sleep(800 * (i + 1));
+    sha = m ? m[1] : shaNow();
+  }
+  throw new Error('GitHub не принял файл ' + path + ': ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
 }
 // ---------- визиты агентов (LINKO «Клиенты → Маршруты»): план дня, кто к кому во сколько вошёл и вышел, что сделал ----------
 // Раз в 30 минут: сводка по всем агентам за сегодня (market/agent_plans/), по каждому агенту — его визиты за день
