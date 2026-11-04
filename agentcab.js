@@ -51,6 +51,8 @@ const AC = {
       v: 1, agent, boss: AC.boss() || null, bot: (CRMLocal.ext().tg?.token ? await AC.bot() : '') || null, at: new Date().toISOString(), data_at: d.upload.taken_at, period: { from: d.upload.period_from, to: d.forecast?.period_end || d.upload.period_to, days_left: d.forecast?.days_left ?? null },
       kpi: { sold: Math.round(a.sold), plan: Math.round(a.plan || 0), paid: Math.round(a.paid), pool: Math.round(a.pool || 0), debt: Math.round(a.debt), debtors: a.debtors || 0, akb: a.akb, okb: a.okb },
       board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [],
+      // the pay slip of the last closed month (pay.js «Закрыть месяц»)
+      pay: CRMLocal.ext().pay?.slips?.[agent] || null,
       disc: disc ? { start: disc.startTxt, rate: disc.rate, today: today || tSt ? { first: today?.first || '', late: today?.first ? DS.lateFor(t0, agent, today.first, disc.start) : 0, st: tSt ? DS.ST[tSt].t : '' } : null, marks, free: !!DS.cfg().free[agent], skip: !!DS.cfg().skip[agent], end: DS.cfg().end || '', autoAbs: DS.cfg().autoAbs || '',
         absent: r?.absent || 0, late: r?.late || 0, minutes: r?.lateMin || 0, fine: r?.fine || 0, early: r?.early || 0, route: r?.route ?? null, days, sheet, reqs, types: DS.REQ.map(k => ({ k, t: DS.ST[k].t })) } : null,
       // branch: the LINKO warehouse number of this warehouse, so the auto-loader can put fresh stock in (autolinko.gs live_)
