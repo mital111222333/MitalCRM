@@ -184,12 +184,15 @@ const PAYPLAN = {
       const mk = (y, mo) => { const dt = new Date(y, mo - 1, day); return dt.getMonth() === mo - 1 && dt.getDate() === day ? UI.localDate(dt.getTime()) : null; };
       let d = mon >= 1 && mon <= 12 ? mk(Y, mon) : null;
       if (d && !m[2] && REP.days(d, t0) > 15) d = mk(M === 12 ? Y + 1 : Y, M === 12 ? 1 : M + 1);
+      if (d && m[2] && REP.days(d, t0) > 180) d = mk(Y + 1, mon); // «05.01» written in December is next January
       if (!d || !(sum > 0)) { bad.push(part); continue; }
       ok.push({ d, s: Math.round(sum * 100) / 100 });
     }
     return { ok: ok.sort((a, b) => a.d.localeCompare(b.d)), bad };
   },
-  text(list) { const m0 = REP.today().slice(5, 7); return list.map(x => `${x.d.slice(8)}${x.d.slice(5, 7) === m0 ? '' : '.' + x.d.slice(5, 7)}-${x.s}$`).join(', '); },
+  // always with the month: a bare «15-500$» would be read back as the NEXT month once the 15th is more than 15 days ago,
+  // so just opening the cell and pressing Enter used to move an old promise forward by a month
+  text(list) { return list.map(x => `${x.d.slice(8)}.${x.d.slice(5, 7)}-${x.s}$`).join(', '); },
   // small popover under a table cell (used by the Excel-like grid)
   pop(name, anchor, done) {
     const cur = PAYPLAN.of(name), f = UI.fmt0, pop = document.createElement('div'); pop.className = 'xf-pop'; pop.style.width = '300px';
@@ -340,7 +343,9 @@ REP.debt = async (el, mode) => {
     { k: 'ret', t: 'Возврат', kind: 'num', v: c => c.ret || 0, tot: true, cell: c => (c.ret ? `<span class="neg">${f(c.ret)}</span>` : '<span class="ph">—</span>') },
     { k: 'pool', t: 'План сбора', kind: 'num', v: c => c.pool || 0, tot: true, edit: 'num', field: 'pool', cell: c => (c.pool ? f(c.pool) : '<span class="ph">—</span>') },
     { k: 'paid', t: 'Собрано', kind: 'num', v: c => c.paid || 0, tot: true, cell: c => `<b>${f(c.paid)}</b>` },
-    { k: 'left', t: 'Остаток клиента', kind: 'num', v: c => (c.pool ? Math.max(0, c.pool - c.paid) : null), tot: true, cell: c => (c.pool ? (Math.max(0, c.pool - c.paid) ? `<b class="neg">${f(Math.max(0, c.pool - c.paid))}</b>` : UI.pill('good', 'закрыт', '✓')) : '—') },
+    { k: 'left', t: 'Остаток клиента', kind: 'num', v: c => (c.pool ? Math.max(0, c.pool - c.paid) : null), tot: true,
+      // more left to collect than the client owes at all (a return or a too big План сбора): such a plan cannot be met — shown, not hidden
+      cell: c => { const l = c.pool ? Math.max(0, c.pool - c.paid) : 0; return c.pool ? (l ? `<b class="neg">${f(l)}</b>${l > c.debt + 0.5 ? `<br><small class="mut" title="План сбора больше, чем клиент должен: остаток ${f(l)}, а долг всего ${f(c.debt)}. Проверьте «План сбора».">⚠ долг ${f(c.debt)}</small>` : ''}` : UI.pill('good', 'закрыт', '✓')) : '—'; } },
     { k: 'date', t: 'Дата оплаты', kind: 'text', v: c => PAYPLAN.of(c.name).map(x => UI.dm(x.d)).join(' '), sv: c => firstDate(c) || '9999', edit: 'pay',
       keys: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => [UI.dm(x.d), x.d]) : [[EMPTY, '']]; },
       cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div class="${x.d < t0g ? 'neg' : ''}" title="${x.d < t0g ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('') : '<span class="ph">＋</span>'; } },

@@ -124,12 +124,21 @@ function parseBalance(sheets) {
     const h = findHeader(sheet.rows, BAL_SPEC, m => m.name !== undefined && m.b1 !== undefined && m.sold !== undefined);
     if (h.error) { seen = seen || h.error; continue; }
     const { row, map } = h, rows = [], seenNames = new Map();
+    // two different clients with one name stay separate: the smallest № keeps the plain name, the others get « (№…)».
+    // Decided by №, not by the order of rows, so a client never swaps names with its namesake when LINKO sorts differently.
+    const numOf = r => (map.num !== undefined && r?.[map.num] !== null && r?.[map.num] !== '' && Number.isFinite(Number(r[map.num])) ? Number(r[map.num]) : null);
+    const minNum = new Map();
+    for (const r of sheet.rows.slice(row + 1)) {
+      const nm = String(r?.[map.name] ?? '').trim(), k = numOf(r); if (!nm || k === null) continue;
+      minNum.set(nm, minNum.has(nm) ? Math.min(minNum.get(nm), k) : k);
+    }
     for (const r of sheet.rows.slice(row + 1)) {
       let name = String(r?.[map.name] ?? '').trim();
       if (!name || /^итого/i.test(name)) continue;
-      const num = map.num !== undefined && Number.isFinite(Number(r[map.num])) ? Number(r[map.num]) : null;
-      if (seenNames.has(name)) name = `${name} (№${num ?? seenNames.get(name) + 1})`; // two different clients with one name stay separate
-      seenNames.set(name, (seenNames.get(name) || 0) + 1);
+      const num = numOf(r), base = name;
+      const plainTaken = seenNames.get(base)?.plain;
+      if (plainTaken || (num !== null && minNum.has(base) && num !== minNum.get(base))) name = `${base} (№${num ?? (seenNames.get(base)?.n || 0) + 1})`;
+      seenNames.set(base, { n: (seenNames.get(base)?.n || 0) + 1, plain: plainTaken || name === base });
       const s = k => (map[k] !== undefined ? String(r[map[k]] ?? '').trim() : '');
       rows.push({
         name, num, agent: s('agent'), type: s('type'), landmark: s('landmark'), phone: s('phone'), zone: s('zone') === 'Не указано' ? '' : s('zone'),
@@ -687,6 +696,80 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
   };
   const agSrc = { uploads: () => agUploadsDesc().map(strip), rows: agRows, tasks: () => S.ag.tasks.slice().sort((a, b) => b.id - a.id), akb: () => S.ag.akb };
 
+  // ---------- LINKO renames a client but keeps its number (№) ----------
+  // Without this the renamed client starts from zero in the CRM: «Посл. оплата / покупка» lost, План / Пул / Заметка / «Ещё оплатит» stay
+  // on the old name. The old name is carried over to the new one only when it is surely the same client:
+  //   • the same № in LINKO, the old name is not in the file any more, the two names never appear in one upload, and
+  //   • the balances join up: in one plan period «Баланс на начало периода» is the same (it does not change inside a period).
+  // A hand-made file with row numbers in «№» can therefore never glue two different clients together.
+  const agAppear = name => {
+    let first = null, last = null;
+    for (const u of S.ag.uploads) {
+      if (u.synth) continue;
+      const r = u.rows.find(x => x.client === name); if (!r) continue;
+      const k = u.taken_at + '|' + String(u.id).padStart(9, '0');
+      if (!first || k < first.k) first = { k, u, r };
+      if (!last || k > last.k) last = { k, u, r };
+    }
+    return { first, last };
+  };
+  // words of a name for «is it the same shop»: «Bogʻdod Ulugbek» ~ «Bogdod Ulugbekaka», «Iqboljon quqon» ~ «Qoqon Iqboljon»
+  const nameWords = s => new Set(norm(s).replace(/[ʻʼ’'`]/g, '').replace(/[^a-zа-яё0-9 ]/gi, ' ').split(' ').filter(w => w.length >= 4).map(w => w.slice(0, 4)));
+  const similarNames = (a, b) => { const A = nameWords(a); return [...nameWords(b)].some(w => A.has(w)); };
+  // old: last appearance of the old name; next: first appearance of the new name (or the row of the file being loaded)
+  const sameClient = (oldName, old, newName, next) => {
+    if (!old || !next || old.k >= next.k) return false;
+    const b0 = next.r.b0 || 0;
+    let ok = false;
+    if (old.u.period_from === next.u.period_from) ok = Math.abs((old.r.b0 || 0) - b0) < 0.01; // inside one period «Баланс на начало» never changes
+    else if (old.u.period_from < next.u.period_from) {
+      // across periods: the old name's balance at the end of the previous period = the new name's balance at the start
+      let prev = null;
+      for (const u of S.ag.uploads) {
+        if (u.synth || u.period_to >= next.u.period_from) continue;
+        const r = u.rows.find(x => x.client === oldName);
+        if (r && (!prev || u.taken_at > prev.u.taken_at || (u.taken_at === prev.u.taken_at && u.id > prev.u.id))) prev = { u, r };
+      }
+      ok = !!prev && Math.abs((prev.r.b1 || 0) - b0) < 0.01;
+    }
+    // a balance of ≈0 proves nothing (LINKO also re-uses empty accounts for new shops): then the names must share a word
+    return ok && (Math.abs(b0) >= 1 || similarNames(oldName, newName));
+  };
+  function agMerge(o, n, num, date) {
+    for (const u of S.ag.uploads) for (const r of u.rows) if (r.client === o) r.client = n;
+    const co = S.ag.clients[o], cn = S.ag.clients[n];
+    if (!cn) S.ag.clients[n] = { ...co, name: n };
+    else {
+      if (!cn.plan && co.plan) cn.plan = co.plan; if (!cn.pool && co.pool) cn.pool = co.pool;
+      if (co.note && co.note !== cn.note) cn.note = cn.note ? cn.note + ' · ' + co.note : co.note;
+      if (co.added && (!cn.added || co.added < cn.added)) cn.added = co.added;
+    }
+    delete S.ag.clients[o];
+    for (const t of S.ag.tasks) if (t.client === o) t.client = n;
+    const x = (S.ext ||= {});
+    for (const per of Object.values(x.clientPlans || {})) if (per && per[o]) { if (!per[n]) per[n] = per[o]; delete per[o]; }
+    for (const key of ['payPlan', 'notes']) { const m = x[key]; if (m && m[o]) { m[n] = (m[n] || []).concat(m[o]); delete m[o]; } }
+    (x.renames ||= []).push({ at: date, num, from: o, to: n });
+    if (x.renames.length > 300) x.renames.splice(0, x.renames.length - 300);
+  }
+  // rows: parsed LINKO rows of the new file (period `from`); returns [[old, new], …]
+  function agRenames(rows, from, date) {
+    const inFile = new Set(rows.map(r => r.name)), done = [];
+    for (const r of rows) {
+      if (r.num === null) continue;
+      const olds = Object.values(S.ag.clients).filter(c => c.name !== r.name && !inFile.has(c.name) && c.num !== null && c.num !== undefined && Number(c.num) === r.num).map(c => ({ name: c.name, ...agAppear(c.name) })).filter(c => c.last);
+      // a chain of renames (A → B → C): the most recent old name first
+      olds.sort((a, b) => (a.last.k < b.last.k ? 1 : -1));
+      for (const o of olds) {
+        const nw = agAppear(r.name), next = nw.first || { k: date + '|999999999', u: { period_from: from }, r };
+        if (nw.first && S.ag.uploads.some(u => u.rows.some(x => x.client === o.name) && u.rows.some(x => x.client === r.name))) continue;
+        if (!sameClient(o.name, o.last, r.name, next)) continue;
+        agMerge(o.name, r.name, r.num, date); done.push([o.name, r.name]);
+      }
+    }
+    return done;
+  }
+
   async function agUpload(q, raw) {
     if (!raw || !raw.length) return err('Файл пустой');
     let parsed, sheets;
@@ -711,6 +794,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
     // mode: "overwrite" takes План/Пул/Заметки from the file (use for the Google workbook), "keep" never touches them
     const overwrite = q.mode === 'overwrite' || (q.mode !== 'keep' && parsed.workbook && parsed.hasPlan);
     const { rows } = parsed, sum = k => rows.reduce((a, r) => a + r[k], 0);
+    const renamed = parsed.workbook ? [] : agRenames(rows, from, date);
     let created = 0, agentChanges = 0, planUpdates = 0, tasksImported = 0;
     const before = S.ag.uploads.length;
     S.ag.uploads = S.ag.uploads.filter(u => !(u.taken_at === date && u.period_from === from && u.period_to === to));
@@ -738,7 +822,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
       }
     }
     S.ag.uploads.push({ id, taken_at: date, period_from: from, period_to: to, file: (q.file || '').slice(0, 200), uploaded_at: new Date().toISOString(), uploaded_by: user, clients: rows.length, sold: sum('sold'), paid: sum('paid'), returned: sum('ret'), b1: sum('b1'), rows: stored });
-    return ok({ ok: true, id, clients: rows.length, created, agent_changes: agentChanges, plan_updates: planUpdates, tasks_imported: tasksImported, replaced, source: parsed.workbook ? 'workbook' : 'export', overwrite, date, period: { from, to }, detected });
+    return ok({ ok: true, id, clients: rows.length, created, renamed, agent_changes: agentChanges, plan_updates: planUpdates, tasks_imported: tasksImported, replaced, source: parsed.workbook ? 'workbook' : 'export', overwrite, date, period: { from, to }, detected });
   }
 
   // plan file for a plan period: №, Клиент, (Агент), План, Пул — matched to clients by № first, then by name

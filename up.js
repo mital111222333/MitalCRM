@@ -175,7 +175,7 @@ const UPALL = {
           const d = await UI.rawUpload(`/api/ag/upload?file=${encodeURIComponent(it.f.name)}&date=${pt}&from=${pf}&to=${pt}${per ? '' : '&detect=1'}`, it.f);
           const p = d.period || { from: pf, to: pt };
           lines.push(d.error ? `✕ ${esc(it.f.name)}: ${esc(d.error)}` : d.detected ? `✓ Баланс прошлого периода ${UI.dm(p.from)}–${UI.dm(p.to)}: ${d.clients} клиентов — оплаты ${UI.dm(p.to)} пойдут в итоги прошлого периода (проверьте, что в LINKO был выбран период по ${UI.dateRu(p.to)})`
-            : per ? `✓ Баланс за период ${UI.dm(p.from)}–${UI.dm(p.to)}: ${d.clients} клиентов` : `✓ Баланс: ${d.clients} клиентов на ${UI.dateRu(date)}${d.created ? `, новых ${d.created}` : ''}`);
+            : per ? `✓ Баланс за период ${UI.dm(p.from)}–${UI.dm(p.to)}: ${d.clients} клиентов` : `✓ Баланс: ${d.clients} клиентов на ${UI.dateRu(date)}${d.created ? `, новых ${d.created}` : ''}${d.renamed?.length ? `, переименованы в LINKO (история перенесена): ${d.renamed.map(([o, n]) => `${esc(o)} → ${esc(n)}`).join('; ')}` : ''}`);
         } else if (it.type === 'stock') {
           if (!it.wh) { lines.push(`— ${esc(it.f.name)}: пропущен`); continue; }
           const d = await UI.rawUpload(`/api/wh/upload?warehouse=${encodeURIComponent(it.wh)}&date=${date}&file=${encodeURIComponent(it.f.name)}`, it.f);
