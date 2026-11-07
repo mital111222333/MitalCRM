@@ -783,10 +783,10 @@ function notify_(text) {
 // Каждый заказ клиента сам получает график: N частей (обычно 4) — через 7, 14, 21 день и последняя в день срока (обычно 30-й).
 // Сколько оплачено по каждому заказу, считается от текущего долга клиента из LINKO («Должники по срокам»): оплаты закрывают
 // самые старые заказы, поэтому долг лежит на самых новых. Долг больше, чем сумма известных заказов, — «старый долг», он весь просрочен.
-// Файлы в репозитории данных: inst-orders.json — заказы за 75 дней; inst-bal.json — что клиенты взяли и оплатили по месяцам договоров (из баланса LINKO);
+// Файлы в репозитории данных: inst-orders.json — заказы за 180 дней; inst-bal.json — что клиенты взяли и оплатили по месяцам договоров (из баланса LINKO);
 // inst-state.json — расчёт для CRM и готовые тексты. Каждое утро (час — из CRM) агенту приходят его клиенты, у которых сегодня
 // срок части или есть просрочка (и договоры, где месяц на исходе, а план не выбран), вам — сводка по всем агентам.
-const INST_KEEP = 75;
+const INST_KEEP = 180; // рассрочка бывает на 2–3 месяца: заказы помним полгода
 function inst_(data) {
   if (!data.orders || !data.debtors) return;
   const r = ghRaw_('inst-rules.json'); if (r.code !== 200) return; // в CRM ещё не включено
@@ -819,8 +819,16 @@ function instFetch_(from, to) { return all_('sales/order/?begin_date=' + from + 
 function instLedger_(orders, today) {
   const f = ghRaw_('inst-orders.json'), cut = instDay_(today, -INST_KEEP), map = {};
   let old = null; if (f.code === 200) try { old = JSON.parse(f.text); } catch (e) { old = null; }
-  if (old && Array.isArray(old.orders)) old.orders.forEach(o => { map[o.id] = o; });
-  else instFetch_(cut, today).forEach(o => { map[o.id] = o; }); // first run: 75 days from LINKO at once
+  if (old && Array.isArray(old.orders)) {
+    old.orders.forEach(o => { map[o.id] = o; });
+    // the window grew (75 → 180 days): the missing older orders are taken from LINKO once
+    const P = PropertiesService.getScriptProperties();
+    if (P.getProperty('instKeep') !== String(INST_KEEP)) {
+      const first = old.orders.reduce((m, o) => (!m || o.d < m ? o.d : m), null);
+      if (first && first > cut) instFetch_(cut, instDay_(first, -1)).forEach(o => { if (!map[o.id]) map[o.id] = o; });
+      P.setProperty('instKeep', String(INST_KEEP));
+    }
+  } else instFetch_(cut, today).forEach(o => { map[o.id] = o; }); // first run: the whole window from LINKO at once
   orders.forEach(o => { const x = instOrder_(o); if (x) map[x.id] = x; else if (o && o.id != null) delete map[o.id]; });
   const list = Object.keys(map).map(k => map[k]).filter(o => o.d >= cut).sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : n_(a.id) - n_(b.id)));
   const txt = JSON.stringify({ orders: list });
@@ -864,15 +872,28 @@ function instMonths_(L, R, today) {
 // one order's schedule: parts of s/N due weekly (7, 14, 21…) with the last one on the term day; with a short term — evenly.
 // The order's age bucket counts from the end of its term: g — still in the term, o — overdue up to 30 days, r — more than 30 days
 // (for an ordinary 30-day order: up to 30 / 31–60 / 61+ days since the goods were taken)
-function instPlan_(o, left, days, parts, today) {
-  const paid = o.s - left, part = o.s / parts, weekly = 7 * (parts - 1) < days, list = [];
-  for (let k = 1; k <= parts; k++) {
-    const due = instDay_(o.d, k === parts ? days : weekly ? 7 * k : Math.round(days * k / parts));
-    const st = paid >= part * k - 0.01 ? 'paid' : due < today ? 'late' : due === today ? 'today' : 'wait';
-    list.push({ d: due, s: instR2_(part), st: st });
-  }
-  const want = d => part * list.filter(p => p.d <= d).length;
-  const late = Math.max(0, part * list.filter(p => p.d < today).length - paid), now = Math.max(0, want(today) - paid) - late;
+// own: the schedule agreed with the client in the CRM ([{ d: 'YYYY-MM-DD', s }]); its sums are fitted to the order's sum now
+// (a return lowers it): the parts keep their dates, the last part takes the difference
+function instOwnParts_(o, own) {
+  const list = own.filter(p => p && /^\d{4}-\d{2}-\d{2}$/.test(p.d)).map(p => ({ d: p.d, s: n_(p.s) })).sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+  if (!list.length) return null;
+  let acc = 0;
+  list.forEach((p, i) => { if (i === list.length - 1) p.s = Math.max(0, o.s - acc); else { p.s = Math.min(p.s, Math.max(0, o.s - acc)); acc += p.s; } });
+  return list;
+}
+function instPlan_(o, left, days, parts, today, own) {
+  const paid = o.s - left, list = [], part = o.s / parts, weekly = 7 * (parts - 1) < days;
+  const sched = own ? instOwnParts_(o, own) : null;
+  if (sched) days = Math.max(0, Math.round((Date.parse(sched[sched.length - 1].d + 'T12:00:00Z') - Date.parse(o.d + 'T12:00:00Z')) / 864e5));
+  const raw = sched || Array.from({ length: parts }, (_, i) => ({ d: instDay_(o.d, i + 1 === parts ? days : weekly ? 7 * (i + 1) : Math.round(days * (i + 1) / parts)), s: part }));
+  let cum = 0;
+  raw.forEach(p => {
+    cum += p.s;
+    const st = paid >= cum - 0.01 ? 'paid' : p.d < today ? 'late' : p.d === today ? 'today' : 'wait';
+    list.push({ d: p.d, s: instR2_(p.s), st: st });
+  });
+  const want = d => raw.filter(p => p.d <= d).reduce((a, p) => a + p.s, 0);
+  const late = Math.max(0, want(instDay_(today, -1)) - paid), now = Math.max(0, want(today) - paid - late);
   const age = Math.round((Date.parse(today + 'T12:00:00Z') - Date.parse(o.d + 'T12:00:00Z')) / 864e5), over = age - days;
   return { id: o.id, d: o.d, s: o.s, a: o.a, paid: instR2_(paid), left: instR2_(left), late: instR2_(late), today: instR2_(now), parts: list,
     age: age, term: days, over: over, b: over <= 0 ? 'g' : over <= 30 ? 'o' : 'r' };
@@ -892,9 +913,14 @@ function instCalc_(R, L, debtors, M, today, P) {
     if (!(D > 0.5) || x.ex) return;
     const days = Number(x.days || (ct && ct.days) || R.days || 30), parts = Math.max(1, Number(x.parts || (ct && ct.parts) || R.parts || 4));
     // an order given for its own term (set in the CRM on the order): the parts stay weekly — 60 days of a 30-day / 4-part client → 8 parts
-    const termOf = o => { const t = Number((ordT[o.id] || {}).days) || 0; return t > 0 ? { days: t, parts: Math.max(1, Math.round(parts * t / days)) } : { days: days, parts: parts }; };
+    // an order with its own schedule (dates and sums agreed with the client — «Накладные: сроки» in the CRM) or its own term
+    const termOf = o => { const x = ordT[o.id] || {}, t = Number(x.days) || 0; if (Array.isArray(x.plan) && x.plan.length) return { days: days, parts: parts, plan: x.plan }; return t > 0 ? { days: t, parts: Math.max(1, Math.round(parts * t / days)) } : { days: days, parts: parts }; };
     const os = (byC[k] || []).slice().reverse(), orders = []; let left = D; // newest first: the debt sits on the newest orders
-    os.forEach(o => { const l = Math.min(o.s, Math.max(0, left)); left -= l; if (l > 0.005) { const t = termOf(o); orders.push(Object.assign(instPlan_(o, l, t.days, t.parts, today), { own: t.days !== days })); } });
+    os.forEach(o => {
+      const l = Math.min(o.s, Math.max(0, left)); left -= l; if (l <= 0.005) return;
+      const t = termOf(o), x = ordT[o.id] || {}, p = instPlan_(o, l, t.days, t.parts, today, t.plan);
+      orders.push(Object.assign(p, { own: !!t.plan || t.days !== days, cond: String(x.cond || '').slice(0, 120), spec: !!x.spec }));
+    });
     orders.reverse();
     const old = instR2_(Math.max(0, left)), sum = key => instR2_(orders.reduce((a, o) => a + o[key], 0)), inB = b => instR2_(orders.filter(o => o.b === b).reduce((a, o) => a + o.left, 0));
     const next = orders.map(o => o.parts.filter(p => p.d > today && p.st !== 'paid')[0]).filter(Boolean).sort((a, b) => (a.d < b.d ? -1 : 1))[0] || null;
@@ -963,13 +989,36 @@ function instTexts_(R, clients, contracts, today) {
       '\nСегодня срок частей: ' + f(sumB(list, 'today')) + ' (' + list.filter(c => c.today > 0.5).length + ' кл.)';
   };
   const block = (title, list) => (list.length ? '\n\n' + title + '\n' + list.map(one).join('\n\n') : '');
+  // every invoice of a client without a contract: a day before its term, on the day, and every day while it is overdue
+  const tmr = instDay_(today, 1), inv = { tmr: [], today: [], late: [] };
+  clients.filter(c => c.type !== 'contract').forEach(c => c.orders.forEach(o => {
+    const base = { c: c, o: o };
+    // what is still unpaid of the parts due on a day (a part can be partly paid already)
+    const dueOn = d => { let cum = 0, s = 0; o.parts.forEach(p => { const before = cum; cum += p.s; if (p.d === d) s += Math.max(0, Math.min(p.s, cum - Math.max(o.paid, before))); }); return instR2_(s); };
+    const t1 = dueOn(tmr);
+    if (o.late > 0.5) inv.late.push(Object.assign({ s: o.late, from: o.parts.filter(p => p.st === 'late')[0] }, base));
+    if (o.today > 0.5) inv.today.push(Object.assign({ s: o.today }, base));
+    if (t1 > 0.5) inv.tmr.push(Object.assign({ s: t1 }, base));
+  }));
+  const invLine = (x, withAgent) => '• ' + x.c.name + (withAgent ? ' (' + x.c.agent + ')' : '') + ' · накл. №' + x.o.id + ' от ' + dm(x.o.d) + ' — ' + f(x.s) +
+    (x.from ? ', срок был ' + dm(x.from.d) : '') + ' · по накладной осталось ' + f(x.o.left) + (x.o.cond ? '\n   условия: ' + x.o.cond : '') + (x.c.phone ? '\n   ☎ ' + x.c.phone : '');
+  const invText = (pick, withAgent) => {
+    const L = [], sec = (title, list) => { if (list.length) L.push(title + ' — ' + f(list.reduce((a, x) => a + x.s, 0)) + '\n' + list.map(x => invLine(x, withAgent)).join('\n')); };
+    sec('⚠ ПРОСРОЧЕНО по накладным', inv.late.filter(pick));
+    sec('📅 Сегодня срок оплаты', inv.today.filter(pick));
+    sec('🔔 Завтра срок оплаты', inv.tmr.filter(pick));
+    return L.join('\n\n');
+  };
   const agents = {}, names = {};
   due.forEach(c => { names[c.agent] = 1; }); contracts.filter(ctAlert).forEach(c => { if (c.agent) names[c.agent] = 1; });
+  [].concat(inv.late, inv.today, inv.tmr).forEach(x => { names[x.c.agent] = 1; });
   Object.keys(names).forEach(a => {
     const all = clients.filter(c => c.agent === a), mine = due.filter(c => c.agent === a), cts = contracts.filter(c => ctAlert(c) && c.agent === a && !mine.some(x => x.contract === c.id));
-    agents[a] = head(all, a) + block('🔴 СРОЧНО — 61+ дней: вернуть товар или забрать деньги', mine.filter(red)) + block('🟠 31–60 дней — забрать деньги на этой неделе', mine.filter(orange)) +
+    const it = invText(x => x.c.agent === a, false);
+    agents[a] = (it ? '🧾 Накладные — ' + dm(today) + '\n\n' + it + '\n\n' : '') + head(all, a) + block('🔴 СРОЧНО — 61+ дней: вернуть товар или забрать деньги', mine.filter(red)) + block('🟠 31–60 дней — забрать деньги на этой неделе', mine.filter(orange)) +
       block('🟢 До 30 дней — сегодня срок части', mine.filter(green)) + (cts.length ? '\n\n' + cts.map(ctLine).join('\n') : '');
   });
+  const invAll = invText(() => true, true);
   // to you (when the Excel report is off): per agent the three baskets, then the red clients in one line each
   const byA = {}; clients.forEach(c => { (byA[c.agent] = byA[c.agent] || []).push(c); });
   const me = [head(clients, ''), ''].concat(Object.keys(byA).sort().map(a => {
@@ -977,7 +1026,10 @@ function instTexts_(R, clients, contracts, today) {
     return '👤 ' + a + ': 🔴 ' + f(sumB(l, 'r')) + ' · 🟠 ' + f(sumB(l, 'o')) + ' · 🟢 ' + f(sumB(l, 'g')) + (r.length ? '\n' + r.map(c => '  • ' + c.name + ' — 🔴 ' + f(c.r) + ', брал ' + (c.since ? dm(c.since) : '> ' + INST_KEEP + ' дн.')).join('\n') : '');
   })).join('\n');
   const cts = contracts.filter(ctAlert);
-  return { me: me + (cts.length ? '\n\n' + cts.map(ctLine).join('\n') : '') + (R.crm ? '\n\nПодробно: ' + R.crm + '#/debt' : ''), agents: agents, due: due.length + cts.length };
+  return { me: me + (cts.length ? '\n\n' + cts.map(ctLine).join('\n') : '') + (R.crm ? '\n\nПодробно: ' + R.crm + '#/debt' : ''), agents: agents, due: due.length + cts.length,
+    // to you, besides the Excel report: the invoices due tomorrow, today and overdue, one line each
+    inv: invAll ? '🧾 Накладные — сроки оплаты ' + dm(today) + '\n\n' + invAll + (R.crm ? '\n\nВсе накладные: ' + R.crm + '#/invo' : '') : '',
+    invN: { tmr: inv.tmr.length, today: inv.today.length, late: inv.late.length } };
 }
 // a long text in several Telegram messages (limit 4096)
 function instTg_(chat, text) {
@@ -997,6 +1049,7 @@ function instSend_(R, S, today, F) {
   let n = 0;
   if (R.agents !== false) Object.keys(S.texts.agents).forEach(a => { const ch = (R.chats || {})[a]; if (ch) { try { instTg_(ch, S.texts.agents[a]); n++; } catch (e) { Logger.log('Рассрочка, агенту ' + a + ': ' + mask_(e.message || e)); } } });
   const me = R.me || CFG.TG_CHAT, text = () => { if (S.texts.due) try { instTg_(me, S.texts.me); n++; } catch (e) { Logger.log('Рассрочка, вам: ' + mask_(e.message || e)); } };
+  if (me && S.texts.inv) try { instTg_(me, S.texts.inv); n++; } catch (e) { Logger.log('Накладные, вам: ' + mask_(e.message || e)); }
   if (me && R.meXlsx !== false) {
     try {
       const x = ghRaw_('linko-extra.json'), X = x.code === 200 ? (JSON.parse(x.text).data || {}) : {};

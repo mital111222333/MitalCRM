@@ -329,6 +329,9 @@ REP.debt = async (el, mode) => {
   const t0g = REP.today(), EMPTY = '(Пустые)', agentNames = [...new Set(d.clients.map(c => c.agent).concat(agents))].filter(Boolean).sort((x, y) => x.localeCompare(y));
   for (const k of Object.keys(S.f)) if (!S.f[k] || typeof S.f[k] !== 'object') delete S.f[k]; // an older saved format
   const sum0 = c => PAYPLAN.of(c.name).reduce((a, x) => a + x.s, 0);
+  // terms of the invoices (🧾 Накладные: сроки) as the auto-loader counted them: overdue and the next part due
+  let IS = null; try { if (typeof INST !== 'undefined' && INST.cfg().on && INST.cloud()) IS = await INST.state(); } catch { IS = null; }
+  const invOf = new Map((IS?.clients || []).map(x => [x.name, x])), inv = c => invOf.get(c.name) || null;
   const firstDate = c => PAYPLAN.of(c.name)[0]?.d || '';
   const kNum = (col, fmt = f) => c => { const v = col.v(c); return v === null ? [[EMPTY, -Infinity]] : [[fmt(v), v]]; };
   const kText = col => c => { const v = String(col.v(c) ?? '').trim(); return v ? [[v, v.toLowerCase()]] : [[EMPTY, '']]; };
@@ -351,6 +354,9 @@ REP.debt = async (el, mode) => {
       cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div class="${x.d < t0g ? 'neg' : ''}" title="${x.d < t0g ? 'дата прошла' : ''}">${UI.dm(x.d)}</div>`).join('') : '<span class="ph">＋</span>'; } },
     { k: 'tot', t: 'Ещё оплатит', kind: 'num', v: c => sum0(c) || null, vt: c => sum0(c), tot: true, edit: 'pay',
       cell: c => { const pl = PAYPLAN.of(c.name); return pl.length ? pl.map(x => `<div>$${f(x.s)}</div>`).join('') + (pl.length > 1 ? `<b>Σ $${f(sum0(c))}</b>` : '') : '<span class="ph">＋</span>'; } },
+    { k: 'inv', t: 'Срок по накладным', kind: 'num', v: c => { const x = inv(c); return x && (x.late > 0.5 || x.next) ? (x.late > 0.5 ? -x.late : REP.days(t0g, x.next.d)) : null; }, kfmt: v => (v < 0 ? 'просрочено' : `через ${v} дн.`),
+      sv: c => { const x = inv(c); return x ? (x.late > 0.5 ? '0000' : x.next?.d || '9999') : '9999'; },
+      cell: c => { const x = inv(c); if (!x) return '<span class="ph">—</span>'; return `${x.late > 0.5 ? `<div class="neg"><b>просрочено ${f(x.late)}</b></div>` : ''}${x.today > 0.5 ? `<div><b>сегодня ${f(x.today)}</b></div>` : ''}${x.next ? `<div>${UI.dm(x.next.d)} · ${f(x.next.s)}</div>` : ''}${!x.late && !x.today && !x.next ? '<span class="ph">—</span>' : ''}`; } },
     { k: 'note', t: 'Заметка', kind: 'text', v: c => c.note || '', edit: 'text', field: 'note', cell: c => (c.note ? `<small>${esc(c.note)}</small>` : '<span class="ph">＋</span>') },
   ];
   for (const col of COLS) if (!col.keys) col.keys = col.kind === 'num' ? kNum(col, col.kfmt || f) : kText(col);

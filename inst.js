@@ -61,7 +61,7 @@ const INST = {
     const own = INST.cfg().clients[c.name] || {}, open = INST.open.has(c.name);
     const det = `<tr${open ? '' : ' hidden'}><td colspan="7">
       ${c.orders.map(o => `<div style="margin:4px 0"><b>№${esc(o.id)}</b> от ${UI.dm(o.d)} на ${INST.money(o.s)} · оплачено ${INST.money(o.paid)} · осталось <b>${INST.money(o.left)}</b><div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">${o.parts.map(INST.partTag).join('')}</div></div>`).join('')}
-      ${c.old > 0.5 ? `<div class="neg" style="margin:4px 0">Старый долг (заказы старше 75 дней): ${INST.money(c.old)} — весь считается просроченным</div>` : ''}
+      ${c.old > 0.5 ? `<div class="neg" style="margin:4px 0">Старый долг (заказы старше 180 дней): ${INST.money(c.old)} — весь считается просроченным</div>` : ''}
       <div class="mut" style="margin-top:6px">График: ${c.days} дн., ${c.parts} ч.${own.days || own.parts ? ' (свой для клиента)' : ''}${c.phone ? ' · ☎ ' + esc(c.phone) : ''}
         <button class="btn gray sm" data-own="${esc(c.name)}" type="button" style="margin-left:8px">Свой срок / не напоминать</button></div></td></tr>`;
     return `<tr data-row="${esc(c.name)}" style="cursor:pointer"><td>${open ? '▾' : '▸'} ${esc(c.name)}${INST.typeTag(c)}</td><td>${esc(c.agent)}</td><td class="num">${INST.money(c.debt)}</td>
@@ -204,7 +204,7 @@ const INST = {
       <p class="mut">В файле: сводка и цифры по каждому агенту, кому платить сегодня, долгая просрочка (30+ дней) с подсказкой «что делать», все заказы в долг по частям, продажи и товары-лидеры, оплаты вчера и сегодня, что заканчивается на складе, договоры.</p>
       <p class="mut">Части: через 7, 14, 21 день после заказа и последняя — в день срока (при 30 днях и 4 частях: 7-й, 14-й, 21-й и 30-й день), каждая по ¼ суммы заказа. Утром приходят клиенты, у которых сегодня срок части или есть просрочка. Договоры попадают в напоминание, когда до конца месяца 10 дней и меньше, а закупка не выбрана, и за 30 дней до конца договора.</p>
       <p class="mut">Telegram: ${tg.token ? `бот подключён · ваш чат ${tg.me?.id ? '✓' : '<b class="neg">не выбран</b>'} · агентов с чатом: ${linked.length}` : '<b class="neg">бот не подключён</b>'} — <a href="#/tg">Telegram агентам</a>.</p>
-      <details><summary><b>Чтобы приходило само, даже когда CRM закрыта</b> (один раз)</summary><ol class="steps"><li><a href="#/cloud">Синхронизация и настройки</a> → «📋 Скопировать готовый скрипт».</li><li>В script.google.com откройте файл автозагрузки, сотрите всё, вставьте, 💾.</li><li>Запустите <b>setup</b>. Первый раз скрипт возьмёт из LINKO заказы за 75 дней.</li></ol></details>
+      <details><summary><b>Чтобы приходило само, даже когда CRM закрыта</b> (один раз)</summary><ol class="steps"><li><a href="#/cloud">Синхронизация и настройки</a> → «📋 Скопировать готовый скрипт».</li><li>В script.google.com откройте файл автозагрузки, сотрите всё, вставьте, 💾.</li><li>Запустите <b>setup</b>. Первый раз скрипт возьмёт из LINKO заказы за 180 дней.</li></ol></details>
       <div class="bar"><button class="btn" id="isSave" type="button">Сохранить</button><span class="mut">${c.publishedAt ? 'Правила отправлены автозагрузке ' + new Date(c.publishedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span></div>`, { cls: 'w6' })}
       ${UI.panel('Как выглядит напоминание', st?.texts ? `<label class="mut">Кому <select id="isWho"><option value="">Вам (руководителю)</option>${agents.map(a => `<option ${a === INST.who ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></label>
         <div class="tgprev" id="isPrev" style="white-space:pre-wrap;margin-top:8px">${esc(INST.who && st.texts.agents[INST.who] ? st.texts.agents[INST.who] : st.texts.me)}</div>
@@ -238,7 +238,7 @@ EXT_PAGES.inst = async el => {
   const mine = pick(all), due = mine.filter(x => x.late > 0.5 || x.today > 0.5), list = INST.view === 'all' ? mine : due, f = INST.money;
   const ctNeed = (st?.contracts || []).filter(k => k.active && ((k.cur && k.cur.fact != null && (k.cur.fact < k.cur.plan || (k.cur.paid || 0) < k.cur.plan)) || k.daysLeft <= 30));
   const tabs = [['due', `Сегодня и просрочка (${due.length})`], ['all', `Все с долгом (${mine.length})`], ['ct', `Договоры (${c.contracts.length})`], ['set', '⚙ Настройки']];
-  const head = !c.on ? `<div class="panel" style="margin-bottom:12px"><b>Пока выключено.</b> Откройте «⚙ Настройки», включите и сохраните — через 5 минут автозагрузка посчитает графики по всем заказам за 75 дней.</div>`
+  const head = !c.on ? `<div class="panel" style="margin-bottom:12px"><b>Пока выключено.</b> Откройте «⚙ Настройки», включите и сохраните — через 5 минут автозагрузка посчитает графики по всем заказам за 180 дней.</div>`
     : !st ? `<div class="panel" style="margin-bottom:12px"><b>Графики ещё не посчитаны.</b> Автозагрузка делает это каждые 5 минут. Если прошло больше 10 минут — обновите скрипт в Google (⚙ Настройки → «Чтобы приходило само»).</div>`
     : `<div class="kpis">${UI.tile('Сегодня срок', f(mine.reduce((a, x) => a + x.today, 0)), { sub: mine.filter(x => x.today > 0.5).length + ' кл.', tone: 'warn' })}
         ${UI.tile('Просрочено', f(mine.reduce((a, x) => a + x.late, 0)), { sub: mine.filter(x => x.late > 0.5).length + ' кл.', tone: mine.some(x => x.late > 0.5) ? 'bad' : 'good' })}
