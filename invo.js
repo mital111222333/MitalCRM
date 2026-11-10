@@ -141,20 +141,49 @@ const INVO = {
       return { ...(res.ok.length ? { plan: res.ok } : {}), disc: Number($('#ivD', m.el).value) || 0, bonus: $('#ivB', m.el).value.trim(), cond: $('#ivC', m.el).value.trim(), spec: $('#ivS', m.el).checked, ok: UI.localDate(Date.now()), ...(x.stored ? { stored: x.stored } : {}) };
     };
     $('#ivOk', m.el).onclick = () => { const v = collect(); if (!v) return; INVO.save(r, v); m.close(); EXT_PAGES.invo(el); };
-    $('#ivPr', m.el).onclick = () => { const v = collect(); if (!v) return; v.spec = true; INVO.save(r, v); m.close(); INVO.print([{ ...r, x: INVO.cfg().orders[r.id] }]); EXT_PAGES.invo(el); };
+    $('#ivPr', m.el).onclick = () => { const v = collect(); if (!v) return; v.spec = true; INVO.save(r, v); m.close(); EXT_PAGES.invo(el); INVO.preview([{ ...r, x: INVO.cfg().orders[r.id] }]); };
   },
 
-  // ---------- the one-time contract (special offer), A4, filled in from the invoice ----------
+  // ---------- the one-time contract (special offer): half of an A4 sheet, filled in from the invoice ----------
+  // 190 × 138 mm: two on one sheet (a copy for the client and one for us, or two different contracts). A contract that would not fit
+  // is shrunk (nothing is cut). It can be printed, saved as a picture (PNG) and sent to Telegram.
+  HALF: 521, // px: 138 mm
+  css: () => `.cdoc{box-sizing:border-box;width:190mm;background:#fff;color:#000;font:10.6px/1.35 Arial,Helvetica,sans-serif;position:relative;overflow:hidden;text-align:left}
+.cdoc *{box-sizing:border-box}
+.cdoc table,.cdoc th,.cdoc td,.cdoc p,.cdoc div{font:inherit}
+.cdoc .fit{padding:3mm 4mm 2mm}
+.cdoc h1{font-size:15.5px;text-align:center;margin:0 0 1px;letter-spacing:.3px;color:#000;font-weight:700}
+.cdoc .sub{text-align:center;margin:0 0 3px}
+.cdoc .in{margin:3px 0 5px}
+.cdoc .cols{display:flex;gap:8px;align-items:flex-start}
+.cdoc .c1{flex:1 1 52%;min-width:0}.cdoc .c2{flex:1 1 48%;min-width:0}
+.cdoc h2{font-size:11.5px;margin:0 0 3px;color:#000;font-weight:700}
+.cdoc table{width:100%;border-collapse:collapse}
+.cdoc th,.cdoc td{border:1px solid #000;padding:3px 5px;vertical-align:top;text-align:left;color:#000;font-weight:normal}
+.cdoc .kv th{width:34%;font-weight:600;background:#f2f2f2}
+.cdoc .sch th{background:#f2f2f2;font-weight:600}
+.cdoc .sch td:nth-child(3){text-align:right;white-space:nowrap}
+.cdoc .sch td:first-child{width:18px;text-align:center}
+.cdoc .sch .tot td{font-weight:700}
+.cdoc .ft{margin:5px 0 2px}
+.cdoc .sg{display:flex;gap:8px;align-items:flex-end}
+.cdoc .sg table{flex:1}
+.cdoc .sg td{border:0;padding:16px 6px 0 0;width:50%}
+.cdoc .sg .who{font-weight:600}
+.cdoc .ln{display:flex;gap:6px;color:#666;font-size:8.5px}
+.cdoc .ln span{flex:1;border-top:1px solid #000;padding-top:1px;text-align:center}
+.cdoc .mp{width:17mm;height:17mm;border:1px dashed #888;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#888;font-size:9px;flex:none;margin-bottom:2px}`,
   doc(r) {
     const F = INVO.cfg().form, x = r.x || {}, pl = INVO.planOf(r), tot = pl.reduce((a, p) => a + p.s, 0), today = UI.localDate(Date.now());
     const bonus = String(x.bonus ?? r.bonusItems.join('\n')).trim(), disc = Math.round((x.disc ?? r.disc) * 10) / 10;
-    const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
-    return `<section class="doc">
+    const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`, sg = (F.signers || []).filter(Boolean), pairs = [];
+    for (let i = 0; i < sg.length; i += 2) pairs.push(sg.slice(i, i + 2));
+    const who = s => `<td><div class="who">${esc(s)}</div><div class="ln"><span>ФИО</span><span>Подпись</span><span>Дата</span></div></td>`;
+    return `<section class="cdoc"><div class="fit">
       <h1>ДОГОВОР-СПЕЦПРЕДЛОЖЕНИЕ № ${esc(r.id)}</h1>
-      <div class="sub">разовый договор к накладной № ${esc(r.id)} от ${UI.dateRu(r.d)}</div>
-      <div class="place"><span>${esc(F.city || '')}</span><span>${UI.dateRu(today)}</span></div>
-      <p><b>${esc(F.company || '')}</b> (Поставщик) и клиент <b>${esc(r.client)}</b> (Покупатель) договорились об особых условиях поставки по накладной № ${esc(r.id)}.</p>
-      <table class="kv">
+      <div class="sub">разовый договор к накладной № ${esc(r.id)} от ${UI.dateRu(r.d)}${F.city ? ' · ' + esc(F.city) : ''} · ${UI.dateRu(today)}</div>
+      <p class="in"><b>${esc(F.company || '')}</b> (Поставщик) и клиент <b>${esc(r.client)}</b> (Покупатель) договорились об особых условиях поставки по накладной № ${esc(r.id)}.</p>
+      <div class="cols"><div class="c1"><table class="kv">
         ${row('Клиент (как в LINKO)', esc(r.client))}
         ${row('Агент', esc(r.agent || ''))}
         ${row('Накладная', `№ ${esc(r.id)} от ${UI.dateRu(r.d)}`)}
@@ -163,33 +192,102 @@ const INVO = {
         ${row('Условия', disc > 0 ? `скидка <b>${String(disc).replace('.', ',')}%</b> от прайса` : 'по прайсу, без скидки')}
         ${row('Бонусы', bonus ? esc(bonus).replace(/\n/g, '<br>') : '—')}
         ${row('Акция / другие условия', x.cond ? esc(x.cond) : '—')}
-      </table>
-      <h2>График оплаты</h2>
-      <table class="grid"><thead><tr><th>№</th><th>Дата оплаты</th><th>Сумма</th><th>Отметка об оплате</th></tr></thead>
+      </table></div><div class="c2"><h2>График оплаты</h2>
+      <table class="sch"><thead><tr><th>№</th><th>Дата оплаты</th><th>Сумма</th><th>Отметка об оплате</th></tr></thead>
         <tbody>${pl.map((p, i) => `<tr><td>${i + 1}</td><td>${UI.dateRu(p.d)}</td><td>${INVO.money2(p.s)}</td><td></td></tr>`).join('')}
-        <tr class="tot"><td></td><td>Итого</td><td>${INVO.money2(tot)}</td><td></td></tr></tbody></table>
-      <p>Покупатель обязуется оплатить сумму накладной в указанные сроки. Условия этого договора действуют только для накладной № ${esc(r.id)}.</p>
-      <h2>Подписи</h2>
-      <table class="sign">${(F.signers || []).filter(Boolean).map(s => `<tr><td class="role">${esc(s)}</td><td class="line">ФИО</td><td class="line">Подпись</td><td class="line short">Дата</td></tr>`).join('')}</table>
-    </section>`;
+        <tr class="tot"><td></td><td>Итого</td><td>${INVO.money2(tot)}</td><td></td></tr></tbody></table></div></div>
+      <p class="ft">Покупатель обязуется оплатить сумму накладной в указанные сроки. Условия этого договора действуют только для накладной № ${esc(r.id)}.</p>
+      <div class="sg"><table>${pairs.map(p => `<tr>${p.map(who).join('')}${p.length < 2 ? '<td></td>' : ''}</tr>`).join('')}</table><div class="mp">М.П.</div></div>
+    </div></section>`;
   },
-  print(rows) {
-    rows = rows.filter(Boolean);
+  // a contract that is taller than half a sheet is shrunk to fit (width grows by the same factor, so nothing is cut)
+  fit(doc) {
+    const fit = doc.querySelector('.fit'); if (!fit) return;
+    fit.style.cssText = ''; doc.style.height = '';
+    if (fit.offsetHeight <= INVO.HALF) return;
+    let k = 1;
+    for (let i = 0; i < 5; i++) { fit.style.cssText = `width:${100 / k}%;transform:scale(${k});transform-origin:0 0`; const h = fit.offsetHeight * k; if (h <= INVO.HALF + 1) break; k *= INVO.HALF / h * 0.995; }
+    doc.style.height = Math.min(INVO.HALF, Math.ceil(fit.offsetHeight * k)) + 'px';
+  },
+  // print: A4 sheets with two halves each; `two` — each contract twice (a copy for the client and one for us), otherwise the contracts follow each other
+  printDocs(docs, two) {
+    const items = []; docs.forEach(h => { items.push(h); if (two) items.push(h); });
+    const sheets = []; for (let i = 0; i < items.length; i += 2) sheets.push(items.slice(i, i + 2));
+    const fr = document.createElement('iframe'); fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'; document.body.appendChild(fr);
+    const d = fr.contentDocument; d.open();
+    d.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Договор-спецпредложение</title><style>@page{size:A4;margin:8mm 10mm}*{box-sizing:border-box}body{margin:0;background:#fff}
+      .sheet{height:281mm;page-break-after:always;overflow:hidden}.sheet:last-child{page-break-after:auto}.half{height:140mm;position:relative}.half+.half{border-top:1px dashed #888}.half+.half::before{content:"✂";position:absolute;left:-1mm;top:-3.4mm;font-size:9px;color:#888;background:#fff}${INVO.css()}</style></head><body>${sheets.map(s => `<div class="sheet">${s.map(h => `<div class="half">${h}</div>`).join('')}</div>`).join('')}</body></html>`);
+    d.close();
+    setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch { toast('Не удалось открыть печать — скачайте картинкой'); } }, 350);
+    setTimeout(() => fr.remove(), 120000);
+  },
+  // the contract as a picture (PNG): the document is drawn by the browser itself from its own HTML, so it looks exactly as printed
+  async png(docEl) {
+    const w = Math.ceil(docEl.getBoundingClientRect().width), h = Math.ceil(docEl.getBoundingClientRect().height), S = 2.5;
+    const xml = new XMLSerializer().serializeToString(docEl.cloneNode(true));
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(w * S)}" height="${Math.round(h * S)}"><foreignObject x="0" y="0" width="${w}" height="${h}" transform="scale(${S})"><div xmlns="http://www.w3.org/1999/xhtml"><style>${INVO.css()}</style>${xml}</div></foreignObject></svg>`;
+    const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('браузер не смог нарисовать картинку')); });
+    const cv = document.createElement('canvas'); cv.width = Math.round(w * S); cv.height = Math.round(h * S);
+    const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height); g.drawImage(img, 0, 0);
+    const blob = await new Promise(ok => cv.toBlob(ok, 'image/png')); if (!blob) throw new Error('картинка не получилась'); return blob;
+  },
+  fileName: r => ('Договор-' + r.id + '-' + String(r.client || '').replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 30) + '.png').replace(/_\.png$/, '.png'),
+  // the preview: every contract on the screen as it will be printed, with the buttons: print, picture, send, copy
+  preview(rows) {
+    rows = (rows || []).filter(Boolean);
     if (!rows.length) return toast('Нечего печатать');
-    const w = window.open('', '_blank'); if (!w) return toast('Браузер не дал открыть окно печати — разрешите всплывающие окна для этого сайта');
-    w.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Спецпредложение ${esc(rows.map(r => '№' + r.id).join(', ').slice(0, 80))}</title><style>
-      @page{size:A4;margin:14mm 14mm 16mm}
-      *{box-sizing:border-box} body{font:12.5px/1.45 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0}
-      .doc{page-break-after:always;max-width:182mm;margin:0 auto} .doc:last-child{page-break-after:auto}
-      h1{font-size:17px;text-align:center;margin:0 0 2px;letter-spacing:.3px} .sub{text-align:center;margin-bottom:10px}
-      h2{font-size:13.5px;margin:14px 0 6px} .place{display:flex;justify-content:space-between;margin:0 0 10px}
-      table{width:100%;border-collapse:collapse} .kv th,.kv td,.grid th,.grid td{border:1px solid #000;padding:5px 7px;vertical-align:top;text-align:left}
-      .kv th{width:36%;font-weight:600;background:#f2f2f2} .grid th{background:#f2f2f2} .grid td:nth-child(3){text-align:right;white-space:nowrap} .grid td:first-child{width:28px;text-align:center}
-      .grid .tot td{font-weight:700} .sign td{padding:16px 6px 2px;vertical-align:bottom} .sign .role{width:24%;font-weight:600}
-      .sign .line{border-bottom:1px solid #000;color:#777;font-size:10px;vertical-align:bottom} .sign .short{width:16%}
-      @media screen{body{background:#eee}.doc{background:#fff;padding:14mm;margin:10px auto;box-shadow:0 1px 6px rgba(0,0,0,.25)}}
-    </style></head><body>${rows.map(INVO.doc).join('')}<script>onload=()=>setTimeout(()=>print(),300)<\/script></body></html>`);
-    w.document.close();
+    const canShare = !!(navigator.canShare && navigator.share);
+    const m = modal(`<h3 style="margin:0 0 8px">📄 Договор-спецпредложение</h3>
+      <style>${INVO.css()}</style>
+      <div class="bar" style="flex-wrap:wrap;gap:8px;margin-bottom:10px"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="pvTwo" ${rows.length === 1 ? 'checked' : ''}> 2 экземпляра на листе А4 (клиенту и нам)</label><span class="spacer"></span><button class="btn" id="pvPr" type="button">🖨 Печать</button><button class="btn gray" id="pvX" type="button">Закрыть</button></div>
+      <div style="max-height:68vh;overflow:auto">${rows.map((r, i) => `<div style="margin:0 0 14px"><div class="bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px"><b>№${esc(r.id)} · ${esc(r.client)}</b><span class="spacer"></span>
+        <button class="btn gray sm" data-png="${i}" type="button">🖼 Скачать картинкой</button>${canShare ? `<button class="btn gray sm" data-share="${i}" type="button">📤 Отправить (Telegram…)</button>` : ''}<button class="btn gray sm" data-copy="${i}" type="button">📋 Копировать картинку</button></div>
+        <div style="display:inline-block;max-width:100%;overflow:auto;border:1px solid var(--line-2,#ccc)">${INVO.doc(r)}</div></div>`).join('')}</div>
+      <p class="mut" style="font-size:12px;margin:6px 0 0">Договор занимает половину листа А4. Печать: два экземпляра на одном листе — один клиенту, один нам (разрежьте по пунктирной линии), М.П. — место для печати. Картинку можно сразу отправить в Telegram.</p>`);
+    m.el.classList.add('wide');
+    const docs = [...m.el.querySelectorAll('.cdoc')]; docs.forEach(INVO.fit);
+    $('#pvX', m.el).onclick = m.close;
+    $('#pvPr', m.el).onclick = () => INVO.printDocs(docs.map(d => d.outerHTML), $('#pvTwo', m.el).checked);
+    const blobOf = async i => { try { return await INVO.png(docs[i]); } catch (e) { toast('Не получилось сделать картинку: ' + (e.message || e) + '. Нажмите «Печать» → «Сохранить как PDF»'); return null; } };
+    m.el.querySelectorAll('[data-png]').forEach(b => b.onclick = async () => { const i = +b.dataset.png, bl = await blobOf(i); if (!bl) return; const a = document.createElement('a'); a.href = URL.createObjectURL(bl); a.download = INVO.fileName(rows[i]); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 20000); toast('Картинка сохранена — отправьте её в Telegram'); });
+    m.el.querySelectorAll('[data-share]').forEach(b => b.onclick = async () => { const i = +b.dataset.share, bl = await blobOf(i); if (!bl) return; const file = new File([bl], INVO.fileName(rows[i]), { type: 'image/png' }); try { if (navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: 'Договор-спецпредложение №' + rows[i].id }); else toast('Это устройство не умеет отправлять файлы — скачайте картинкой'); } catch (e) { if (e.name !== 'AbortError') toast('Не получилось отправить: ' + (e.message || e)); } });
+    m.el.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { const bl = await blobOf(+b.dataset.copy); if (!bl) return; try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': bl })]); toast('Картинка скопирована — вставьте в Telegram (Ctrl+V)'); } catch { toast('Браузер не дал скопировать — нажмите «Скачать картинкой»'); } });
+  },
+  print(rows) { INVO.preview(rows); },
+
+  // ---------- one invoice as a card: what is in it, the agreed term, the reminders, the contract ----------
+  // the row of an invoice as the «Накладные» page has it (from the LINKO order); an order of a client with a contract is built by hand
+  rowOf(o, map) {
+    const id = String(o.id), r = map ? map.get(id) : INVO.list().find(x => x.id === id);
+    return r || { id, d: o.date || o.d, client: o.client, agent: o.agent || '', s: Math.round(((o.sum ?? o.s) - (o.ret || 0)) * 100) / 100, disc: 0, bonusItems: [], auto: false, x: INVO.cfg().orders[id] || {} };
+  },
+  // a hidden element for the dialog of an invoice: when it saves, the page behind it asks to draw itself again into this element
+  sink(after) {
+    if (!EXT_PAGES.invo.__sink) { const orig = EXT_PAGES.invo; const w = function (el) { if (el && el._sink) return el._sink(); return orig.apply(this, arguments); }; w.__sink = true; EXT_PAGES.invo = w; }
+    const el = document.createElement('div'); el._sink = after; return el;
+  },
+  orderCard(r, after) {
+    const M = LX.model(), f = INVO.money2, x = r.x || {}, pl = INVO.planOf(r), today = UI.localDate(Date.now()), c = INVO.cfg();
+    const lines = M.lines.filter(l => String(l.order) === String(r.id));
+    const disc = Math.round((x.disc ?? r.disc) * 10) / 10, std = c.form.std ?? 10, tg = CRMLocal.ext().tg || {}, on = !!INST.cfg().on;
+    const meOk = !!tg.me?.id, agOk = !!tg.chats?.[r.agent]?.id, hour = String(INST.cfg().hour ?? 9).padStart(2, '0') + ':00';
+    const ok = (v, yes, no) => v ? `<div>✅ ${yes}</div>` : `<div class="neg">⚠ ${no}</div>`;
+    const dm = d => UI.dm(d), rem = p => (p.d < today ? '<span class="mut">срок прошёл</span>' : `${p.d > INVO.addDays(today, 1) ? dm(INVO.addDays(p.d, -1)) + ' (за день) и ' : p.d === INVO.addDays(today, 1) ? 'завтра (за день) и ' : ''}${p.d === today ? 'сегодня' : dm(p.d)} (в день срока)`);
+    const m = modal(`<h3 style="margin:0 0 2px">Накладная №${esc(r.id)} · ${UI.dateRu(r.d)}</h3>
+      <p class="mut" style="margin:0 0 10px"><b>${esc(r.client)}</b> · агент ${esc(r.agent || '—')} · сумма <b>${f(r.s)}</b> · скидка <b class="${Math.abs(disc - std) > 0.6 ? 'neg' : ''}">${disc > 0.05 ? disc + '%' : 'нет'}</b>${Math.abs(disc - std) > 0.6 ? ` (стандарт ${std}%)` : ` (стандарт)`}${x.cond ? ` · <i>${esc(x.cond)}</i>` : ''}</p>
+      <div class="scroll" style="max-height:220px">${lines.length ? `<table><thead><tr><th>Товар</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th></tr></thead><tbody>${lines.map(l => { const q = l.qty - l.ret; return `<tr><td>${esc(l.product)}${l.bonus ? ' <span class="pill warn">бонус</span>' : ''}</td><td class="num">${UI.fmt0(q)}</td><td class="num">${l.bonus ? '—' : q ? f(l.sum / q) : '—'}</td><td class="num">${l.bonus ? '—' : f(l.sum)}</td></tr>`; }).join('')}</tbody></table>` : '<p class="mut">Состав заказа в загруженных данных LINKO не найден.</p>'}</div>
+      ${String(x.bonus ?? r.bonusItems.join(', ')).trim() ? `<p style="margin:8px 0 0"><b>Бонусы:</b> ${esc(String(x.bonus ?? r.bonusItems.join(', '))).replace(/\n/g, '<br>')}</p>` : ''}
+      <h4 style="margin:12px 0 4px">Когда клиент должен оплатить <span class="mut" style="font-weight:normal">— ${x.plan || x.days ? '🤝 как договорились' : 'стандартный график'}</span></h4>
+      <div class="scroll"><table><thead><tr><th>№</th><th>Срок</th><th class="num">Сумма</th><th>Напоминание ${on ? 'вам и агенту' : ''}</th></tr></thead><tbody>${pl.map((p, i) => `<tr><td>${i + 1}</td><td><b>${UI.dateRu(p.d)}</b></td><td class="num">${f(p.s)}</td><td><small>${on ? rem(p) : '—'}</small></td></tr>`).join('')}</tbody></table></div>
+      <div style="margin:8px 0;font-size:13px">${on ? `<div>🔔 Напоминания приходят в Telegram утром (${hour}): за день до срока, в день срока и каждый день, пока не оплачено.</div>` : '<div class="neg">⚠ Напоминания выключены: «Рассрочка и договоры» → ⚙ Настройки → «Включить».</div>'}
+        ${ok(meOk, 'Вам придёт в Telegram', 'Ваш чат не выбран — раздел «Telegram агентам»')}${ok(agOk, `Агенту ${esc(r.agent)} придёт в Telegram`, `У агента ${esc(r.agent || '')} не привязан Telegram — привяжите в «Telegram агентам»`)}</div>
+      <div class="bar" style="flex-wrap:wrap;gap:8px"><button class="btn" id="ocT" type="button">📅 Срок и условия</button><button class="btn" id="ocD" type="button">📄 Договор (печать / картинка)</button><button class="btn gray" id="ocC" type="button">👤 Карточка клиента</button><span class="spacer"></span><button class="btn gray" id="ocX" type="button">Закрыть</button></div>`);
+    m.el.classList.add('wide');
+    $('#ocX', m.el).onclick = m.close;
+    $('#ocD', m.el).onclick = () => INVO.preview([r]);
+    $('#ocC', m.el).onclick = () => { if (typeof CARD !== 'undefined') CARD.open(r.client); };
+    $('#ocT', m.el).onclick = () => { m.close(); INVO.dialog(r, INVO.sink(() => { if (after) after(); INVO.orderCard(INVO.rowOf({ id: r.id, date: r.d, client: r.client, agent: r.agent, sum: r.s }), after); })); };
   },
 };
 
@@ -242,13 +340,13 @@ EXT_PAGES.invo = async el => {
   const ag = $('#ivAg', body); if (ag) ag.onchange = () => { INVO.agent = ag.value; re(); };
   const q = $('#ivQ', body); if (q) q.onchange = () => { INVO.q = q.value.trim(); re(); };
   body.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => INVO.dialog(byId(b.dataset.ed), el));
-  body.querySelectorAll('[data-pr]').forEach(b => b.onclick = () => INVO.print([byId(b.dataset.pr)]));
+  body.querySelectorAll('[data-pr]').forEach(b => b.onclick = () => INVO.preview([byId(b.dataset.pr)]));
   body.querySelectorAll('[data-okstd]').forEach(b => b.onclick = () => { const r = byId(b.dataset.okstd); INVO.save(r, { disc: r.disc, spec: false }); re(); });
   body.querySelectorAll('[data-st]').forEach(b => b.onclick = () => { const x = c.orders[b.dataset.st]; if (!x) return; if (x.stored) delete x.stored; else x.stored = UI.localDate(Date.now()); CRMLocal.touch(); re(); });
   body.querySelectorAll('[data-sel]').forEach(b => b.onchange = () => { if (b.checked) INVO.sel.add(b.dataset.sel); else INVO.sel.delete(b.dataset.sel); });
   const allBox = $('#ivAll', body); if (allBox) allBox.onchange = () => { body.querySelectorAll('[data-sel]').forEach(b => { b.checked = allBox.checked; if (b.checked) INVO.sel.add(b.dataset.sel); else INVO.sel.delete(b.dataset.sel); }); };
-  const ps = $('#ivPrSel', body); if (ps) ps.onclick = () => { const l = all.filter(r => INVO.sel.has(r.id)); if (!l.length) return toast('Отметьте накладные галочкой слева'); INVO.print(l); };
+  const ps = $('#ivPrSel', body); if (ps) ps.onclick = () => { const l = all.filter(r => INVO.sel.has(r.id)); if (!l.length) return toast('Отметьте накладные галочкой слева'); INVO.preview(l); };
   const sa = $('#ivStdAll', body); if (sa) sa.onclick = () => { if (!confirm(`Оставить стандартный срок у ${newStd.length} обычных накладных?`)) return; const d = UI.localDate(Date.now()); for (const r of newStd) c.orders[r.id] = { ...(c.orders[r.id] || {}), disc: r.disc, spec: false, ok: d, snap: { c: r.client, a: r.agent, d: r.d, s: r.s } }; INVO.prune(); INST.changed('Стандартный срок подтверждён: ' + newStd.length); re(); };
   const fs = $('#ifSave', body); if (fs) fs.onclick = () => { Object.assign(F, { company: $('#ifC', body).value.trim(), city: $('#ifT', body).value.trim(), std: Number($('#ifS', body).value) || 0, signers: $('#ifG', body).value.split('\n').map(s => s.trim()).filter(Boolean) }); CRMLocal.touch(); toast('Форма сохранена'); re(); };
-  const dm = $('#ifDemo', body); if (dm) dm.onclick = () => { const d = UI.localDate(Date.now()); INVO.print([{ id: '12345', d, client: 'Пример клиента', agent: 'Агент', s: 1500, disc: 15, bonusItems: ['Сервисная книжка × 10', 'Масло Mitanol 5W-30 4 л × 2'], x: { plan: [{ d: INVO.addMonths(d, 1), s: 750 }, { d: INVO.addMonths(d, 2), s: 750 }], cond: 'акция «2+1»' } }]); };
+  const dm = $('#ifDemo', body); if (dm) dm.onclick = () => { const d = UI.localDate(Date.now()); INVO.preview([{ id: '12345', d, client: 'Пример клиента', agent: 'Агент', s: 1500, disc: 15, bonusItems: ['Сервисная книжка × 10', 'Масло Mitanol 5W-30 4 л × 2'], x: { plan: [{ d: INVO.addMonths(d, 1), s: 750 }, { d: INVO.addMonths(d, 2), s: 750 }], cond: 'акция «2+1»' } }]); };
 };

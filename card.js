@@ -106,11 +106,8 @@ const CARD = {
   // «📅 Срок» на заказе: то же окно, что в «Накладных» — записанная договорённость попадает в напоминания агентам
   termDialog(o, name, c, after) {
     if (typeof INVO === 'undefined' || typeof INST === 'undefined') return toast('Раздел «Накладные» не загружен — откройте его один раз');
-    if (!EXT_PAGES.invo.__card) { const orig = EXT_PAGES.invo; const w = function (el) { if (el && el._cardSink) return el._cardSink(); return orig.apply(this, arguments); }; w.__card = true; EXT_PAGES.invo = w; }
-    const sink = document.createElement('div'); sink._cardSink = after;
-    INVO.dialog({ id: o.id, d: o.d, client: name, agent: c.agent || '', s: o.s, disc: 0, bonusItems: [], auto: false, x: INST.cfg().orders[o.id] || {} }, sink);
+    INVO.dialog(INVO.rowOf({ id: o.id, date: o.d, client: name, agent: c.agent || '', sum: o.s }), INVO.sink(after));
   },
-
   async open(name) {
     const d = await REP.load(); if (d.empty) return;
     const c = d.clients.find(x => x.name === name); if (!c) return toast('Клиент не найден в последней загрузке');
@@ -153,7 +150,7 @@ const CARD = {
         <td><div style="display:flex;gap:4px;flex-wrap:wrap">${o.parts.map(CARD.partPill).join('')}</div>
           <small class="mut">${o.src === 'agreed' ? '🤝 по договорённости' : `стандарт: ${o.parts.length} ч. за ${ORD.T.days} дн.${ORD.T.own ? ' (свой график клиента)' : ORD.T.contract ? ' (договор)' : ''}`}${o.cond ? ' · ' + esc(o.cond) : ''}${o.spec ? ' · спец.' : ''}</small></td>
         <td>${stPill(o)}</td>
-        <td style="white-space:nowrap">${o.state !== 'paid' ? `<button class="btn gray sm" data-prom="${esc(o.id)}" type="button" title="Записать обещание клиента по этому заказу">📝</button> ` : ''}<button class="btn gray sm" data-term="${esc(o.id)}" type="button" title="Записать или изменить срок оплаты по этому заказу">📅 Срок</button></td></tr>`).join('');
+        <td style="white-space:nowrap">${o.state !== 'paid' ? `<button class="btn gray sm" data-prom="${esc(o.id)}" type="button" title="Записать обещание клиента по этому заказу">📝</button> ` : ''}<button class="btn gray sm" data-term="${esc(o.id)}" type="button" title="Записать или изменить срок оплаты по этому заказу">📅 Срок</button> <button class="btn gray sm" data-doc="${esc(o.id)}" type="button" title="Договор-спецпредложение: печать и картинка">📄</button></td></tr>`).join('');
       const oldRow = ORD.old > 0.5 ? `<tr><td colspan="7" class="neg">Долг прошлых периодов: <b>${money(ORD.old)}</b> — заказы старше ${ORD.list.length ? 'известных' : ''} (больше 75 дней), срок оплаты не известен. Считается просроченным.</td></tr>` : '';
       return `${tiles}
         <div class="bar" style="margin:10px 0 6px"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="cShowPaid" ${CARD.showPaid ? 'checked' : ''}> показывать оплаченные заказы (${ORD.done.length})</label><span class="spacer"></span><button class="btn gray sm" id="cOrdCsv" type="button">⬇ Excel</button></div>
@@ -187,6 +184,7 @@ const CARD = {
       const cv = $('#cOrdCsv', m.el); if (cv) cv.onclick = () => CARD.csvOrders(name, ORD);
       const refresh = () => { ORD = CARD.calc(ctx); draw(); };
       m.el.querySelectorAll('[data-term]').forEach(b => b.onclick = () => CARD.termDialog(ORD.byId[b.dataset.term], name, c, refresh));
+      m.el.querySelectorAll('[data-doc]').forEach(b => b.onclick = () => { if (typeof INVO === 'undefined') return toast('Раздел «Накладные» не загружен — откройте его один раз'); const o = ORD.byId[b.dataset.doc]; INVO.orderCard(INVO.rowOf({ id: o.id, date: o.d, client: name, agent: c.agent || '', sum: o.s }), refresh); });
       m.el.querySelectorAll('[data-prom]').forEach(b => b.onclick = () => { const o = ORD.byId[b.dataset.prom]; noteDialog(`По заказу №${o.id} от ${UI.dm(o.d)}: `, o.left); });
       m.el.querySelectorAll('[data-ndel]').forEach(b => b.onclick = () => { if (confirm('Удалить заметку?')) { NOTES.del(name, b.dataset.ndel); draw(); } });
     };
