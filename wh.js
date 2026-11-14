@@ -14,8 +14,8 @@ const whNewest = st => { const t = whTime(st.warehouses.map(w => w.upload).filte
 const whLatest = st => st.warehouses.map(w => w.upload?.taken_at).filter(Boolean).sort().at(-1) || null;
 
 function whShell(el, tab, sub, actions = '') {
-  el.innerHTML = `<div class="page-head"><div><h2>Склад</h2><div class="sub">${sub}</div></div><div class="actions">${actions}</div></div>
-    <nav class="tabs" aria-label="Разделы склада">${WH_TABS.map(([r, t]) => `<a href="#/${r}" class="${r === tab ? 'on' : ''}">${t}</a>`).join('')}</nav><div id="whBody"></div>`;
+  el.innerHTML = `<div class="page-head"><div><h2>${esc((WH_TABS.find(x => x[0] === tab) || [0, 'Склад'])[1])}</h2><div class="sub">${sub}</div></div><div class="actions">${actions}</div></div>
+    <div id="whBody"></div>`;
   return $('#whBody', el);
 }
 

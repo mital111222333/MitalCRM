@@ -149,13 +149,13 @@ const LX = {
   sumBy(rows, key, val = r => r.sum) { const m = new Map(); for (const r of rows) { const k = typeof key === 'function' ? key(r) : r[key]; m.set(k, (m.get(k) || 0) + val(r)); } return [...m.entries()].sort((a, b) => b[1] - a[1]); },
 
   // ---------- page frame ----------
-  TABS: [['lxbrand', 'Бренды и товары'], ['lxcross', 'Кому что предложить'], ['lxpay', 'Оплаты по дням'], ['lxday', 'Заказы по дням'], ['lxord', 'Заказы и возвраты'], ['lxage', 'Просрочка долга'], ['lxwork', 'Работа агентов'], ['lxprof', 'Прибыль'], ['lxrec', 'Рекомендация склада']],
+  TABS: [['lxbrand', 'Бренды и товары'], ['lxcross', 'Кому что предложить'], ['lxpay', 'Оплаты по дням'], ['lxday', 'Заказы по дням'], ['lxage', 'Просрочка долга'], ['lxprof', 'Прибыль']],
   agent: '',
   async shell(el, tab, tools = '') {
     await CRMLocal.ready; await LX.load();
     const s = LX.st(), t = v => new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-    el.innerHTML = `<div class="page-head"><div><h2>Данные LINKO</h2><div class="sub">${s ? `Заказы, оплаты, долги из LINKO на <b>${t(s.fastAt || s.at)}</b>${s.fastAt && s.fastAt !== s.at ? ` · остальные разделы на ${t(s.at)}` : ''} · период ${UI.dateRu(s.from)} — ${UI.dateRu(s.to)}${s.src === 'auto' ? ' · автозагрузка' : ' · закладка'}` : 'Ещё не загружены'}</div></div><div class="actions no-print">${tools}</div></div>
-      <nav class="tabs no-print" aria-label="Данные LINKO">${LX.TABS.map(([r, n]) => `<a href="#/${r}" class="${r === tab ? 'on' : ''}">${n}</a>`).join('')}</nav><div id="lxBody"></div>`;
+    el.innerHTML = `<div class="page-head"><div><h2>${esc((LX.TABS.find(x => x[0] === tab) || [0, 'Данные LINKO'])[1])}</h2><div class="sub">${s ? `Заказы, оплаты, долги из LINKO на <b>${t(s.fastAt || s.at)}</b>${s.fastAt && s.fastAt !== s.at ? ` · остальные разделы на ${t(s.at)}` : ''} · период ${UI.dateRu(s.from)} — ${UI.dateRu(s.to)}${s.src === 'auto' ? ' · автозагрузка' : ' · закладка'}` : 'Ещё не загружены'}</div></div><div class="actions no-print">${tools}</div></div>
+      <div id="lxBody"></div>`;
     const body = $('#lxBody', el);
     if (!LX.has()) { body.innerHTML = UI.empty('Данных из LINKO ещё нет', 'Они появятся сами после обновления скрипта автозагрузки (<a href="#/cloud">Данные → Синхронизация и настройки</a> → «Скопировать готовый скрипт» → вставить в script.google.com → setup) или сразу после нажатия закладки «⚡ В MITAL CRM» в LINKO.'); return null; }
     const errs = Object.entries(s.errors || {}); if (errs.length) body.insertAdjacentHTML('beforebegin', `<p class="mut">Не получено из LINKO: ${errs.map(([id, e]) => `${esc(LX.jobs.find(j => j.id === id)?.title || id)} (${esc(maskKey(e).slice(0, 60))})`).join(', ')}</p>`);
@@ -330,26 +330,6 @@ EXT_PAGES.lxday = async el => {
   $('#lxCsv', el).onclick = () => UI.csv('заказы-' + t0, [['Дата', 'Время', 'Клиент', 'Агент', 'Сумма', 'Статус', 'Товары', 'Доставка', 'Адрес'], ...all.map(o => [o.date, o.time, o.client, o.agent, o.sum, LX.st2(o.status), (items.get(o.id) || []).map(l => `${l.product} x${l.qty - l.ret}`).join('; '), o.deliver, o.address])]);
 };
 
-// ---------- Заказы и возвраты ----------
-EXT_PAGES.lxord = async el => {
-  const body = await LX.shell(el, 'lxord'); if (!body) return;
-  const M = LX.model(), f = UI.fmt0, $$ = v => LX.money(v, M.cur), st = LX.d('ostats')[0] || {};
-  const O = M.ords.filter(o => !LX.agent || o.agent === LX.agent), R = M.returns.filter(r => !LX.agent || r.agent === LX.agent);
-  const open = O.filter(o => !LX.closed(o.status)).sort((a, b) => b.date.localeCompare(a.date));
-  const retItems = M.lines.filter(l => l.ret > 0 && (!LX.agent || l.agent === LX.agent));
-  const retProd = LX.sumBy(retItems, 'product', l => l.ret);
-  body.innerHTML = `<div class="bar">${LX.agentSel(LX.agentsOf([...M.ords, ...M.returns]))}</div>
-    <div class="kpis">${UI.tile('Заказов за период', String(O.length), { sub: $$(O.reduce((a, o) => a + o.sum, 0)), hero: true })}${UI.tile('Не закрыто', String(open.length), { sub: $$(open.reduce((a, o) => a + o.sum, 0)), tone: open.length ? 'warn' : '' })}${st.unconfirmed_count != null ? UI.tile('Не подтверждено', String(st.unconfirmed_count), { sub: `запрошено ${st.requested_count ?? 0} · готово ${st.ready_count ?? 0}` }) : ''}${UI.tile('Возвраты', String(R.length), { sub: $$(R.reduce((a, r) => a + r.sum, 0)), tone: R.length ? 'warn' : '' })}</div>
-    <div class="grid">
-    ${UI.panel('Заказы по статусам', CH.hbars(LX.sumBy(O, o => LX.st2(o.status), () => 1).map(([label, value]) => ({ label, value })), { unit: '', fmt: f }), { cls: 'w6' })}
-    ${UI.panel('Возвраты по товарам, шт.', retProd.length ? CH.hbars(retProd.slice(0, 10).map(([label, value]) => ({ label, value })), { unit: '', fmt: f, color: 'var(--neg, #c0392b)' }) : '<p class="mut">Возвратов товара нет.</p>', { cls: 'w6' })}
-    ${UI.panel(`Незакрытые заказы (${open.length})`, open.length ? LX.table(['Дата', 'Клиент', 'Агент', 'Статус', '#Сумма', 'Доставка', 'Адрес'], open.map(o => `<tr><td>${UI.dateRu(o.date)}</td><td>${LX.cl(o.client)}</td><td>${esc(o.agent)}</td><td>${UI.pill('info', LX.st2(o.status))}</td><td class="n">${f(o.sum)}</td><td>${o.deliver ? UI.dateRu(o.deliver) : '—'}</td><td><small>${esc(o.address)}</small></td></tr>`), { max: '420px' }) : '<p class="mut">Все заказы закрыты.</p>', { cls: 'w12', sub: 'Заказы, которые ещё не доставлены или не завершены' })}
-    ${UI.panel(`Возвраты (${R.length})`, R.length ? LX.table(['Дата', 'Клиент', 'Агент', 'Статус', '#Сумма', 'Причина'], R.sort((a, b) => b.date.localeCompare(a.date)).map(r => `<tr><td>${UI.dateRu(r.date)}</td><td>${LX.cl(r.client)}</td><td>${esc(r.agent)}</td><td>${esc(LX.st2(r.status))}</td><td class="n neg">${f(r.sum)}</td><td><small>${esc(r.reason)}</small></td></tr>`), { max: '380px' }) : '<p class="mut">Возвратов нет 👍</p>', { cls: 'w12' })}
-    ${UI.panel('Возвраты по агентам', CH.hbars(LX.sumBy(R, 'agent').map(([label, value]) => ({ label, value })), { unit: LX.u(M.cur), fmt: f }), { cls: 'w6' })}
-    ${UI.panel('Заказы по агентам', CH.hbars(LX.sumBy(O, 'agent').map(([label, value]) => ({ label, value })), { unit: LX.u(M.cur), fmt: f }), { cls: 'w6' })}
-    </div>`;
-  LX.bindAgent(body);
-};
 
 // ---------- Просрочка долга (LINKO debtors by age) ----------
 LX.aging = () => {
@@ -489,26 +469,6 @@ EXT_PAGES.lxage = async el => {
   };
 };
 
-// ---------- Работа агентов (working day, visits, refusals) ----------
-EXT_PAGES.lxwork = async el => {
-  const body = await LX.shell(el, 'lxwork'); if (!body) return;
-  const f = UI.fmt0, n = LX.n, M = LX.model();
-  const rowsOf = id => LX.d(id).map(r => ({ ...r, agent: LX.agentName([r.first_name, r.second_name].filter(Boolean).join(' ')) })).filter(r => r.agent);
-  const T = rowsOf('workday'), P = rowsOf('workper');
-  const tbl = (R, today) => R.length ? LX.table(['Агент', '#Продажи план', '#Факт', '#%', '#Заказов', '#АКБ / план', '#Визитов по плану', '#Сделано', '#Без плана', '#Отказов', '#Ср. чек', ...(today ? ['Первый визит', 'Последний', '#Опоздание, мин'] : ['#Прогноз продаж'])],
-    R.sort((a, b) => n(b.sales_fact) - n(a.sales_fact)).map(r => { const done = n(r.total_tasks_done_by_market), plan = n(r.total_tasks_by_market), sp = n(r.sales_percent) || (n(r.sales_plan) ? n(r.sales_fact) / n(r.sales_plan) * 100 : 0);
-      return `<tr><td>${LX.ag(r.agent)}</td><td class="n">${f(n(r.sales_plan))}</td><td class="n"><b>${f(n(r.sales_fact))}</b></td><td class="n ${sp && sp < 50 ? 'neg' : sp >= 100 ? 'pos' : ''}">${sp ? Math.round(sp) + '%' : '—'}</td><td class="n">${f(n(r.order_count))}</td><td class="n">${f(n(r.akb))} / ${f(n(r.akb_plan))}</td><td class="n">${f(plan)}</td><td class="n ${plan && done / plan < 0.5 ? 'neg' : ''}">${f(done)} <small>(${LX.pct(done, plan)})</small></td><td class="n">${f(n(r.no_plan_count))}</td><td class="n ${n(r.total_rejects) ? 'neg' : ''}">${f(n(r.total_rejects))}</td><td class="n">${f(n(r.avg_check))}</td>${today ? `<td>${esc(String(r['first_done_task_time.date'] || '').slice(11, 16) || '—')}</td><td>${esc(String(typeof r.last_done_task_time === 'object' && r.last_done_task_time ? r.last_done_task_time.date || '' : r.last_done_task_time || '').slice(11, 16) || '—')}</td><td class="n">${r['difference_min.amount'] != null ? f(n(r['difference_min.amount'])) : '—'}</td>` : `<td class="n">${f(n(r.prediction_sales))}</td>`}</tr>`; })) : '<p class="mut">LINKO не отдал данные.</p>';
-  const rej = LX.d('rejects').map(r => ({ date: LX.day(r.created_date), time: String(r.created_date || '').slice(11, 16), comment: String(r.comment || 'без причины').trim(), client: r['market.name'] || '', agent: LX.agentName(LX.person(r, 'user')) })).filter(r => !LX.agent || r.agent === LX.agent);
-  const t0 = UI.localDate(Date.now()), rejT = rej.filter(r => r.date === t0);
-  body.innerHTML = `<div class="bar">${LX.agentSel([...new Set([...T, ...P].map(r => r.agent).concat(rej.map(r => r.agent)))].filter(Boolean).sort((a, b) => a.localeCompare(b)))}</div>
-    <div class="grid">
-    ${UI.panel('Сегодня', tbl(T.filter(r => !LX.agent || r.agent === LX.agent), true), { cls: 'w12', sub: 'Визиты по маршруту из приложения агентов LINKO: сколько точек по плану, сколько сделано, отказы, время первого и последнего визита' })}
-    ${UI.panel('За период плана', tbl(P.filter(r => !LX.agent || r.agent === LX.agent), false), { cls: 'w12' })}
-    ${UI.panel('Почему отказывают (за период)', rej.length ? CH.hbars(LX.sumBy(rej, 'comment', () => 1).slice(0, 12).map(([label, value]) => ({ label, value })), { unit: '', fmt: f, share: true }) : '<p class="mut">Отказов нет.</p>', { cls: 'w6' })}
-    ${UI.panel(`Отказы сегодня (${rejT.length})`, rejT.length ? LX.table(['Время', 'Клиент', 'Агент', 'Причина'], rejT.map(r => `<tr><td>${esc(r.time)}</td><td>${LX.cl(r.client)}</td><td>${esc(r.agent)}</td><td>${esc(r.comment)}</td></tr>`), { max: '320px' }) : '<p class="mut">Сегодня отказов нет.</p>', { cls: 'w6' })}
-    </div>`;
-  LX.bindAgent(body);
-};
 
 // ---------- Прибыль по товарам (LINKO net cost) ----------
 EXT_PAGES.lxprof = async el => {
@@ -527,17 +487,6 @@ EXT_PAGES.lxprof = async el => {
     </div>`;
 };
 
-// ---------- Рекомендация склада (LINKO: how many days the stock lasts, what to order) ----------
-EXT_PAGES.lxrec = async el => {
-  const body = await LX.shell(el, 'lxrec', '<button class="btn gray" id="lxCsv">⬇ Excel</button>'); if (!body) return;
-  const f = UI.fmt0, n = LX.n;
-  const R = LX.d('recom').map(r => ({ name: r.full_name || r.name, brand: r['brand.name'] || LX.brandOf(r.name), type: r['type.name'] || '', bal: n(r.total_balance), sold: n(r.total_amount), day: n(r.by_day), left: r.remain_days == null ? null : n(r.remain_days), week: n(r.week_recommendations), month: n(r.month_recommendations) })).sort((a, b) => (a.left ?? 1e9) - (b.left ?? 1e9));
-  if (!R.length) { body.innerHTML = UI.empty('Рекомендации нет', 'LINKO не отдал рекомендацию по складу.'); return; }
-  const tone = d => (d == null ? '' : d <= 7 ? 'neg' : d <= 14 ? 'warn' : '');
-  body.innerHTML = `<div class="kpis">${UI.tile('Закончится за неделю', String(R.filter(r => r.left != null && r.left <= 7).length), { tone: 'bad', sub: 'позиций' })}${UI.tile('За 2 недели', String(R.filter(r => r.left != null && r.left > 7 && r.left <= 14).length), { tone: 'warn', sub: 'позиций' })}${UI.tile('Заказать на месяц', f(R.reduce((a, r) => a + r.month, 0)), { sub: 'шт. по рекомендации LINKO' })}</div>
-    ${UI.panel('Что и сколько заказать', LX.table(['Товар', 'Бренд', '#Остаток', '#Продаётся в день', '#Хватит на, дн.', '#Заказать на неделю', '#на месяц'], R.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.brand)}</td><td class="n">${f(r.bal)}</td><td class="n">${r.day ? r.day.toFixed(1) : '—'}</td><td class="n ${tone(r.left)}"><b>${r.left == null ? '—' : f(r.left)}</b></td><td class="n">${r.week ? f(r.week) : '—'}</td><td class="n">${r.month ? f(r.month) : '—'}</td></tr>`), { max: '640px' }), { cls: 'w12', sub: 'Расчёт LINKO по скорости продаж. Сравните с «Склад → Заявка в Ташкент»' })}`;
-  $('#lxCsv', el).onclick = () => UI.csv('рекомендация-' + UI.localDate(Date.now()), [['Товар', 'Бренд', 'Остаток', 'В день', 'Хватит на дней', 'На неделю', 'На месяц'], ...R.map(r => [r.name, r.brand, r.bal, r.day, r.left, r.week, r.month])]);
-};
 
 // ---------- block for the client card ----------
 LX.card = name => {

@@ -64,9 +64,9 @@ const REP = {
   },
 
   shell(el, tab, d, tools = '') {
-    el.innerHTML = `<div class="page-head"><div><h2>Отчёты</h2><div class="sub">${d.empty ? 'Нет загруженных данных' : `Данные на <b>${UI.dateRu(d.upload.taken_at)}</b> · период ${UI.dateRu(d.upload.period_from)} — ${UI.dateRu(d.upload.period_to)} · все суммы в долларах`}</div></div>
+    el.innerHTML = `<div class="page-head"><div><h2>${esc((REP.TABS.find(x => x[0] === tab) || [0, 'Отчёты'])[1].replace(/^[^\p{L}]+/u, ''))}</h2><div class="sub">${d.empty ? 'Нет загруженных данных' : `Данные на <b>${UI.dateRu(d.upload.taken_at)}</b> · период ${UI.dateRu(d.upload.period_from)} — ${UI.dateRu(d.upload.period_to)} · все суммы в долларах`}</div></div>
       <div class="actions no-print">${tools}</div></div>
-      <nav class="tabs no-print" aria-label="Отчёты">${REP.TABS.map(([r, t]) => `<a href="#/${r}" class="${r === tab ? 'on' : ''}">${t}</a>`).join('')}</nav><div id="repBody"></div>`;
+      <div id="repBody"></div>`;
     return $('#repBody', el);
   },
   empty(body) { body.innerHTML = UI.empty('Отчётов пока нет', 'Загрузите выгрузку «Баланс клиентов» на странице <a href="#/up">⬆ Загрузить</a>. Чем чаще загружаете (лучше каждый день), тем точнее «дни без оплаты» и «дни без покупок».'); },

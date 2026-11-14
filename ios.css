@@ -463,3 +463,12 @@ main > * { animation: none; }
 html[data-theme="dark"] .panel, html[data-theme="dark"] .tile, html[data-theme="dark"] .card, html[data-theme="dark"] .widget { box-shadow: inset 0 0 0 1px var(--glass-edge), 0 4px 14px rgba(0, 0, 0, .35); }
 tbody tr, .tabs a, .sidenav a { transition: none; }
 body::before { position: fixed; transform: translateZ(0); }
+
+/* ---------- hub tabs: related screens of one menu entry ---------- */
+.hubwrap { padding: 18px 16px 0 4px; }
+.hubwrap:has(#hubtabs[hidden]) { display: none; }
+#hubtabs { margin: 0; display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: 100%; width: max-content; }
+#hubtabs::-webkit-scrollbar { display: none; }
+#hubtabs a { flex: none; }
+.hubwrap + main { padding-top: 18px; }
+@media (max-width: 900px) { .hubwrap { padding: 12px 12px 0; } .hubwrap + main { padding-top: 12px; } #hubtabs { width: 100%; } }

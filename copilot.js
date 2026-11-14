@@ -7,9 +7,9 @@
   const PAGE_GROUP = {
     today: ['rday', 'signals', 'home', 'overview'],
     money: ['lxpay', 'debtprev', 'rdebt', 'lxage', 'ranalytics', 'balance', 'payments', 'cash'],
-    sales: ['lxday', 'lxbrand', 'lxcross', 'lxord', 'lxprof', 'rsleep', 'orders', 'returns', 'rdays', 'rdyn'],
-    agents: ['agents', 'agent', 'leaders', 'amap', 'aclients', 'atasks', 'aup', 'gps', 'lxwork', 'routes'],
-    stock: ['wh', 'whstock', 'whlow', 'whmove', 'whup', 'whorder', 'lxrec', 'stock'],
+    sales: ['lxday', 'lxbrand', 'lxcross', 'lxprof', 'rsleep', 'orders', 'returns', 'rdays', 'rdyn'],
+    agents: ['agents', 'agent', 'leaders', 'amap', 'aclients', 'atasks', 'aup', 'gps', 'routes'],
+    stock: ['wh', 'whstock', 'whlow', 'whmove', 'whup', 'whorder', 'stock'],
     chat: ['chat', 'tg'],
   };
   const groupOf = r => Object.keys(PAGE_GROUP).find(g => PAGE_GROUP[g].includes(r)) || 'other';

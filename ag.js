@@ -33,9 +33,9 @@ async function agLoad() { return api('/api/ag/dashboard' + (agSel ? '?upload=' +
 
 function agShell(el, tab, d) {
   const up = d.upload;
-  el.innerHTML = `<div class="page-head"><div><h2>Агенты и клиенты</h2><div class="sub">${d.empty ? 'Нет загруженных данных' : `Данные на <b>${UI.dateRu(up.taken_at)}</b> · период ${UI.dateRu(up.period_from)} — ${UI.dateRu(up.period_to)} · ${esc(up.file || 'файл')}${d.prev ? ` · сравнение с ${UI.dateRu(d.prev.taken_at)}` : ''}`}</div></div>
+  el.innerHTML = `<div class="page-head"><div><h2>${esc((AG_TABS.find(x => x[0] === tab) || [0, 'Агенты и клиенты'])[1].replace(/^[^\p{L}]+/u, ''))}</h2><div class="sub">${d.empty ? 'Нет загруженных данных' : `Данные на <b>${UI.dateRu(up.taken_at)}</b> · период ${UI.dateRu(up.period_from)} — ${UI.dateRu(up.period_to)} · ${esc(up.file || 'файл')}${d.prev ? ` · сравнение с ${UI.dateRu(d.prev.taken_at)}` : ''}`}</div></div>
     <div class="actions">${!d.empty && d.uploads.length > 1 ? `<label class="mut">Данные на <select id="agSel">${d.uploads.map(u => `<option value="${u.id}" ${u.id === up.id ? 'selected' : ''}>${UI.dateRu(u.taken_at)} · ${UI.dm(u.period_from)}–${UI.dm(u.period_to)}</option>`).join('')}</select></label>` : ''}</div></div>
-    <nav class="tabs" aria-label="Разделы агентов">${AG_TABS.map(([r, t]) => `<a href="#/${r}" class="${r === tab ? 'on' : ''}">${t}</a>`).join('')}</nav><div id="agBody"></div>`;
+    <div id="agBody"></div>`;
   const sel = $('#agSel', el); if (sel) sel.onchange = () => { agSel = +sel.value === d.uploads[0].id ? null : +sel.value; route(); };
   return $('#agBody', el);
 }

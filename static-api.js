@@ -147,19 +147,29 @@
   try { localStorage.setItem('token', 'local'); } catch { /* storage blocked: the page will show the sign-in form */ }
 
   // ---------- menu: only the two sections that work without a server, plus the data page ----------
+  // The menu: 7 sections, 18 entries. An entry whose route opens a hub (HUBS) shows the hub's tabs above the page,
+  // so related screens live together instead of as separate menu lines.
   window.EXT_MENU = {
-    'Сегодня': { '': [['Отчёт дня', 'rday'], ['🚨 Сигналы', 'signals'], ['📋 Дисциплина', 'disc'], ['📍 Где агенты', 'gps']] },
-    'Деньги': { '': [['🧾 Должники по агентам', 'debt'], ['Оплаты по дням', 'lxpay'], ['Дебиторка и план сбора', 'rdebt'], ['Просрочка долга', 'lxage'], ['🛑 Кредитный контроль', 'credit'], ['🧾 Накладные: сроки', 'invo'], ['📅 Рассрочка и договоры', 'inst'], ['Долги прошлого периода', 'debtprev']] },
-    'Агенты': { '': [['Лидерборд', 'leaders'], ['Страница агента', 'agent'], ['Клиенты и план', 'aclients'], ['🆕 Новые точки', 'anew'], ['😴 Возврат спящих', 'wake'], ['📝 Задания агентам', 'atk'], ['💰 Зарплата', 'pay'],['🗺 Маршруты', 'amap'], ['🚶 Визиты', 'visits']] },
-    'Продажи': { '': [['Заказы по дням', 'lxday'], ['📦 Обязательный ассортимент', 'assort'], ['🎯 Кому что предложить', 'lxcross'], ['Бренды и товары', 'lxbrand'], ['Спящие клиенты', 'rsleep'], ['Прибыль по товарам', 'lxprof']] },
-    'Склад': { '': [['Остатки по складам', 'whstock'], ['📋 Сверка складов', 'wcount'], ['Что заканчивается', 'whlow'], ['Заявка в Ташкент', 'whorder']] },
-    'Анализ': { '': [['Аналитика', 'ranalytics'], ['Динамика по периодам', 'rdyn'], ['По дням и неделям', 'rdays'], ['ИИ-ассистент', 'ai'], ['🗄 Архив данных', 'archive']] },
-    'Настройки': { '': [['Telegram агентам', 'tg'], ['👥 Доступ агентов', 'access'], ['💬 Чаты Telegram', 'chat'], ['Синхронизация и настройки', 'cloud'], ['Резервная копия', 'data']] },
-    // rarely needed: hidden from the menu (every page still opens by link); can be shown again in Синхронизация и настройки → Меню
-    'Ещё': { '': [['Сводка по агентам', 'agents'], ['Работа агентов', 'lxwork'], ['Заказы и возвраты', 'lxord'], ['Рекомендация LINKO', 'lxrec'], ['Обзор склада', 'wh'], ['Движение склада', 'whmove'], ['Задания агентам', 'atasks'], ['Загрузить данные', 'up'], ['Загрузки (агенты)', 'aup'], ['Загрузки склада', 'whup']] },
+    'Сегодня': { '': [['Мой день', 'my'], ['Отчёт дня', 'rday'], ['Сигналы', 'signals']] },
+    'Деньги': { '': [['Дебиторка', 'collect'], ['Оплаты по дням', 'lxpay'], ['Сроки и договоры', 'invo']] },
+    'Команда': { '': [['Лидерборд', 'leaders'], ['Страница агента', 'agent'], ['Контроль агентов', 'disc'], ['Задания', 'atk'], ['Зарплата', 'pay']] },
+    'Продажи': { '': [['Заказы по дням', 'lxday'], ['Клиенты и план', 'aclients'], ['Рост продаж', 'anew']] },
+    'Склад': { '': [['Остатки', 'whstock'], ['Сверка складов', 'wcount']] },
+    'Анализ': { '': [['Аналитика', 'ranalytics']] },
+    'Настройки': { '': [['Настройки', 'cloud']] },
   };
-  // sections the supervisor does not use every day: hidden from the menu (the pages still open by link); can be shown again in settings
-  window.MENU_OPTIONAL = { agents: 'Сводка по агентам', lxwork: 'Работа агентов (есть в «Дисциплине»)', lxord: 'Заказы и возвраты', lxrec: 'Рекомендация LINKO', wh: 'Обзор склада', whmove: 'Движение склада', atasks: 'Задания агентам', up: 'Загрузить данные вручную', aup: 'Загрузки (агенты)', whup: 'Загрузки склада' };
+  window.HUBS = [
+    [['collect', 'Очередь сбора'], ['debt', 'Должники по агентам'], ['lxage', 'Просрочка'], ['rdebt', 'План сбора'], ['debtprev', 'Прошлый период']],
+    [['invo', 'Накладные: сроки'], ['inst', 'Рассрочка и договоры'], ['credit', 'Кредитный стоп']],
+    [['leaders', 'Лидерборд'], ['agents', 'Сводка']],
+    [['disc', 'Дисциплина'], ['gps', 'Где агенты'], ['visits', 'Визиты'], ['amap', 'Маршруты']],
+    [['atk', 'Задания агентам'], ['atasks', 'Задания по клиентам']],
+    [['anew', 'Новые точки'], ['rsleep', 'Спящие клиенты'], ['wake', 'Возврат спящих'], ['assort', 'Ассортимент'], ['lxcross', 'Кому что предложить'], ['lxbrand', 'Бренды и товары']],
+    [['whstock', 'Остатки'], ['whlow', 'Заканчивается'], ['whmove', 'Движение'], ['whorder', 'Заявка в Ташкент'], ['wh', 'Обзор']],
+    [['ranalytics', 'Аналитика'], ['rdyn', 'По периодам'], ['rdays', 'По дням и неделям'], ['lxprof', 'Прибыль по товарам'], ['ai', 'ИИ-ассистент']],
+    [['cloud', 'Синхронизация'], ['tg', 'Telegram агентам'], ['access', 'Доступ агентов'], ['chat', 'Чаты Telegram'], ['up', 'Загрузить вручную'], ['aup', 'Загрузки баланса'], ['whup', 'Загрузки склада'], ['archive', 'Архив'], ['data', 'Резервная копия']],
+  ];
+  window.MENU_OPTIONAL = {};
   window.MENU_HIDDEN = r => { if (!(r in MENU_OPTIONAL)) return false; let on = []; try { on = JSON.parse(localStorage.getItem('crm_menu_extra') || '[]'); } catch { /* none */ } return !on.includes(r); };
 
   document.documentElement.classList.add('static-mode');
