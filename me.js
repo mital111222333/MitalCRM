@@ -311,6 +311,33 @@
         ${panel('Рейтинг агентов', `<div class="tscroll"><table><thead><tr><th class="n">#</th><th>Агент</th><th class="n">План продаж</th><th class="n">Сбор пула</th></tr></thead><tbody>${S.board.map(b => `<tr${b.me ? ' style="font-weight:700"' : ''}><td class="n">${b.place}</td><td>${esc(b.agent)}${b.me ? ' — вы' : ''}</td><td class="n">${b.sold != null ? b.sold + '%' : '—'}</td><td class="n">${b.paid != null ? b.paid + '%' : '—'}</td></tr>`).join('')}</tbody></table></div>`, 'Место — по сумме % плана продаж и % сбора пула')}
         ${top.length ? panel('Кому собрать в первую очередь', `<div class="tscroll"><table><thead><tr><th>Клиент</th><th class="n">Долг</th><th class="n">Осталось по пулу</th><th>Обещал</th></tr></thead><tbody>${top.map(c => `<tr><td>${esc(c.name)}</td><td class="n">${$$(c.debt)}</td><td class="n">${c.pool ? $$(Math.max(0, c.pool - c.paid)) : '—'}</td><td>${c.promise ? `${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>`) : ''}`;
     }
+    // ---------- Сбор: the queue of debtors from the supervisor's CRM; every contact is marked in one tap ----------
+    const cqDay = new Date().toLocaleDateString('sv-SE'), cqMine = (() => { const x = store.get('mital_me_cq'); return x && x.day === cqDay ? x.m : {}; })();
+    const cqSt = c => cqMine[c.name] || (c.last && c.last.d === cqDay ? c.last : null), CQ = { paid: ['✅', 'Оплатил'], promise: ['🤝', 'Обещал'], refuse: ['❌', 'Отказ'], noanswer: ['📵', 'Недозвон'] };
+    { const Q = S.queue || [], left = Q.filter(c => !cqSt(c)).length, n = $('#meCqN'); if (n) n.textContent = left ? `(${left})` : ''; }
+    if (tab === 'collect') {
+      const Q = S.queue || [], done = Q.filter(cqSt).length;
+      const row = (c, i) => { const st = cqSt(c);
+        return `<div data-cq="${esc(c.name)}" style="padding:12px 0;border-bottom:1px solid var(--line)${st ? ';opacity:.6' : ''}"><div style="display:flex;justify-content:space-between;gap:10px"><b>${i + 1}. ${esc(c.name)}</b><b style="white-space:nowrap">${$$(c.debt)}</b></div>
+          <div class="mut" style="font-size:13px;margin:4px 0 8px">${esc(c.why || '')}${c.phone ? `${c.why ? ' · ' : ''}<a href="tel:${esc(c.phone)}">📞 ${esc(c.phone)}</a>` : ''}${st ? `<br>${CQ[st.r][0]} ${CQ[st.r][1]}${st.r === 'promise' && st.pd ? ` до ${dm(st.pd)}${st.s ? ' · ' + $$(st.s) : ''}` : ''} — отмечено сегодня` : c.last ? `<br>в прошлый раз (${dm(c.last.d)}): ${CQ[c.last.r] ? CQ[c.last.r][1].toLowerCase() : ''}${c.last.pd ? ' до ' + dm(c.last.pd) : ''}` : ''}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${Object.entries(CQ).map(([k, [ic, t]]) => `<button class="btn gray sm" type="button" data-cqr="${k}">${ic} ${t}</button>`).join('')}</div><div data-cqf></div></div>`; };
+      body.innerHTML = `<div class="kpis">${tile('Сегодня собрать', S.day && S.day.collect ? $$(S.day.collect) : '—', 'чтобы закрыть пул к концу периода')}${tile('Отработано сегодня', `${done} из ${Q.length}`, 'отметьте каждого, с кем связались', done && done >= Math.min(Q.length, 5) ? 'good' : '')}${S.day && S.day.sell ? tile('Сегодня продать', $$(S.day.sell), 'чтобы закрыть план продаж') : ''}</div>
+        ${panel('Кого дожимать сегодня', Q.length ? Q.map(row).join('') : '<p class="mut">Должников в очереди нет 👏</p>', 'Сверху — самые важные: просрочка и сорванные обещания. После звонка или визита нажмите результат — руководитель видит его сразу.')}`;
+      const send = async (c, rec, btn) => { btn.disabled = true; try { await storePost({ act: 'collect', client: c.name, ...rec }); cqMine[c.name] = rec; store.set('mital_me_cq', { day: cqDay, m: cqMine }); draw(); } catch (err) { btn.disabled = false; alert(err.message); } };
+      body.querySelectorAll('[data-cqr]').forEach(b => b.onclick = () => {
+        const box = b.closest('[data-cq]'), c = (S.queue || []).find(x => x.name === box.dataset.cq), k = b.dataset.cqr, f = box.querySelector('[data-cqf]'); if (!c) return;
+        if (k === 'noanswer') return send(c, { r: k }, b);
+        const tm = new Date(Date.now() + 864e5).toLocaleDateString('sv-SE');
+        f.innerHTML = `<div style="display:grid;gap:8px;margin-top:10px">${k === 'promise' ? `<label>Когда заплатит<input type="date" data-pd value="${tm}" min="${cqDay}" style="width:100%"></label><label>Сколько, $<input type="number" data-s min="1" step="1" value="${c.debt}" style="width:100%"></label>` : k === 'paid' ? '<label>Сколько заплатил, $<input type="number" data-s min="0" step="1" style="width:100%"></label>' : ''}
+          <label>${k === 'refuse' ? 'Причина отказа' : 'Заметка'}<input data-note style="width:100%" placeholder="${k === 'refuse' ? 'что сказал клиент' : 'необязательно'}"></label><button class="btn" type="button" data-cqgo>${CQ[k][0]} Отправить: ${CQ[k][1]}</button></div>`;
+        f.querySelector("[data-cqgo]").onclick = e => {
+          const s = Number(f.querySelector('[data-s]')?.value) || 0, pd = f.querySelector('[data-pd]')?.value || '', note = f.querySelector('[data-note]').value.trim();
+          if (k === 'promise' && (!pd || s <= 0)) return alert('Укажите дату и сумму обещания');
+          if (k === 'refuse' && !note) return alert('Напишите причину отказа');
+          send(c, { r: k, ...(s ? { s } : {}), ...(pd ? { pd } : {}), ...(note ? { note } : {}) }, e.target);
+        };
+      });
+    }
     if (tab === 'clients') {
       const L = S.clients.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()));
       body.innerHTML = `<div class="bar"><input id="meQ" type="search" placeholder="Поиск клиента" value="${esc(q)}" style="flex:1;min-width:0"></div>

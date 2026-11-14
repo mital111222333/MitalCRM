@@ -50,6 +50,7 @@ const AC = {
       chat: typeof CHAT !== 'undefined' && CHAT.url ? CHAT.url() : null,
       v: 1, agent, boss: AC.boss() || null, bot: (CRMLocal.ext().tg?.token ? await AC.bot() : '') || null, at: new Date().toISOString(), data_at: d.upload.taken_at, period: { from: d.upload.period_from, to: d.forecast?.period_end || d.upload.period_to, days_left: d.forecast?.days_left ?? null },
       kpi: { sold: Math.round(a.sold), plan: Math.round(a.plan || 0), paid: Math.round(a.paid), pool: Math.round(a.pool || 0), debt: Math.round(a.debt), debtors: a.debtors || 0, akb: a.akb, okb: a.okb },
+      queue: typeof MY !== 'undefined' ? await MY.queueFor(agent).catch(() => []) : [], day: { sell: Math.round(a.need_sell_day || 0), collect: Math.round(a.need_collect_day || 0) },
       board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [],
       // the pay slip of the last closed month (pay.js «Закрыть месяц»)
       pay: CRMLocal.ext().pay?.slips?.[agent] || null,

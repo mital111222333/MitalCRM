@@ -52,6 +52,7 @@ function run0_() {
   if (jobs) try { fast_(jobs); } catch (e) { Logger.log('Оплаты: ' + mask_(e.message || e)); }
   try { storesRemind_(); } catch (e) { Logger.log('Сверка, напоминание: ' + mask_(e.message || e)); }
   try { discNotify_(); } catch (e) { Logger.log('Дисциплина, сообщения: ' + mask_(e.message || e)); }
+  try { dayPlan_(); } catch (e) { Logger.log('План на день: ' + mask_(e.message || e)); }
   if (jobs) try { extra_(jobs); } catch (e) { Logger.log('Доп. данные: ' + mask_(e.message || e)); }
   try { visits_(); } catch (e) { Logger.log('Визиты: ' + mask_(e.message || e)); }
 }
@@ -354,6 +355,7 @@ function doPost(e) {
     const snap = JSON.parse(f.text);
     if (p.act === 'count_start' || p.act === 'count') return json_(countAct_(p, snap)); // сверка склада
     if (p.act === 'order') return json_(cntOrder_(p, snap));                            // порядок товаров как на полках
+    if (p.act === 'collect') return json_(collectAct_(p, snap));                        // очередь сбора: результат контакта с должником
     if (p.act === 'absreq') return json_(absReq_(p, snap));                             // заявка агента на отсутствие (Дисциплина)
     const task = (snap.tasks || []).filter(t => t.src === p.src && String(t.id) === String(p.id))[0];
     if (p.act !== 'done' || !task) return json_({ error: 'Задание не найдено — обновите кабинет' });
@@ -369,6 +371,78 @@ function doPost(e) {
     } catch (err) { Logger.log('Отметка: сообщение не ушло ' + mask_(err.message || err)); }
     return json_({ ok: true });
   } catch (err) { return json_({ error: 'Не удалось сохранить: ' + mask_(err.message || err) }); }
+}
+// ---------- очередь сбора: агент отмечает в кабинете результат контакта с должником (CRM: my.js MY.apply) ----------
+function collectAct_(p, snap) {
+  const R = { paid: 'оплатил', promise: 'обещал', refuse: 'отказ', noanswer: 'недозвон' }, client = String(p.client || '');
+  if (!R[p.r] || !(snap.clients || []).some(c => c.name === client)) return { error: 'Клиент не найден — обновите кабинет' };
+  const day = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  const s = Math.max(0, Number(p.s) || 0), pd = /^\d{4}-\d{2}-\d{2}$/.test(String(p.pd || '')) ? String(p.pd) : '', note = String(p.note || '').slice(0, 500);
+  if (p.r === 'promise' && (!pd || pd < day || !s)) return { error: 'Укажите дату и сумму обещания' };
+  const rec = { at: new Date().toISOString(), day: day, agent: snap.agent, act: 'collect', client: client, r: p.r, s: s, pd: pd, note: note };
+  saveB64ToGithub_('inbox/' + day + '/' + uid + '.json', Utilities.base64Encode(JSON.stringify(rec), Utilities.Charset.UTF_8), 'Кабинет: очередь сбора');
+  // how many debtors each agent worked today — for the evening report (dayPlan_)
+  const P = PropertiesService.getScriptProperties(); let c = {}; try { c = JSON.parse(P.getProperty('dpc') || '{}'); } catch (e) { c = {}; }
+  if (c.day !== day) c = { day: day, n: {}, prom: {} };
+  c.n[snap.agent] = (c.n[snap.agent] || 0) + 1; if (p.r === 'promise') c.prom[snap.agent] = (c.prom[snap.agent] || 0) + s;
+  P.setProperty('dpc', JSON.stringify(c));
+  if (p.r === 'refuse') try { notify_('❌ ' + snap.agent + ': ' + client + ' — отказ платить' + (note ? '\n💬 ' + note : '')); } catch (e) { /* the mark is saved anyway */ }
+  return { ok: true };
+}
+// ---------- план на день: утром агенту — сколько продать и собрать сегодня и первые должники очереди, вечером — итог дня ----------
+// Настройки и планы — dayplan.json из CRM (day.js): { on, am, pm, sunday, end, agents: { [агент]: { chat, plan, pool, queue[], qn } }, owner: { [клиент]: агент } }.
+// Продажи и оплаты берутся из LINKO прямо сейчас; факт дня = сейчас − утренний замер (dpBase).
+function dayPlan_() {
+  if (!CFG.TG_BOT) return;
+  const f = ghRaw_('dayplan.json'); if (f.code !== 200) return;
+  const C = JSON.parse(f.text || '{}'); if (!C.on || !C.agents || !C.owner) return;
+  const now = new Date(), today = Utilities.formatDate(now, CFG.TZ, 'yyyy-MM-dd'), hour = Number(Utilities.formatDate(now, CFG.TZ, 'H'));
+  if (Utilities.formatDate(now, CFG.TZ, 'u') === '7' && !C.sunday) return;
+  const P = PropertiesService.getScriptProperties(), am = Number(C.am) || 8, pm = Number(C.pm) || 19;
+  const doAm = hour >= am && hour < pm && P.getProperty('dpAm') !== today, doPm = hour >= pm && P.getProperty('dpPm') !== today;
+  if (!doAm && !doPm) return;
+  const q = 'only_out_stock=False&is_only_delivered=False&last_status=False&exclude_closed_clients=false&only_payment_with_invoice=false&begin_date=' + planFrom_(today) + '&end_date=' + today;
+  const by = {};
+  all_('stats/client_balances_expanded/?' + q + '&page=1&page_size=500').forEach(c => {
+    const a = C.owner[instNorm_(c.name)]; if (!a) return;
+    const u = (c.currencies || []).filter(x => x.name === 'USD')[0] || {}, t = by[a] || (by[a] = { sold: 0, paid: 0 });
+    t.sold += n_(u.order); t.paid += n_(u.payment);
+  });
+  const end = C.end && C.end >= today ? C.end : today, left = Math.max(1, Math.round((Date.parse(end) - Date.parse(today)) / 864e5) + 1);
+  const m = v => '$' + String(Math.round(v || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ' '), dRu = today.slice(8) + '.' + today.slice(5, 7) + '.' + today.slice(0, 4);
+  const names = Object.keys(C.agents), team = [];
+  if (doAm) {
+    names.forEach(a => {
+      const A = C.agents[a], t = by[a] || { sold: 0, paid: 0 }, nS = Math.max(0, (A.plan || 0) - t.sold) / left, nC = Math.max(0, (A.pool || 0) - t.paid) / left;
+      team.push(a + ': продать ' + m(nS) + ', собрать ' + m(nC) + ', в очереди ' + (A.qn || 0));
+      if (!A.chat) return;
+      const L = ['☀️ План на сегодня — ' + dRu, a, '', '🛒 Продать: ' + m(nS), '💰 Собрать: ' + m(nC)];
+      if ((A.queue || []).length) { L.push('', 'Начните с этих должников:'); A.queue.forEach((x, i) => L.push((i + 1) + '. ' + x)); }
+      L.push('', 'Результат по каждому отмечайте в кабинете: 💰 Сбор.');
+      try { instTg_(A.chat, L.join('\n')); } catch (e) { Logger.log('План на день, ' + a + ': ' + mask_(e.message || e)); }
+    });
+    P.setProperties({ dpAm: today, dpBase: JSON.stringify({ day: today, by: by }) });
+    notify_('☀️ План на день — ' + dRu + '\n\n' + team.join('\n'));
+    return;
+  }
+  let base = null; try { base = JSON.parse(P.getProperty('dpBase') || 'null'); } catch (e) { base = null; }
+  if (base && base.day !== today) base = null;
+  let cnt = {}; try { cnt = JSON.parse(P.getProperty('dpc') || '{}'); } catch (e) { cnt = {}; }
+  if (cnt.day !== today) cnt = { n: {}, prom: {} };
+  const pc = (x, y) => (y > 0 ? Math.round(x / y * 100) + '%' : '—');
+  names.forEach(a => {
+    const A = C.agents[a], t = by[a] || { sold: 0, paid: 0 }, b = base ? (base.by[a] || { sold: 0, paid: 0 }) : null;
+    const nS = Math.max(0, (A.plan || 0) - (b ? b.sold : t.sold)) / left, nC = Math.max(0, (A.pool || 0) - (b ? b.paid : t.paid)) / left;
+    const dS = b ? t.sold - b.sold : null, dC = b ? t.paid - b.paid : null, w = (cnt.n || {})[a] || 0, pr = (cnt.prom || {})[a] || 0;
+    const ok = (f, p) => (f == null ? '' : f >= p ? ' ✅' : ' ⚠️');
+    team.push((dS != null && dS >= nS && dC >= nC ? '✅ ' : '⚠️ ') + a + ': продал ' + (dS == null ? '—' : m(dS)) + ' / ' + m(nS) + ', собрал ' + (dC == null ? '—' : m(dC)) + ' / ' + m(nC) + ', должников ' + w + '/' + (A.qn || 0));
+    if (!A.chat) return;
+    const L = ['🌙 Итог дня — ' + dRu, a, '', '🛒 Продано: ' + (dS == null ? '—' : m(dS)) + ' из ' + m(nS) + ok(dS, nS), '💰 Собрано: ' + (dC == null ? '—' : m(dC)) + ' из ' + m(nC) + ok(dC, nC),
+      '📞 Отработано должников: ' + w + ' из ' + (A.qn || 0) + (pr ? ' · взято обещаний на ' + m(pr) : ''), '', 'С начала периода: продажи ' + pc(t.sold, A.plan) + ' плана, сбор ' + pc(t.paid, A.pool) + '.'];
+    try { instTg_(A.chat, L.join('\n')); } catch (e) { Logger.log('Итог дня, ' + a + ': ' + mask_(e.message || e)); }
+  });
+  P.setProperty('dpPm', today);
+  notify_('🌙 Итог дня — ' + dRu + '\n\n' + team.join('\n'));
 }
 // ---------- сверка склада: завсклад считает в кабинете склада (вслепую), скрипт сравнивает с «Всего» в LINKO ----------
 // «Начать сверку» запоминает «Всего» по складу на эту минуту; «Отправить» сохраняет факт в inbox/ и сразу пишет руководителю итог.

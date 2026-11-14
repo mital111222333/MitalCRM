@@ -13,8 +13,26 @@ const MY = {
   RES: { paid: ['✅', 'Оплатил'], promise: ['🤝', 'Обещал'], refuse: ['❌', 'Отказ'], noanswer: ['📵', 'Недозвон'] },
   all: () => (CRMLocal.ext().collect ||= {}),
   last: name => (MY.all()[name] || []).at(-1) || null,
-  log(name, rec) { const a = (MY.all()[name] ||= []); a.push({ at: new Date().toISOString(), d: REP.today(), ...rec }); if (a.length > 30) a.splice(0, a.length - 30); CRMLocal.touch(); },
+  log(name, rec) { MY._c = null; const a = (MY.all()[name] ||= []); a.push({ at: new Date().toISOString(), d: REP.today(), ...rec }); if (a.length > 30) a.splice(0, a.length - 30); CRMLocal.touch(); },
   m: v => '$' + UI.fmt0(Math.round(v || 0)),
+  // one calculation shared by the pages, the agents' cabinets and the day plan (60 s)
+  async fresh() { const D = await MY.data(); MY._c = D.empty ? null : { t: Date.now(), D }; return D; },
+  async cached() { return MY._c && Date.now() - MY._c.t < 60000 ? MY._c.D : MY.fresh(); },
+  whyText: c => (c.broke ? `сорвал обещание ${UI.dm(c.broke.d)}` : c.due ? `обещал сегодня $${UI.fmt0(c.due.s)}` : c.r > 0.5 ? `просрочка 61+ дн. $${UI.fmt0(Math.round(c.r))}` : c.o > 0.5 ? `просрочка 31–60 дн. $${UI.fmt0(Math.round(c.o))}` : c.days >= 30 ? `${c.days} дн. без оплаты` : ''),
+  // the agent's queue for his cabinet (agentcab.js → me.js «Сбор»)
+  async queueFor(agent, n = 30) {
+    const D = await MY.cached(); if (D.empty) return [];
+    return D.rows.filter(c => c.agent === agent).slice(0, n).map(c => ({ name: c.name, debt: Math.round(c.debt), why: MY.whyText(c), phone: c.phone || '', last: c.last ? { d: c.last.d, r: c.last.r, ...(c.last.pd ? { pd: c.last.pd } : {}), ...(c.last.s ? { s: c.last.s } : {}) } : null }));
+  },
+  // a mark made by the agent in his cabinet (inbox/, act «collect») — the same record as the supervisor's own mark
+  apply(m) {
+    if (!m.client || !MY.RES[m.r]) return false;
+    const s = Number(m.s) || 0, pd = /^\d{4}-\d{2}-\d{2}$/.test(m.pd || '') ? m.pd : '', note = String(m.note || '');
+    MY.log(m.client, { at: m.at, d: m.day || String(m.at).slice(0, 10), r: m.r, by: m.agent, ...(s ? { s } : {}), ...(pd ? { pd } : {}), ...(note ? { note } : {}) });
+    if (m.r === 'promise' && pd && s) { const list = PAYPLAN.of(m.client).filter(x => x.d !== pd); list.push({ d: pd, s }); PAYPLAN.set(m.client, list); }
+    if (typeof NOTES !== 'undefined') NOTES.add(m.client, { text: `${m.agent}: ${MY.RES[m.r][1].toLowerCase()}${m.r === 'promise' ? ` заплатить ${UI.dm(pd)} — $${UI.fmt0(s)}` : s ? ` $${UI.fmt0(s)}` : ''}${note ? '. ' + note : ''} (кабинет агента)` });
+    return true;
+  },
 
   // one list of debtors with everything needed to rank them
   async data() {
@@ -43,7 +61,7 @@ const MY = {
     if (!c.hasB && c.days >= 30) return `<span class="pill serious">${c.days} дн. без оплаты</span>`;
     return `<span class="pill muted">${c.days ? c.days + ' дн. без оплаты' : 'в сроке'}</span>`;
   },
-  lastTag(c) { const l = c.last; if (!l) return ''; const [i, t] = MY.RES[l.r] || ['', l.r]; return `<span class="mut" style="font-size:12px">${i} ${t}${l.r === 'promise' && l.pd ? ` до ${UI.dm(l.pd)}${l.s ? ' ' + MY.m(l.s) : ''}` : ''} · ${l.d === REP.today() ? 'сегодня' : UI.dm(l.d)}${l.note ? ' · ' + esc(l.note) : ''}</span>`; },
+  lastTag(c) { const l = c.last; if (!l) return ''; const [i, t] = MY.RES[l.r] || ['', l.r]; return `<span class="mut" style="font-size:12px">${i} ${t}${l.r === 'promise' && l.pd ? ` до ${UI.dm(l.pd)}${l.s ? ' ' + MY.m(l.s) : ''}` : ''} · ${l.d === REP.today() ? 'сегодня' : UI.dm(l.d)}${l.by ? ' · отметил ' + esc(l.by) : ''}${l.note ? ' · ' + esc(l.note) : ''}</span>`; },
   row(c, i) {
     return `<div class="cq${c.doneToday ? ' done' : ''}" data-cq="${esc(c.name)}"><div class="cq-n">${i + 1}</div>
       <div class="cq-m"><div class="cq-t"><a href="#" data-client="${esc(c.name)}"><b>${esc(c.name)}</b></a><b class="cq-d">${MY.m(c.debt)}</b></div>
@@ -82,6 +100,8 @@ const MY = {
   },
 };
 
+(window.INBOX_HANDLERS ||= {}).collect = m => MY.apply(m);
+
 (() => {
   const css = document.createElement('style');
   css.textContent = `.cq{display:grid;grid-template-columns:30px 1fr;gap:10px;padding:12px 0;border-bottom:1px solid var(--line)}.cq:last-child{border-bottom:0}
@@ -99,7 +119,7 @@ const MY = {
 // ---------- Мой день ----------
 EXT_PAGES.my = async el => {
   el.innerHTML = '<div class="page-head"><div><h2>Мой день</h2><div class="sub">Загружаю…</div></div></div>';
-  const D = await MY.data(); if (!el.isConnected) return;
+  const D = await MY.fresh(); if (!el.isConnected) return;
   if (D.empty) { el.innerHTML = `<div class="page-head"><div><h2>Мой день</h2></div></div>${UI.empty('Данных пока нет', 'Как только придёт выгрузка LINKO «Баланс клиентов», здесь появится план на день: кого дожимать, кто обещал заплатить, кто из агентов отстаёт.', '<a class="btn" href="#/up">Загрузить данные</a>')}`; return; }
   const { d, rows, L, t0 } = D, m = MY.m, sum = (a, k) => a.reduce((s, x) => s + (x[k] || 0), 0);
   const agents = d.agents.filter(a => a.agent !== 'Без агента'), pace = agPace(d);
@@ -116,9 +136,10 @@ EXT_PAGES.my = async el => {
       <small>🛒 продажи ${ps === null ? 'план не задан' : Math.round(ps * 100) + '%'}${a.need_sell_day > 0 ? ` · сегодня продать <b>${m(a.need_sell_day)}</b>` : ''}</small>${bar(ps, 'Продажи')}
       <small>💰 сбор ${pm === null ? 'план не задан' : Math.round(pm * 100) + '%'}${a.need_collect_day > 0 ? ` · сегодня собрать <b>${m(a.need_collect_day)}</b>` : ''}</small>${bar(pm, 'Сбор')}</div>`;
   };
+  let abc = []; try { abc = ABC.calc(d).rows.filter(c => c.down && c.cls !== 'C').sort((a, b) => b.lost - a.lost).slice(0, 5); } catch { /* optional */ }
   const low = (d.low?.items || []).filter(i => i.status && i.status !== 'ok').slice(0, 6);
   el.innerHTML = `<div class="page-head"><div><h2>Мой день</h2><div class="sub">${UI.dateRu(t0)} · данные LINKO на ${UI.dateRu(d.upload.taken_at)}</div></div>
-      <div class="actions"><a class="btn gray" href="#/rday">Отчёт дня</a><a class="btn" href="#/collect">Очередь сбора</a></div></div>
+      <div class="actions"><a class="btn gray" href="#/dayplan">План агентов</a><a class="btn" href="#/collect">Очередь сбора</a></div></div>
     ${REP.hero(d)}
     <div class="kpis">
       ${UI.tile('Сегодня собрать', m(needC), { sub: needC > 0 ? 'чтобы закрыть план сбора к концу периода' : 'план сбора закрыт или не задан' })}
@@ -135,6 +156,7 @@ EXT_PAGES.my = async el => {
         ${L.today.length ? UI.panel('Обещали заплатить сегодня', L.today.map(x => li(x, m(x.s), x.paid ? ' · ✅ уже платил' : '')).join(''), { cls: '' }) : ''}
         ${L.late.length ? UI.panel('⚠️ Сорвали обещание', L.late.map(x => li(x, m(x.s), ` · обещал ${UI.dm(x.d)}`)).join(''), { cls: '', sub: 'Позвоните лично — после вашего звонка платят чаще' }) : ''}
         ${L.tomorrow.length ? UI.panel('Завтра обещали', L.tomorrow.map(x => li(x, m(x.s))).join(''), { cls: '', sub: 'Агент напоминает клиенту сегодня' }) : ''}
+        ${abc.length ? UI.panel('Ключевые клиенты просели', abc.map(c => li(c, '−' + m(c.lost), ` · класс ${c.cls} · обычно ${m(c.avg)} за период`)).join('') + '<div class="bar" style="margin:10px 0 0"><span class="spacer"></span><a class="btn gray sm" href="#/abc">ABC клиентов →</a></div>', { cls: '', sub: 'Покупают заметно меньше обычного — поручите агенту визит' }) : ''}
         ${low.length ? UI.panel('Склад: заканчивается', low.map(i => `<div class="my-li"><span>${esc(i.name || i.product || '')}${i.warehouse ? ` <span class="mut">${esc(i.warehouse)}</span>` : ''}</span><b class="${i.available <= 0 ? 'neg' : ''}">${i.available <= 0 ? 'нет' : UI.fmt0(i.available)}${i.days_left != null && i.available > 0 ? ` · ${Math.round(i.days_left)} дн.` : ''}</b></div>`).join('') + '<div class="bar" style="margin:10px 0 0"><span class="spacer"></span><a class="btn gray sm" href="#/whlow">Весь список →</a></div>', { cls: '' }) : ''}
       </div>
     </div>`;
@@ -144,7 +166,7 @@ EXT_PAGES.my = async el => {
 // ---------- Очередь сбора ----------
 EXT_PAGES.collect = async el => {
   el.innerHTML = '<div class="page-head"><div><h2>Очередь сбора</h2><div class="sub">Загружаю…</div></div></div>';
-  const D = await MY.data(); if (!el.isConnected) return;
+  const D = await MY.fresh(); if (!el.isConnected) return;
   if (D.empty) { el.innerHTML = `<div class="page-head"><div><h2>Очередь сбора</h2></div></div>${UI.empty('Данных пока нет', 'Очередь строится из выгрузки LINKO «Баланс клиентов».', '<a class="btn" href="#/up">Загрузить данные</a>')}`; return; }
   const { d, rows } = D, m = MY.m, by = {};
   for (const c of rows) (by[c.agent] ||= []).push(c);
