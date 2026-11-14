@@ -226,16 +226,76 @@ EXT_PAGES.lxpay = async el => {
   body.innerHTML = `<div class="bar">${LX.agentSel(LX.agentsOf(M.payments))}</div>
     <div class="kpis">${UI.tile('Сегодня', $$(sumD(t0)), { sub: `${today.length} оплат · данные на ${LX.payAt() ? new Date(LX.payAt()).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—'}`, hero: true })}${UI.tile('Вчера', $$(sumD(y0)))}${UI.tile('За 7 дней', $$(P.filter(p => p.date >= wk).reduce((a, p) => a + p.amount, 0)))}${UI.tile('За период', $$(P.reduce((a, p) => a + p.amount, 0)), { sub: `${P.length} оплат` })}</div>
     <div class="grid">
+    ${UI.panel('Кто сколько собрал', '<div id="dpBox"></div>', { cls: 'w12', sub: 'Выберите день · нажмите на агента, чтобы оставить только его клиентов · поиск по клиенту', tools: '<button class="twin" id="dpCsv" type="button">⬇ Excel за день</button>' })}
     ${UI.panel('Собрано по дням', days.length > 1 ? CH.columns(byDay.slice(-31).map(x => ({ label: UI.dm(x.d), values: [x.total] })), [{ name: 'Оплаты', color: 'var(--c3)' }], { fmt: f, height: 230 }) : '<p class="mut">Мало дней для графика.</p>', { cls: 'w12' })}
     ${UI.panel('По способу оплаты', CH.hbars(LX.sumBy(P, p => LX.pt(p.ptype), p => p.amount).map(([label, value]) => ({ label, value })), { unit: LX.u(M.payCur), fmt: f, share: true }), { cls: 'w6' })}
     ${UI.panel('По агентам за период', CH.hbars(LX.sumBy(P, 'agent', p => p.amount).map(([label, value]) => ({ label, value })), { unit: LX.u(M.payCur), fmt: f }), { cls: 'w6' })}
-    ${today.length ? UI.panel(`Сегодня по агентам (${today.length})`, (() => { const g = LX.sumBy(today, 'agent', p => p.amount); return LX.table(['Агент / клиент', 'Время', 'Способ', '#Сумма'], g.map(([a, tot]) => { const rows = today.filter(p => p.agent === a).sort((x, y) => (x.time || '').localeCompare(y.time || '')); return `<tr style="background:rgba(255,255,255,.04)"><td colspan="3"><b>${esc(a)}</b> <span class="mut">· ${rows.length} оплат</span></td><td class="n"><b class="pos">${f(tot)}</b></td></tr>` + rows.map(p => `<tr><td style="padding-left:22px">${LX.cl(p.client)}</td><td>${p.time ? esc(p.time) : '<span class="mut">—</span>'}</td><td>${esc(LX.pt(p.ptype))}</td><td class="n">${f(p.amount)}</td></tr>`).join(''); }), { max: '460px' }); })(), { cls: 'w12', sub: `Всего за сегодня: ${$$(sumD(t0))}` }) : ''}
-    ${UI.panel(`Оплаты сегодня (${today.length})`, today.length ? LX.table(['Время', 'Клиент', 'Агент', 'Способ', 'Тип', '#Сумма', 'Принял'], today.map(p => `<tr><td>${p.time ? esc(p.time) : '<span class="mut">—</span>'}</td><td>${LX.cl(p.client)}</td><td>${esc(p.agent)}</td><td>${esc(LX.pt(p.ptype))}</td><td class="mut">${esc(p.type ?? '')}${p.cur && p.cur !== M.payCur ? ' · ' + esc(p.cur) : ''}</td><td class="n"><b class="pos">${f(p.amount)}</b></td><td>${esc(p.courier || p.by)}</td></tr>`), { max: '360px' }) : '<p class="mut">Сегодня оплат ещё нет.</p>', { cls: 'w12', sub: today.some(p => p.bal) ? 'Строки «по балансу» — оплаты картой или перечислением: в «Сборе денег» LINKO их нет, CRM видит их по росту оплат в балансе клиента. Если там окажется наличная оплата, она через полчаса придёт из LINKO обычной строкой и заменит эту' : '' })}
     ${(() => { const sk = M.skipped.filter(p => p.date === t0 && (!LX.agent || LX.agentName(p.by) === LX.agent || !p.by)); return sk.length ? UI.panel(`⚠ Не вошли в сумму сегодня (${sk.length})`, LX.table(['Время', 'Клиент', 'Тип', 'Способ', 'Валюта', '#Сумма', 'Почему'], sk.map(p => `<tr><td>${esc(p.time)}</td><td>${LX.cl(p.client)}</td><td>${esc(p.type)}</td><td>${esc(LX.pt(p.ptype))}</td><td>${esc(p.cur)}</td><td class="n">${f(p.amount)}</td><td>${esc(p.why)}</td></tr>`)), { cls: 'w12', sub: 'Эти операции LINKO есть, но в «Сегодня» не посчитаны. Если какая-то должна считаться — пришлите скриншот этого блока' }) : ''; })()}
     ${UI.panel('Таблица: дни × агенты', LX.table(['День', ...agents.map(a => '#' + a), '#Всего'], byDay.slice().reverse().map(x => `<tr><td>${UI.dateRu(x.d)}</td>${agents.map(a => `<td class="n">${x.ag.get(a) ? f(x.ag.get(a)) : '<span class="mut">—</span>'}</td>`).join('')}<td class="n"><b>${f(x.total)}</b></td></tr>`), { max: '420px' }), { cls: 'w12' })}
     </div>`;
   LX.bindAgent(body);
+  LX.payDay(body, P, M, days);
   $('#lxCsv', el).onclick = () => UI.csv('оплаты-' + t0, [['Дата', 'Время', 'Клиент', 'Агент', 'Способ', 'Сумма'], ...P.map(p => [p.date, p.time, p.client, p.agent, LX.pt(p.ptype), p.amount])]);
+};
+// «Кто сколько собрал» за выбранный день: карточки агентов сверху, ниже — клиенты каждого агента (сумма за день, сколько раз платил, во сколько, каким способом, сколько долга осталось).
+// Состояние (день, вид, поиск, выбранный агент, свёрнутые группы) живёт в LX.payUI, поэтому автообновление страницы его не сбрасывает.
+LX.payUI = { day: '', view: 'ag', q: '', ag: '', shut: {} };
+LX.payDay = (body, P, M, days) => {
+  const box = $('#dpBox', body); if (!box) return;
+  const U = LX.payUI, f = UI.fmt0, $$ = v => LX.money(v, M.payCur), t0 = UI.localDate(Date.now()), y0 = UI.localDate(Date.now() - 864e5);
+  const tm = p => (p.time ? esc(p.time) : p.bal ? 'по балансу' : '—');
+  // остаток долга по последнему загруженному балансу — одна выборка на весь список
+  const debt = (() => { try { const S = CRMLocal.engine.getState(), u = S.ag.uploads.slice().sort((a, b) => (a.taken_at < b.taken_at ? 1 : a.taken_at > b.taken_at ? -1 : b.id - a.id))[0], m = new Map(); for (const r of u?.rows || []) if (r.b1 < 0) m.set(r.client, -r.b1); return m; } catch { return new Map(); } })();
+  const debtTd = n => { const d = debt.get(n); return `<td class="n">${d ? f(d) : '<span class="pos">0</span>'}</td>`; };
+  const ways = pays => [...new Set(pays.map(p => LX.pt(p.ptype)))].map(w => `<span class="chip">${esc(w)}</span>`).join(' ');
+  const bind = () => {
+    box.querySelectorAll('[data-dday]').forEach(b => b.onclick = () => { U.day = b.dataset.dday === t0 ? '' : b.dataset.dday; draw(); });
+    const sd = $('#dpDay', box); if (sd) sd.onchange = () => { if (sd.value) { U.day = sd.value; draw(); } };
+    box.querySelectorAll('[data-dview]').forEach(b => b.onclick = () => { U.view = b.dataset.dview; draw(); });
+    box.querySelectorAll('[data-dag]').forEach(b => b.onclick = () => { U.ag = U.ag === b.dataset.dag ? '' : b.dataset.dag; draw(); });
+    box.querySelectorAll('details[data-dg]').forEach(d => d.ontoggle = () => { U.shut[d.dataset.dg] = !d.open; });
+    const qi = $('#dpQ', box); if (qi) { let t; qi.oninput = () => { clearTimeout(t); t = setTimeout(() => { U.q = qi.value; const pos = qi.selectionStart; draw(); const n = $('#dpQ', box); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch {} } }, 200); }; }
+  };
+  const draw = () => {
+    const day = U.day && days.includes(U.day) ? U.day : t0;
+    const D = P.filter(p => p.date === day), total = D.reduce((a, p) => a + p.amount, 0);
+    const byAg = LX.sumBy(D, 'agent', p => p.amount);
+    if (U.ag && !byAg.some(([a]) => a === U.ag)) U.ag = '';
+    const q = U.q.trim().toLowerCase();
+    const rows = D.filter(p => (!U.ag || p.agent === U.ag) && (!q || String(p.client).toLowerCase().includes(q)));
+    // клиент внутри агента: все его оплаты за день вместе
+    const cm = new Map();
+    for (const p of rows) { const k = p.agent + '\u0001' + p.client, c = cm.get(k) || cm.set(k, { client: p.client, agent: p.agent, sum: 0, pays: [] }).get(k); c.sum += p.amount; c.pays.push(p); }
+    const C = [...cm.values()].sort((a, b) => b.sum - a.sum);
+    for (const c of C) c.pays.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    const shown = rows.reduce((a, p) => a + p.amount, 0), nCl = new Set(C.map(c => c.client)).size;
+    const label = day === t0 ? 'Сегодня' : day === y0 ? 'Вчера' : UI.dateRu(day);
+    const other = days.filter(d => d !== t0 && d !== y0).reverse();
+    const dayTot = d => P.filter(p => p.date === d).reduce((a, p) => a + p.amount, 0);
+    const payList = c => `<small class="mut">${c.pays.length > 1 ? c.pays.map(p => `${tm(p)} · ${f(p.amount)}`).join('<br>') : tm(c.pays[0])}</small>`;
+    const head = `<div class="dp-bar">
+        <div class="dp-seg" role="group" aria-label="День">
+          <button type="button" data-dday="${t0}" class="${day === t0 ? 'on' : ''}">Сегодня</button>${days.includes(y0) ? `<button type="button" data-dday="${y0}" class="${day === y0 ? 'on' : ''}">Вчера</button>` : ''}${other.length ? `<select id="dpDay" aria-label="Другой день" class="${other.includes(day) ? 'on' : ''}"><option value="">Другой день…</option>${other.map(d => `<option value="${d}" ${d === day ? 'selected' : ''}>${UI.dateRu(d)} — ${f(dayTot(d))}</option>`).join('')}</select>` : ''}
+        </div>
+        <div class="dp-seg" role="group" aria-label="Вид">${[['ag', 'По агентам'], ['cl', 'Все клиенты'], ['tm', 'По времени']].map(([v, n]) => `<button type="button" data-dview="${v}" class="${U.view === v ? 'on' : ''}">${n}</button>`).join('')}</div>
+        <input id="dpQ" type="search" placeholder="🔍 Найти клиента" value="${esc(U.q)}" aria-label="Найти клиента">
+      </div>`;
+    if (!D.length) { box.innerHTML = head + `<p class="mut" style="margin:14px 0">${label}: оплат ещё нет.</p>`; bind(); return; }
+    const cards = `<div class="dp-ags">
+        <button type="button" class="dp-ag${U.ag ? '' : ' on'}" data-dag=""><span class="dp-n">Все агенты</span><b>${$$(total)}</b><small>${new Set(D.map(p => p.client)).size} клиентов · ${D.length} оплат</small></button>
+        ${byAg.map(([a, s]) => { const R = D.filter(p => p.agent === a); return `<button type="button" class="dp-ag${U.ag === a ? ' on' : ''}" data-dag="${esc(a)}"><span class="dp-n">${esc(a)}</span><b>${$$(s)}</b><small>${new Set(R.map(p => p.client)).size} клиентов · ${R.length} оплат · ${total > 0 ? Math.round(s / total * 100) : 0}%</small><i style="width:${total > 0 ? Math.max(3, Math.round(s / total * 100)) : 0}%"></i></button>`; }).join('')}
+      </div>`;
+    const sumLine = `<p class="dp-tot"><b>${label}${U.ag ? ' · ' + esc(U.ag) : ''}${q ? ' · поиск «' + esc(U.q) + '»' : ''}:</b> собрано <b class="pos">${$$(shown)}</b> · ${nCl} клиентов · ${rows.length} оплат</p>`;
+    let list;
+    if (!rows.length) list = '<p class="mut">Ничего не найдено.</p>';
+    else if (U.view === 'cl') list = LX.table(['Клиент', '#Собрано', 'Агент', 'Когда платил', 'Способ', '#Долг остался'], C.map(c => `<tr><td>${LX.cl(c.client)}</td><td class="n"><b class="pos">${f(c.sum)}</b></td><td>${esc(c.agent)}</td><td>${payList(c)}</td><td>${ways(c.pays)}</td>${debtTd(c.client)}</tr>`), { max: '620px' });
+    else if (U.view === 'tm') list = LX.table(['Время', 'Клиент', 'Агент', 'Способ', 'Тип', '#Сумма', 'Принял'], rows.slice().sort((a, b) => (b.time || '').localeCompare(a.time || '')).map(p => `<tr><td>${tm(p)}</td><td>${LX.cl(p.client)}</td><td>${esc(p.agent)}</td><td>${esc(LX.pt(p.ptype))}</td><td class="mut">${esc(p.type ?? '')}${p.cur && p.cur !== M.payCur ? ' · ' + esc(p.cur) : ''}</td><td class="n"><b class="pos">${f(p.amount)}</b></td><td>${esc(p.courier || p.by)}</td></tr>`), { max: '620px' });
+    else list = LX.sumBy(rows, 'agent', p => p.amount).map(([a, s]) => { const G = C.filter(c => c.agent === a); return `<details class="dp-g" data-dg="${esc(a)}" ${U.shut[a] ? '' : 'open'}><summary><span class="dp-n">${esc(a)}</span><span class="mut">${G.length} клиентов · ${G.reduce((x, c) => x + c.pays.length, 0)} оплат</span><b class="pos">${$$(s)}</b></summary>${LX.table(['Клиент', '#Собрано', 'Когда платил', 'Способ', '#Долг остался'], G.map(c => `<tr><td>${LX.cl(c.client)}${c.pays.length > 1 ? ` <span class="pill info">${c.pays.length} раза</span>` : ''}</td><td class="n"><b class="pos">${f(c.sum)}</b></td><td>${payList(c)}</td><td>${ways(c.pays)}</td>${debtTd(c.client)}</tr>`)).replace('<table>', '<table class="noxg">')}</details>`; }).join('');
+    box.innerHTML = head + cards + sumLine + list + (D.some(p => p.bal) ? '<p class="mut" style="margin-top:8px"><small>«По балансу» — оплаты картой или перечислением: в «Сборе денег» LINKO их нет, CRM видит их по росту оплат в балансе клиента. Если это окажется наличная оплата, через полчаса она придёт из LINKO обычной строкой и заменит эту.</small></p>' : '');
+    bind();
+    const csv = $('#dpCsv', body); if (csv) csv.onclick = () => UI.csv('собрано-' + day + (U.ag ? '-' + U.ag : ''), [['Дата', 'Агент', 'Клиент', 'Оплат', 'Время', 'Способ', 'Собрано', 'Долг остался'], ...C.map(c => [day, c.agent, c.client, c.pays.length, c.pays.map(p => p.time || '').join(' '), [...new Set(c.pays.map(p => LX.pt(p.ptype)))].join(', '), UI.c2(c.sum), UI.c2(debt.get(c.client) || 0)])]);
+  };
+  draw();
 };
 
 // ---------- Заказы по дням: who ordered what today ----------
