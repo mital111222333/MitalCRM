@@ -1,1 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="110" fill="#0e2433"/><path d="M256 92c-62 92-118 160-118 228a118 118 0 0 0 236 0c0-68-56-136-118-228z" fill="#f2b01e"/><path d="M214 330a42 42 0 0 0 42 42" fill="none" stroke="#0e2433" stroke-width="22" stroke-linecap="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a9bff"/><stop offset="1" stop-color="#5e4bdc"/></linearGradient>
+<linearGradient id="dr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff3c4"/><stop offset="1" stop-color="#ffb800"/></linearGradient>
+<radialGradient id="gl" cx=".3" cy=".1" r=".9"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset=".6" stop-color="#fff" stop-opacity="0"/></radialGradient></defs>
+<rect width="512" height="512" fill="url(#bg)"/><rect width="512" height="512" fill="url(#gl)"/>
+<path d="M256 84c-64 94-122 162-122 232a122 122 0 0 0 244 0c0-70-58-138-122-232z" fill="url(#dr)"/>
+<path d="M208 326a48 48 0 0 0 48 48" fill="none" stroke="#fff" stroke-opacity=".75" stroke-width="20" stroke-linecap="round"/></svg>
