@@ -444,3 +444,22 @@ html .sidefoot button.main { background: var(--tint); color: #fff; font-weight: 
   input, select, textarea { font-size: 16px; } /* no zoom-on-focus in iOS Safari */
   .bar input, .bar select, td input, td select { font-size: 15px; }
 }
+
+/* ---------- performance pass: blur only on small floating chrome ---------- */
+:root { --glass: rgba(255, 255, 255, .74); --blur: saturate(160%) blur(18px); }
+html[data-theme="dark"] { --glass: rgba(34, 34, 40, .72); }
+html .panel, html .tile, html .card, html .widget, html .lbhero, html .planbar, html .gps-card, html .aichat .msg, html .empty-state, html .login,
+html .scroll, html .tabs, html .toast, html #toast, html .newbox, html .dp-seg, html .pod, html #cloudBadge, html #cloudConflict, html .tgprev, html .soon,
+html table, html .xgx-wrap, html .xgx thead th, html .scroll thead th, html .gauge2, html #tt, html .xgx-pop, html #cpPanel {
+  -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+}
+html .modal { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--glass-strong); }
+html .modal-bg { -webkit-backdrop-filter: none; backdrop-filter: none; }
+html body.drawer .scrim { -webkit-backdrop-filter: none; backdrop-filter: none; }
+html .xgx-pop, html #cpPanel { background: var(--glass-strong); }
+html .xgx-wrap, html .scroll { background: var(--glass-strong); }
+main > * { animation: none; }
+.panel, .tile, .card, .widget { box-shadow: inset 0 0 0 1px var(--glass-edge), 0 4px 14px rgba(30, 40, 90, .07); }
+html[data-theme="dark"] .panel, html[data-theme="dark"] .tile, html[data-theme="dark"] .card, html[data-theme="dark"] .widget { box-shadow: inset 0 0 0 1px var(--glass-edge), 0 4px 14px rgba(0, 0, 0, .35); }
+tbody tr, .tabs a, .sidenav a { transition: none; }
+body::before { position: fixed; transform: translateZ(0); }
