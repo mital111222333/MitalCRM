@@ -30,8 +30,7 @@ export default {
       // 2) CRM -> worker (requires API key)
       if (url.pathname.startsWith('/api/')) {
         const auth = request.headers.get('Authorization') || '';
-        const keyParam = url.searchParams.get('key'); // for <img>/<audio> src
-        if (auth !== `Bearer ${env.API_KEY}` && keyParam !== env.API_KEY) {
+        if (auth !== `Bearer ${env.API_KEY}`) {
           return json({ error: 'unauthorized' }, 401, cors);
         }
 

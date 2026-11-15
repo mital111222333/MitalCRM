@@ -18,7 +18,24 @@ const CHAT = {
     if (!r.ok) throw new Error(d.error || 'Ошибка сервера чатов ' + r.status);
     return d;
   },
-  fileUrl: id => `${CHAT.url()}/api/file?file_id=${encodeURIComponent(id)}&key=${encodeURIComponent(CHAT.key())}`,
+  // Files are fetched with the key in the Authorization header (never in the address) and shown from a local blob: URL.
+  _blobs: new Map(),
+  async fileBlob(id) {
+    if (CHAT._blobs.has(id)) return CHAT._blobs.get(id);
+    const r = await fetch(CHAT.url() + '/api/file?file_id=' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + CHAT.key() } });
+    if (!r.ok) throw new Error('Не удалось загрузить файл (' + r.status + ')');
+    const u = URL.createObjectURL(await r.blob()); CHAT._blobs.set(id, u); return u;
+  },
+  // fill in the media of freshly rendered messages: photos at once, audio/video/files on first tap
+  hydrate(box) {
+    box.querySelectorAll('img[data-fid]').forEach(i => { if (!i.src) CHAT.fileBlob(i.dataset.fid).then(u => { i.src = u; const a = i.closest('a'); if (a) a.href = u; }).catch(() => { i.alt = 'Фото не загрузилось'; }); });
+    box.querySelectorAll('audio[data-fid],video[data-fid]').forEach(m => {
+      if (CHAT._blobs.has(m.dataset.fid)) { m.src = CHAT._blobs.get(m.dataset.fid); return; }
+      const go = async e => { e.preventDefault(); m.removeEventListener('click', go); try { m.src = await CHAT.fileBlob(m.dataset.fid); m.play().catch(() => {}); } catch (err) { toast(err.message); m.addEventListener('click', go); } };
+      m.addEventListener('click', go);
+    });
+    box.querySelectorAll('a.cfile[data-fid]').forEach(a => { a.onclick = async e => { e.preventDefault(); try { const u = await CHAT.fileBlob(a.dataset.fid); const t = document.createElement('a'); t.href = u; t.download = a.dataset.name || 'file'; t.target = '_blank'; t.rel = 'noopener'; t.click(); } catch (err) { toast(err.message); } }; });
+  },
   timer: null,
   hm: ts => new Date(ts * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
   day: ts => new Date(ts * 1000).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }),
@@ -65,12 +82,12 @@ EXT_PAGES.chat = async el => {
   const bubble = m => {
     let media = '';
     if (m.file_id) {
-      const u = CHAT.fileUrl(m.file_id);
-      if (m.type === 'photo') media = `<a href="${u}" target="_blank" rel="noopener"><img class="cimg" src="${u}" alt="Фото" loading="lazy"></a>`;
-      else if (m.type === 'voice' || m.type === 'audio') media = `<audio controls preload="none" src="${u}"></audio>`;
-      else if (m.type === 'video' || m.type === 'video_note') media = `<video controls preload="none" class="cimg" src="${u}"></video>`;
+      const f = esc(m.file_id);
+      if (m.type === 'photo') media = `<a href="#" target="_blank" rel="noopener"><img class="cimg" data-fid="${f}" alt="Фото"></a>`;
+      else if (m.type === 'voice' || m.type === 'audio') media = `<audio controls preload="none" data-fid="${f}"></audio>`;
+      else if (m.type === 'video' || m.type === 'video_note') media = `<video controls preload="none" class="cimg" data-fid="${f}"></video>`;
       else if (m.type === 'sticker') media = '';
-      else media = `<a class="cfile" href="${u}" target="_blank" rel="noopener">📎 ${esc(m.file_name || 'Файл')}</a>`;
+      else media = `<a class="cfile" href="#" data-fid="${f}" data-name="${esc(m.file_name || 'file')}">📎 ${esc(m.file_name || 'Файл')}</a>`;
     }
     if (m.type === 'location') media = `<a href="https://maps.google.com/?q=${esc(m.text)}" target="_blank" rel="noopener">📍 Геолокация</a>`;
     const text = m.type === 'location' ? '' : m.text;
@@ -85,6 +102,7 @@ EXT_PAGES.chat = async el => {
     let prev = '', html = '';
     for (const m of st.msgs) { const d = CHAT.day(m.date); if (d !== prev) { html += `<div class="cday">${d}</div>`; prev = d; } html += bubble(m); }
     box.innerHTML = html || '<div class="cempty">Сообщений пока нет</div>';
+    CHAT.hydrate(box);
     box.querySelectorAll('.cmsg').forEach(b => b.ondblclick = () => setReply(st.msgs.find(m => String(m.id) === b.dataset.id)));
     if (stick || near) box.scrollTop = box.scrollHeight;
   };
