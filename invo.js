@@ -153,37 +153,51 @@ const INVO = {
   // 190 × 138 mm: two on one sheet (a copy for the client and one for us, or two different contracts). A contract that would not fit
   // is shrunk (nothing is cut). It can be printed, saved as a picture (PNG) and sent to Telegram.
   HALF: 521, // px: 138 mm
-  css: () => `.cdoc{box-sizing:border-box;width:190mm;background:#fff!important;color:#000!important;font:10.5px/1.35 Arial,Helvetica,sans-serif;position:relative;overflow:hidden;text-align:left;border-radius:0;box-shadow:none}
-.cdoc *{box-sizing:border-box;color:#000;background:transparent;text-shadow:none}
-.cdoc .d-fit{padding:4mm 5mm 3mm}
-.cdoc .d-h1{font-size:15.5px;text-align:center;margin:0 0 1px;letter-spacing:.3px;font-weight:700}
-.cdoc .d-sub{text-align:center;margin:0 0 4px;font-size:10px}
-.cdoc .d-in{margin:0 0 5px}
-.cdoc .d-h2{font-size:10.8px;font-weight:700;margin:6px 0 2px;text-transform:uppercase;letter-spacing:.2px}
+  css: () => `.cdoc{box-sizing:border-box;width:190mm;background:#fff!important;color:#111!important;font:11px/1.4 Arial,Helvetica,sans-serif;position:relative;overflow:hidden;text-align:left;border-radius:0;box-shadow:none}
+.cdoc *{box-sizing:border-box;color:#111;background:transparent;text-shadow:none}
+.cdoc .d-fit{padding:4mm 6mm 3mm}
+.cdoc .d-top{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;border-bottom:2px solid #111;padding:0 0 3px;margin:0 0 4px}
+.cdoc .d-co{font-size:20px;font-weight:700;letter-spacing:1.5px;line-height:1}
+.cdoc .d-co small{display:block;font-size:9px;font-weight:400;letter-spacing:.3px;color:#555;margin-top:3px}
+.cdoc .d-ttl{text-align:right}
+.cdoc .d-h1{font-size:15px;font-weight:700;letter-spacing:.6px;line-height:1.1}
+.cdoc .d-sub{font-size:10.5px;color:#444;margin-top:2px}
+.cdoc .d-in{margin:0 0 2px;font-size:10.5px}
+.cdoc .d-h2{font-size:9.5px;font-weight:700;margin:5px 0 2px;text-transform:uppercase;letter-spacing:.8px;color:#555}
+.cdoc .d-grid{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid #999;border-radius:2px}
+.cdoc .d-c{padding:2px 7px 3px;border-left:1px solid #ccc;min-width:0}
+.cdoc .d-c:first-child{border-left:0}
+.cdoc .d-c.w2{grid-column:span 2}
+.cdoc .d-l{display:block;font-size:8.5px;text-transform:uppercase;letter-spacing:.4px;color:#666;margin-bottom:1px}
+.cdoc .d-v{font-size:12px;font-weight:700;overflow-wrap:anywhere}
+.cdoc .d-v.n{font-weight:400;font-size:11.5px}
+.cdoc .d-v.big{font-size:15px}
+.cdoc .d-bon{border:1px solid #999;border-top:0;padding:2px 7px 3px}
+.cdoc .d-bl{font-size:10.5px;line-height:1.38;white-space:pre-line;overflow-wrap:anywhere}
+.cdoc .d-bl.c2{column-count:2;column-gap:14px;column-rule:1px solid #ddd}
+.cdoc .d-bl.c3{column-count:3;column-gap:12px;column-rule:1px solid #ddd}
 .cdoc table{width:100%;border-collapse:collapse;border:0;border-radius:0;box-shadow:none;overflow:visible;background:#fff;margin:0}
-.cdoc table tr>th,.cdoc table tr>td{border:1px solid #000;padding:3px 5px;vertical-align:top;text-align:left;font-weight:normal;font-family:Arial,Helvetica,sans-serif;font-size:10.5px;line-height:1.35;color:#000;white-space:normal;position:static;background:#fff;height:auto}
-.cdoc table tr>th{font-weight:700;background:#f0f0f0}
-.cdoc .d-kv tr>th{width:17%}
-.cdoc .d-kv tr>td{width:33%}
-.cdoc .d-sum{font-size:12.5px;font-weight:700}
-.cdoc .d-sch{display:flex;gap:8px;align-items:flex-start}
-.cdoc .d-sch table{flex:1}
-.cdoc .d-sch tr>td:nth-child(3){text-align:right;white-space:nowrap}
-.cdoc .d-sch tr>td:first-child,.cdoc .d-sch tr>th:first-child{width:20px;text-align:center}
-.cdoc .d-sch tr.d-tot>td{font-weight:700;background:#f0f0f0}
-.cdoc .d-ft{margin:5px 0 2px}
-.cdoc .d-sg{display:flex;gap:10px;align-items:flex-end}
-.cdoc .d-sgs{flex:1;display:flex;gap:14px;flex-wrap:wrap}
-.cdoc .d-who{flex:1 1 30%;min-width:44mm}
-.cdoc .d-who b{display:block;margin:0 0 15px;font-size:10.5px}
-.cdoc .d-ln{display:flex;gap:6px;font-size:8.5px;color:#555}
-.cdoc .d-ln span{border-top:1px solid #000;padding-top:1px;text-align:center;color:#555}
-.cdoc .d-ln span:nth-child(1){flex:2}.cdoc .d-ln span:nth-child(2){flex:1.2}.cdoc .d-ln span:nth-child(3){flex:1}
-.cdoc .d-mp{width:17mm;height:17mm;border:1px dashed #888;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#888;font-size:9px;flex:none;margin-bottom:2px}`,
+.cdoc table tr>th,.cdoc table tr>td{border:0;border-bottom:1px solid #ccc;padding:2px 7px;vertical-align:middle;text-align:left;font-weight:normal;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.35;color:#111;white-space:nowrap;position:static;background:#fff;height:auto}
+.cdoc table tr>th{font-size:8.5px;text-transform:uppercase;letter-spacing:.4px;color:#555;font-weight:700;background:#f2f2f2;border-bottom:1px solid #999}
+.cdoc .d-sch{display:flex;gap:12px;align-items:flex-start}
+.cdoc .d-sch table{flex:1;border:1px solid #999}
+.cdoc .d-sch tr>*:nth-child(3){text-align:right}
+.cdoc .d-sch tr>*:first-child{width:24px;text-align:center;color:#555}
+.cdoc .d-sch tr>*:nth-child(4){width:34%}
+.cdoc .d-sch tr.d-tot>td{font-weight:700;background:#f2f2f2;border-bottom:0;border-top:1px solid #999;font-size:12px}
+.cdoc .d-ft{margin:4px 0 0;font-size:10.5px;color:#333}
+.cdoc .d-sgs{display:flex;gap:18px;margin-top:2px}
+.cdoc .d-who{flex:1;min-width:0}
+.cdoc .d-sl{height:10mm;border-bottom:1px solid #111}
+.cdoc .d-who b{display:inline;font-size:10.5px}
+.cdoc .d-who span{float:right;font-size:8.5px;color:#666;margin-top:2px}
+.cdoc .d-who{padding-top:1px}`,
   doc(r) {
-    const F = INVO.cfg().form, x = r.x || {}, pl = INVO.planOf(r), tot = pl.reduce((a, p) => a + p.s, 0), today = UI.localDate(Date.now());
+    const F = INVO.cfg().form, x = r.x || {}, pl = INVO.planOf(r), tot = pl.reduce((a, p) => a + p.s, 0);
     const bonus = String(x.bonus ?? r.bonusItems.join('\n')).trim(), disc = Math.round((x.disc ?? r.disc) * 10) / 10, sg = (F.signers || []).filter(Boolean);
-    const term = pl.length === 1 ? `<b>${UI.dateRu(pl[0].d)}</b>${pl[0].d === r.d ? ' (сразу)' : ` (${INVO.days(r.d, pl[0].d)} дн.)`}` : `<b>${pl.length} частями</b>, последняя — ${UI.dateRu(pl.at(-1).d)}`;
+    const city = F.city ? String(F.city).trim().replace(/^./, c => c.toUpperCase()) : '';
+    const term = pl.length === 1 ? `${UI.dateRu(pl[0].d)}${pl[0].d === r.d ? ' (сразу)' : ` (${INVO.days(r.d, pl[0].d)} дн.)`}` : `${pl.length} платежей, до ${UI.dateRu(pl.at(-1).d)}`;
+    const bLines = bonus ? bonus.split('\n').map(t => t.trim()).filter(Boolean) : [];
     // the schedule: one table, or two side by side when there are many parts
     const head = '<thead><tr><th>№</th><th>Дата оплаты</th><th>Сумма</th><th>Отметка об оплате</th></tr></thead>';
     const trs = (list, from) => list.map((p, i) => `<tr><td>${from + i + 1}</td><td>${UI.dateRu(p.d)}</td><td>${INVO.money2(p.s)}</td><td></td></tr>`).join('');
@@ -192,23 +206,27 @@ const INVO = {
     const sched = pl.length > 6 ? `<div class="d-sch"><table class="noxg">${head}<tbody>${trs(pl.slice(0, half), 0)}</tbody></table><table class="noxg">${head}<tbody>${trs(pl.slice(half), half)}${totRow}</tbody></table></div>`
       : `<div class="d-sch"><table class="noxg">${head}<tbody>${trs(pl, 0)}${totRow}</tbody></table></div>`;
     return `<section class="cdoc no-xg"><div class="d-fit">
-      <div class="d-h1">ДОГОВОР-СПЕЦПРЕДЛОЖЕНИЕ № ${esc(r.id)}</div>
-      <div class="d-sub">разовый договор к накладной № ${esc(r.id)} от ${UI.dateRu(r.d)}${F.city ? ' · ' + esc(F.city) : ''} · ${UI.dateRu(today)}</div>
-      <div class="d-in"><b>${esc(F.company || '')}</b> (Поставщик) и клиент <b>${esc(r.client)}</b> (Покупатель) договорились об особых условиях поставки по накладной № ${esc(r.id)}.</div>
+      <div class="d-top"><div class="d-co">${esc(F.company || '')}<small>Поставщик</small></div>
+        <div class="d-ttl"><div class="d-h1">ДОГОВОР-СПЕЦПРЕДЛОЖЕНИЕ № ${esc(r.id)}</div><div class="d-sub">к накладной № ${esc(r.id)} от ${UI.dateRu(r.d)}${city ? ' · г. ' + esc(city) : ''}</div></div></div>
+      <div class="d-in"><b>${esc(F.company || '')}</b> (Поставщик) и <b>${esc(r.client)}</b> (Покупатель) заключили разовый договор об особых условиях поставки по накладной № ${esc(r.id)}.</div>
       <div class="d-h2">1. Накладная</div>
-      <table class="noxg d-kv"><tbody>
-        <tr><th>Клиент (как в LINKO)</th><td>${esc(r.client)}</td><th>Накладная</th><td>№ ${esc(r.id)} от ${UI.dateRu(r.d)}</td></tr>
-        <tr><th>Агент</th><td>${esc(r.agent || '—')}</td><th>Сумма накладной</th><td class="d-sum">${INVO.money2(r.s)}</td></tr>
-      </tbody></table>
+      <div class="d-grid">
+        <div class="d-c"><span class="d-l">Покупатель (LINKO)</span><div class="d-v">${esc(r.client)}</div></div>
+        <div class="d-c"><span class="d-l">Агент</span><div class="d-v n">${esc(r.agent || '—')}</div></div>
+        <div class="d-c"><span class="d-l">Накладная</span><div class="d-v n">№ ${esc(r.id)} от ${UI.dateRu(r.d)}</div></div>
+        <div class="d-c"><span class="d-l">Сумма накладной</span><div class="d-v big">${INVO.money2(r.s)}</div></div>
+      </div>
       <div class="d-h2">2. Условия</div>
-      <table class="noxg d-kv"><tbody>
-        <tr><th>Скидка</th><td>${disc > 0 ? `<b>${String(disc).replace('.', ',')}%</b> от прайса` : 'по прайсу, без скидки'}</td><th>Срок оплаты</th><td>${term}</td></tr>
-        <tr><th>Бонусы</th><td>${bonus ? esc(bonus).replace(/\n/g, '<br>') : '—'}</td><th>Акция / другие условия</th><td>${x.cond ? esc(x.cond) : '—'}</td></tr>
-      </tbody></table>
+      <div class="d-grid">
+        <div class="d-c"><span class="d-l">Скидка</span><div class="d-v">${disc > 0 ? `${String(disc).replace('.', ',')}% от прайса` : 'без скидки'}</div></div>
+        <div class="d-c"><span class="d-l">Срок оплаты</span><div class="d-v">${term}</div></div>
+        <div class="d-c w2"><span class="d-l">Акция / другие условия</span><div class="d-v n">${x.cond ? esc(x.cond) : '—'}</div></div>
+      </div>
+      <div class="d-bon"><span class="d-l">Бонусы</span><div class="d-bl${bLines.length > 12 ? ' c3' : bLines.length > 5 ? ' c2' : ''}">${bLines.length ? bLines.map(esc).join('\n') : '—'}</div></div>
       <div class="d-h2">3. График оплаты</div>
       ${sched}
-      <div class="d-ft">Покупатель обязуется оплатить сумму накладной в указанные сроки. Условия этого договора действуют только для накладной № ${esc(r.id)}.</div>
-      <div class="d-sg"><div class="d-sgs">${sg.map(s => `<div class="d-who"><b>${esc(s)}</b><div class="d-ln"><span>ФИО</span><span>Подпись</span><span>Дата</span></div></div>`).join('')}</div><div class="d-mp">М.П.</div></div>
+      <div class="d-ft">Покупатель обязуется оплатить сумму накладной в указанные сроки. Условия договора действуют только для накладной № ${esc(r.id)}.</div>
+      <div class="d-sgs">${sg.map(s => `<div class="d-who"><div class="d-sl"></div><span>подпись</span><b>${esc(s)}</b></div>`).join('')}</div>
     </div></section>`;
   },
   // a contract that is taller than half a sheet is shrunk to fit (width grows by the same factor, so nothing is cut)
@@ -255,7 +273,7 @@ const INVO = {
       <div style="max-height:68vh;overflow:auto">${rows.map((r, i) => `<div style="margin:0 0 14px"><div class="bar" style="flex-wrap:wrap;gap:6px;margin-bottom:6px"><b>№${esc(r.id)} · ${esc(r.client)}</b><span class="spacer"></span>
         <button class="btn gray sm" data-png="${i}" type="button">🖼 Скачать картинкой</button>${canShare ? `<button class="btn gray sm" data-share="${i}" type="button">📤 Отправить (Telegram…)</button>` : ''}<button class="btn gray sm" data-copy="${i}" type="button">📋 Копировать картинку</button></div>
         <div style="display:inline-block;max-width:100%;overflow:auto;border:1px solid var(--line-2,#ccc)">${INVO.doc(r)}</div></div>`).join('')}</div>
-      <p class="mut" style="font-size:12px;margin:6px 0 0">Договор занимает половину листа А4: распечатайте, поставьте подписи и печать (М.П.). Картинку можно сразу отправить в Telegram.</p>`);
+      <p class="mut" style="font-size:12px;margin:6px 0 0">Договор занимает половину листа А4: распечатайте и поставьте подписи. Картинку можно сразу отправить в Telegram.</p>`);
     m.el.classList.add('wide');
     const docs = [...m.el.querySelectorAll('.cdoc')]; docs.forEach(INVO.fit);
     $('#pvX', m.el).onclick = m.close;
