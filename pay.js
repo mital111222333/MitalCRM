@@ -5,12 +5,12 @@
 // period; a team lead — of his agents and his own clients), the bonus by the collection ladder ($10 000 → $50, $20 000 → $100,
 // $30 000 → $200 …), fuel (km of the month × сум per km, own rate for each person), minus advances (сум or $), minus the
 // fines for being late (from «Дисциплина»), plus / minus anything else. $ are turned into сум at the rate of the month
-// (the «Курс ЦБ» button takes the Central Bank rate). One person without lateness may get a restaurant voucher — shown, not paid.
+// (the «Курс ЦБ» button takes the Central Bank rate). Restaurant vouchers are given by hand (those without lateness are marked) — shown, not paid. The fix can be in $ or сум; gas and the lateness fine can be typed over.
 // «Закрыть месяц» freezes the payroll and sends each person his pay slip in Telegram and to his cabinet (agentcab.js → me.js).
 // Stored in the synced state: ext.pay = { bonus: [[10000, 50], …], bonusStep: 100, bonusEvery: 10000, voucher: 600000,
-//   staff: { [name]: { role: 'agent' | 'lead' | 'courier' | 'store' | 'other', on, fix, pct, bonus, team: [agents], fuel, fines } },
+//   staff: { [name]: { role: 'agent' | 'lead' | 'courier' | 'store' | 'other', on, fix, fixCur: '$' | 'сум', pct, bonus, team: [agents], fuel, fines } },
 //   periods: { [from]: { days: 26, rate, rateAt, km: { [name]: km }, worked: { [name]: days }, adv: { [name]: [{ d, s, cur, note }] },
-//     extra: { [name]: [{ s, cur, note }] }, voucher: name, closed: iso, rows: [frozen rows] } }, slips: { [name]: slip } }.
+//     extra: { [name]: [{ s, cur, note }] }, gas: { [name]: сум }, fine: { [name]: сум }, vouchers: [names], closed: iso, rows: [frozen rows] } }, slips: { [name]: slip } }.
 window.EXT_PAGES = window.EXT_PAGES || {};
 
 const PAY = {
@@ -23,7 +23,12 @@ const PAY = {
     if (c.bonusStep == null) c.bonusStep = 100; if (c.bonusEvery == null) c.bonusEvery = 10000; if (c.voucher == null) c.voucher = 600000;
     c.staff ||= {}; c.periods ||= {}; c.slips ||= {}; return c;
   },
-  per(from) { const p = (PAY.cfg().periods[from] ||= {}); if (!p.days) p.days = 26; p.km ||= {}; p.worked ||= {}; p.adv ||= {}; p.extra ||= {}; return p; },
+  per(from) {
+    const p = (PAY.cfg().periods[from] ||= {}); if (!p.days) p.days = 26; p.km ||= {}; p.worked ||= {}; p.adv ||= {}; p.extra ||= {}; p.gas ||= {}; p.fine ||= {};
+    if (!Array.isArray(p.vouchers)) { p.vouchers = p.voucher ? [p.voucher] : []; delete p.voucher; } // was one name, now a list chosen by hand
+    return p;
+  },
+  hasV: (p, name) => (p.vouchers || (p.voucher ? [p.voucher] : [])).includes(name),
   person(name, role) { const c = PAY.cfg(); if (!c.staff[name]) c.staff[name] = { role: role || 'agent', on: true, team: [], ...PAY.DEF[role || 'agent'] }; return c.staff[name]; },
   sum: v => Math.round(v || 0).toLocaleString('ru-RU') + ' сум',
   usd: v => '$' + (Math.round((v || 0) * 100) / 100).toLocaleString('ru-RU', { maximumFractionDigits: 2 }),
@@ -77,27 +82,31 @@ const PAY = {
     for (const a of ag.keys()) PAY.person(a, 'agent');
     return Object.entries(c.staff).filter(([, s]) => s.on !== false).map(([name, s]) => {
       const auto = PAY.workedOf(name, from, end), worked = p.worked[name] != null ? Number(p.worked[name]) : auto != null ? auto : days;
-      const paidDays = Math.min(worked, days), fix = (Number(s.fix) || 0) / days * paidDays;
+      const paidDays = Math.min(worked, days), fix = (Number(s.fix) || 0) / days * paidDays, fixCur = s.fixCur === 'сум' ? 'сум' : '$';
+      const fixUsd = fixCur === '$' ? fix : 0, fixUzs = fixCur === 'сум' ? Math.round(fix) : 0;
       const own = ag.get(name)?.paid || 0, team = s.role === 'lead' ? (s.team || []).filter(t => t !== name).reduce((t, a) => t + (ag.get(a)?.paid || 0), 0) : 0;
       const collected = own + team, pct = collected * (Number(s.pct) || 0) / 100, bonus = s.bonus ? PAY.bonusOf(collected) : 0;
-      const km = Number(p.km[name]) || 0, fuel = km * (Number(s.fuel) || 0);
+      // gas and the lateness fine: counted by themselves, but a sum typed in the payroll wins
+      const km = Number(p.km[name]) || 0, fuelAuto = km * (Number(s.fuel) || 0), gasSet = p.gas[name] != null, fuel = gasSet ? Number(p.gas[name]) || 0 : fuelAuto;
       const adv = (p.adv[name] || []).reduce((t, a) => t + PAY.inSum(a.s, a.cur, rate), 0), extra = (p.extra[name] || []).reduce((t, a) => t + PAY.inSum(a.s, a.cur, rate), 0);
-      const fn = s.fines !== false ? PAY.finesOf(name, from, end) : { sum: 0, min: 0 };
-      const usd = fix + pct + bonus, total = Math.round(usd * rate + fuel + extra - adv - fn.sum);
-      return { name, role: s.role, s, days, worked, auto, paidDays, fix, own, team, collected, pct, bonus, usd, km, fuel, adv, extra, fine: fn.sum, fineMin: fn.min, total, rate };
+      const fn = s.fines !== false ? PAY.finesOf(name, from, end) : { sum: 0, min: 0 }, fineSet = p.fine[name] != null, fine = fineSet ? Number(p.fine[name]) || 0 : fn.sum;
+      const usd = fixUsd + pct + bonus, total = Math.round(usd * rate + fixUzs + fuel + extra - adv - fine);
+      return { name, role: s.role, s, days, worked, auto, paidDays, fix, fixCur, fixUsd, fixUzs, own, team, collected, pct, bonus, usd, km, fuel, fuelAuto, gasSet, adv, extra, fine, fineAuto: fn.sum, fineSet, fineMin: fn.min, total, rate };
     }).sort((a, b) => Object.keys(PAY.ROLE).indexOf(a.role) - Object.keys(PAY.ROLE).indexOf(b.role) || a.name.localeCompare(b.name));
   },
   // the pay slip as lines (for the detail window, Telegram and the cabinet)
   slip(r, from, p) {
     const n = (v, d = 2) => (Math.round(v * 10 ** d) / 10 ** d).toLocaleString('ru-RU');
-    const L = [[`Фикс: $${n(r.s.fix, 0)} / ${r.days} дн. × ${n(r.paidDays, 1)} дн.`, PAY.usd(r.fix)]];
+    const uzs = r.fixCur === 'сум', L = [];
+    if (!uzs) L.push([`Фикс: $${n(r.s.fix, 0)} / ${r.days} дн. × ${n(r.paidDays, 1)} дн.`, PAY.usd(r.fix)]);
     if (r.pct) L.push([`Собрано ${PAY.usd(r.collected)}${r.team ? ` (свои ${PAY.usd(r.own)} + команда ${PAY.usd(r.team)})` : ''} × ${r.s.pct}%`, PAY.usd(r.pct)]);
     if (r.s.bonus) L.push([`Бонус за сбор ${PAY.usd(r.collected)}`, PAY.usd(r.bonus)]);
-    L.push([`Итого в $ ${PAY.usd(r.usd)} × курс ${n(r.rate, 2)}`, PAY.sum(r.usd * r.rate)]);
-    if (r.fuel) L.push([`Газ / метан: ${n(r.km, 0)} км × ${n(r.s.fuel, 0)} сум`, PAY.sum(r.fuel)]);
+    if (r.usd || !uzs) L.push([`Итого в $ ${PAY.usd(r.usd)} × курс ${n(r.rate, 2)}`, PAY.sum(r.usd * r.rate)]);
+    if (uzs) L.push([`Фикс: ${n(r.s.fix, 0)} сум / ${r.days} дн. × ${n(r.paidDays, 1)} дн.`, PAY.sum(r.fixUzs)]);
+    if (r.fuel) L.push([r.gasSet ? 'Газ / метан' : `Газ / метан: ${n(r.km, 0)} км × ${n(r.s.fuel, 0)} сум`, PAY.sum(r.fuel)]);
     for (const e of p.extra[r.name] || []) L.push([`${e.note || 'Прочее'}`, (e.s < 0 ? '−' : '+') + (e.cur === '$' ? PAY.usd(Math.abs(e.s)) : PAY.sum(Math.abs(e.s)))]);
     for (const a of p.adv[r.name] || []) L.push([`Аванс${a.d ? ' ' + UI.dm(a.d) : ''}${a.note ? ' · ' + a.note : ''}`, '−' + (a.cur === '$' ? PAY.usd(a.s) : PAY.sum(a.s))]);
-    if (r.fine) L.push([`Штраф за опоздания: ${n(r.fineMin, 0)} мин`, '−' + PAY.sum(r.fine)]);
+    if (r.fine) L.push([r.fineSet ? 'Штраф за опоздания' : `Штраф за опоздания: ${n(r.fineMin, 0)} мин`, '−' + PAY.sum(r.fine)]);
     return L;
   },
   async rateCbu() {
@@ -111,10 +120,10 @@ const PAY = {
     const c = PAY.cfg(), p = PAY.per(from), tg = CRMLocal.ext().tg || {}, label = PLAN.label(from); let sent = 0;
     p.rows = rows.map(r => ({ ...r, s: { ...r.s }, lines: PAY.slip(r, from, p) })); p.closed = new Date().toISOString();
     for (const r of p.rows) {
-      const voucher = p.voucher === r.name;
+      const voucher = PAY.hasV(p, r.name);
       c.slips[r.name] = { period: from, label, lines: r.lines, total: r.total, voucher: voucher ? c.voucher : 0, at: p.closed };
       const ch = tg.chats?.[r.name]?.id;
-      if (tg.token && ch) try { await TG.send(ch, esc(`💰 Зарплата за ${label}\n` + r.lines.map(([a, b]) => `${a}: ${b}`).join('\n') + `\n\nК выплате: ${PAY.sum(r.total)}` + (voucher ? `\n🎁 Ваучер в ресторан на ${PAY.sum(c.voucher)} — за месяц без опозданий!` : ''))); sent++; } catch (e) { toast('Telegram, ' + r.name + ': ' + e.message); }
+      if (tg.token && ch) try { await TG.send(ch, esc(`💰 Зарплата за ${label}\n` + r.lines.map(([a, b]) => `${a}: ${b}`).join('\n') + `\n\nК выплате: ${PAY.sum(r.total)}` + (voucher ? `\n🎁 Ваучер в ресторан на ${PAY.sum(c.voucher)} — поздравляем!` : ''))); sent++; } catch (e) { toast('Telegram, ' + r.name + ': ' + e.message); }
     }
     CRMLocal.touch();
     if (typeof AC !== 'undefined' && AC.publish) AC.publish({ force: true }).catch(() => {});
@@ -135,8 +144,9 @@ EXT_PAGES.pay = async el => {
   if (!el.isConnected) return;
   const rows = closed && p.rows ? p.rows : PAY.rows(from, D), rate = Number(p.rate) || 0;
   const tot = k => rows.reduce((s, r) => s + (r[k] || 0), 0);
-  // the voucher: agents who were never late and had no невыход in the period
-  const noLate = rows.filter(r => r.role === 'agent' && !r.fineMin && r.paidDays > 0 && !PAY.absentOf(r.name, from, end) && (typeof DS === 'undefined' || !DS.cfg().skip[r.name]));
+  // the voucher is given by hand; those never late and with no невыход in the period are only marked as a hint
+  const noLate = new Set(rows.filter(r => !r.fineMin && r.paidDays > 0 && !PAY.absentOf(r.name, from, end) && (typeof DS === 'undefined' || !DS.cfg().skip[r.name])).map(r => r.name));
+  const fixUsdOf = r => r.fixUsd ?? r.fix ?? 0, totFixUzs = tot('fixUzs');
   const staffAll = Object.entries(c.staff).sort((a, b) => a[0].localeCompare(b[0])), agentsAll = staffAll.filter(([, s]) => s.role === 'agent').map(([n]) => n);
   body.innerHTML = `<div class="bar" style="flex-wrap:wrap">
       <label class="mut">Период <select id="pyFrom">${list.map(x => `<option value="${x}" ${x === from ? 'selected' : ''}>${esc(PLAN.label(x))}${c.periods[x]?.closed ? ' · закрыт' : ''}</option>`).join('')}</select></label>
@@ -150,30 +160,32 @@ EXT_PAGES.pay = async el => {
     ${!D ? '<p class="mut">⚠ Нет баланса LINKO за этот период — собранные деньги, процент и бонус = 0.</p>' : !D.final && end < UI.localDate(Date.now()) ? '<p class="mut">⚠ Итогового баланса за этот период (с оплатами 16-го) ещё нет — сбор по последнему балансу периода.</p>' : ''}
     <div class="kpis">
       ${UI.tile('К выплате всего', rate ? PAY.sum(tot('total')) : 'нужен курс', { sub: rows.length + ' чел.' + (rate ? '' : ' · впишите курс $'), hero: true })}
-      ${UI.tile('Фикс + % + бонус', PAY.usd(tot('usd')), { sub: rate ? '≈ ' + PAY.sum(tot('usd') * rate) : 'нужен курс' })}
+      ${UI.tile('Фикс + % + бонус', PAY.usd(tot('usd')) + (totFixUzs ? ' + ' + PAY.sum(totFixUzs) : ''), { sub: rate ? '≈ ' + PAY.sum(tot('usd') * rate + totFixUzs) : 'нужен курс' })}
       ${UI.tile('Газ / метан', PAY.sum(tot('fuel')), { sub: f(tot('km')) + ' км' })}
       ${UI.tile('Авансы', PAY.sum(tot('adv')), { sub: 'вычтены', tone: tot('adv') ? 'warn' : '' })}
       ${UI.tile('Штрафы', PAY.sum(tot('fine')), { sub: f(tot('fineMin')) + ' мин опозданий', tone: tot('fine') ? 'bad' : 'good' })}
     </div>
     <div class="grid">
     ${UI.panel('Ведомость', `<div class="tscroll"><table><thead><tr><th>Сотрудник</th><th class="n">Дней</th><th class="n">Фикс</th><th class="n">Собрано</th><th class="n">%</th><th class="n">Бонус</th><th class="n">Км</th><th class="n">Газ</th><th class="n">Авансы</th><th class="n">Штраф</th><th class="n">Прочее</th><th class="n">К выплате</th><th></th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td><b>${esc(r.name)}</b><div class="mut" style="font-size:12px">${esc(PAY.ROLE[r.role] || r.role)}${p.voucher === r.name ? ' · 🎁 ваучер' : ''}</div></td>
+      ${rows.map(r => `<tr><td><b>${esc(r.name)}</b><div class="mut" style="font-size:12px">${esc(PAY.ROLE[r.role] || r.role)}${PAY.hasV(p, r.name) ? ' · 🎁 ваучер' : ''}</div></td>
         <td class="n">${closed ? f(r.paidDays) : `<input data-pyw="${esc(r.name)}" type="number" min="0" max="31" step="0.5" value="${p.worked[r.name] ?? (r.auto ?? r.days)}" style="width:58px;text-align:right" title="${r.auto != null ? 'по табелю: ' + r.auto + ' дн.' : 'нет в табеле — впишите вручную'}">`}<small class="mut"> / ${r.days}</small>${r.auto != null && p.worked[r.name] != null && Number(p.worked[r.name]) !== r.auto ? '<div class="mut" style="font-size:11px">табель: ' + r.auto + '</div>' : ''}</td>
-        <td class="n">${PAY.usd(r.fix)}</td><td class="n">${r.collected ? PAY.usd(r.collected) : '—'}</td><td class="n">${r.pct ? PAY.usd(r.pct) : '—'}</td><td class="n">${r.bonus ? '<b>' + PAY.usd(r.bonus) + '</b>' : '—'}</td>
+        <td class="n">${r.fixCur === 'сум' ? f(r.fixUzs) + ' <small class="mut">сум</small>' : PAY.usd(r.fix)}</td><td class="n">${r.collected ? PAY.usd(r.collected) : '—'}</td><td class="n">${r.pct ? PAY.usd(r.pct) : '—'}</td><td class="n">${r.bonus ? '<b>' + PAY.usd(r.bonus) + '</b>' : '—'}</td>
         <td class="n">${closed ? f(r.km) : `<input data-pyk="${esc(r.name)}" type="number" min="0" step="10" value="${p.km[r.name] || ''}" placeholder="0" style="width:72px;text-align:right">`}</td>
-        <td class="n">${r.fuel ? f(r.fuel) : '—'}</td><td class="n ${r.adv ? 'neg' : ''}">${r.adv ? '−' + f(r.adv) : '—'}</td><td class="n ${r.fine ? 'neg' : ''}">${r.fine ? '−' + f(r.fine) : '—'}</td><td class="n">${r.extra ? (r.extra > 0 ? '+' : '−') + f(Math.abs(r.extra)) : '—'}</td>
+        <td class="n">${closed ? (r.fuel ? f(r.fuel) : '—') : `<input data-pyg="${esc(r.name)}" type="number" min="0" step="10000" value="${p.gas[r.name] ?? ''}" placeholder="${r.fuelAuto ? Math.round(r.fuelAuto) : 0}" style="width:100px;text-align:right" title="Пусто — по км × ставка; впишите свою сумму, чтобы заменить">${r.gasSet ? '<div class="mut" style="font-size:11px">по км: ' + f(r.fuelAuto) + '</div>' : ''}`}</td>
+        <td class="n ${r.adv ? 'neg' : ''}">${r.adv ? '−' + f(r.adv) : '—'}</td>
+        <td class="n ${r.fine ? 'neg' : ''}">${closed ? (r.fine ? '−' + f(r.fine) : '—') : `<input data-pyf="${esc(r.name)}" type="number" min="0" step="1000" value="${p.fine[r.name] ?? ''}" placeholder="${r.fineAuto ? Math.round(r.fineAuto) : 0}" style="width:90px;text-align:right" title="Пусто — по опозданиям из «Дисциплины»; 0 — простить; или впишите свою сумму">${r.fineMin || r.fineSet ? '<div class="mut" style="font-size:11px">' + (r.fineMin ? f(r.fineMin) + ' мин' : '') + (r.fineSet ? ' · авто ' + f(r.fineAuto) : '') + '</div>' : ''}`}</td><td class="n">${r.extra ? (r.extra > 0 ? '+' : '−') + f(Math.abs(r.extra)) : '—'}</td>
         <td class="n">${rate ? `<b>${f(r.total)}</b><div class="mut" style="font-size:11px">≈ ${PAY.usd(r.total / rate)}</div>` : '<span class="mut">нужен курс</span>'}</td><td><button class="btn gray sm" data-pyopen="${esc(r.name)}" type="button">${closed ? 'Лист' : 'Авансы, лист'}</button></td></tr>`).join('')}
-      <tr><td><b>Итого</b></td><td></td><td class="n"><b>${PAY.usd(tot('fix'))}</b></td><td class="n"><b>${PAY.usd(tot('collected'))}</b></td><td class="n"><b>${PAY.usd(tot('pct'))}</b></td><td class="n"><b>${PAY.usd(tot('bonus'))}</b></td><td class="n"><b>${f(tot('km'))}</b></td><td class="n"><b>${f(tot('fuel'))}</b></td><td class="n"><b>${f(tot('adv'))}</b></td><td class="n"><b>${f(tot('fine'))}</b></td><td class="n"><b>${f(tot('extra'))}</b></td><td class="n"><b>${rate ? f(tot('total')) : '—'}</b></td><td></td></tr></tbody></table></div>`,
+      <tr><td><b>Итого</b></td><td></td><td class="n"><b>${PAY.usd(rows.reduce((s, r) => s + fixUsdOf(r), 0))}</b>${totFixUzs ? '<div><b>' + f(totFixUzs) + '</b> <small class="mut">сум</small></div>' : ''}</td><td class="n"><b>${PAY.usd(tot('collected'))}</b></td><td class="n"><b>${PAY.usd(tot('pct'))}</b></td><td class="n"><b>${PAY.usd(tot('bonus'))}</b></td><td class="n"><b>${f(tot('km'))}</b></td><td class="n"><b>${f(tot('fuel'))}</b></td><td class="n"><b>${f(tot('adv'))}</b></td><td class="n"><b>${f(tot('fine'))}</b></td><td class="n"><b>${f(tot('extra'))}</b></td><td class="n"><b>${rate ? f(tot('total')) : '—'}</b></td><td></td></tr></tbody></table></div>`,
       { cls: 'w12', sub: `Фикс = фикс / ${p.days} дн. × дней на работе (по табелю «Дисциплины»: отчёт в LINKO = 1, полдня = 0,5, командировка = 1; больничный, отпросился, невыход не оплачиваются; число можно поправить). Собрано — «Оплачено» из баланса LINKO за период${D ? ' (баланс на ' + UI.dateRu(D.at) + ')' : ''}. Суммы — в сумах по курсу; «≈ $» — для сравнения.` })}
-    ${UI.panel('🎁 Ваучер в ресторан', noLate.length ? `<p class="mut" style="margin-top:0">Без опозданий и невыходов за период: ${noLate.length}. Выберите одного — ему придёт поздравление вместе с расчётом (ваучер ${PAY.sum(c.voucher)}, деньгами не выплачивается).</p>
-      <div class="bar" style="flex-wrap:wrap">${noLate.map(r => `<label style="display:flex;gap:6px;align-items:center"><input type="radio" name="pyV" value="${esc(r.name)}" ${p.voucher === r.name ? 'checked' : ''} ${closed ? 'disabled' : ''}> ${esc(r.name)}</label>`).join('')}${closed ? '' : '<label style="display:flex;gap:6px;align-items:center"><input type="radio" name="pyV" value="" ' + (!p.voucher ? 'checked' : '') + '> никому</label>'}</div>` : '<p class="mut" style="margin:0">В этом периоде нет агентов без опозданий и невыходов.</p>', { cls: 'w6' })}
+    ${UI.panel('🎁 Ваучер в ресторан', `<p class="mut" style="margin-top:0">Отметьте, кому дать ваучер (${PAY.sum(c.voucher)}, деньгами не выплачивается) — им придёт поздравление вместе с расчётом. «✓ без опозданий» — подсказка: за период ни опозданий, ни невыходов.</p>
+      <div style="display:flex;flex-direction:column;gap:4px">${rows.map(r => `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-pyv="${esc(r.name)}" ${PAY.hasV(p, r.name) ? 'checked' : ''} ${closed ? 'disabled' : ''}> ${esc(r.name)}${noLate.has(r.name) ? ' <span class="pos" style="font-size:12px">✓ без опозданий</span>' : ''}</label>`).join('')}</div>`, { cls: 'w6' })}
     ${UI.panel('Бонус за сбор', `<div class="tscroll"><table><thead><tr><th class="n">Собрал от, $</th><th class="n">Бонус, $</th><th></th></tr></thead><tbody>${c.bonus.map((b, i) => `<tr><td class="n"><input data-pyb="${i}" data-k="0" type="number" min="0" step="1000" value="${b[0]}" style="width:100px;text-align:right"></td><td class="n"><input data-pyb="${i}" data-k="1" type="number" min="0" step="10" value="${b[1]}" style="width:80px;text-align:right"></td><td><button class="btn gray sm" data-pybdel="${i}" type="button">✕</button></td></tr>`).join('')}</tbody></table></div>
       <div class="bar" style="flex-wrap:wrap"><button class="btn gray sm" id="pyBAdd" type="button">＋ ступень</button><label class="mut">дальше + <input id="pyBStep" type="number" min="0" step="10" value="${c.bonusStep}" style="width:70px"> $ за каждые <input id="pyBEvery" type="number" min="1000" step="1000" value="${c.bonusEvery}" style="width:90px"> $</label><label class="mut">Ваучер, сум <input id="pyVSum" type="number" min="0" step="10000" value="${c.voucher}" style="width:110px"></label></div>`,
       { cls: 'w6', sub: 'Бонус получают те, у кого в условиях стоит «бонус». Пример: собрал $25 000 → $100, $64 000 → $500, дальше по шагу.' })}
-    ${UI.panel('Сотрудники и условия', `<div class="tscroll"><table><thead><tr><th>В ведомости</th><th>Сотрудник</th><th>Должность</th><th class="n">Фикс, $</th><th class="n">% со сбора</th><th>Бонус</th><th class="n">Газ, сум/км</th><th>Штрафы</th><th>Команда (для руководителя)</th></tr></thead><tbody>
+    ${UI.panel('Сотрудники и условия', `<div class="tscroll"><table><thead><tr><th>В ведомости</th><th>Сотрудник</th><th>Должность</th><th class="n">Фикс</th><th class="n">% со сбора</th><th>Бонус</th><th class="n">Газ, сум/км</th><th>Штрафы</th><th>Команда (для руководителя)</th></tr></thead><tbody>
       ${staffAll.map(([n, s]) => `<tr><td><input type="checkbox" data-pys="${esc(n)}" data-k="on" ${s.on !== false ? 'checked' : ''}></td><td>${esc(n)}</td>
         <td><select data-pys="${esc(n)}" data-k="role">${Object.entries(PAY.ROLE).map(([k, t]) => `<option value="${k}" ${s.role === k ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
-        <td class="n"><input data-pys="${esc(n)}" data-k="fix" type="number" min="0" step="10" value="${s.fix ?? 0}" style="width:70px;text-align:right"></td>
+        <td class="n" style="white-space:nowrap"><input data-pys="${esc(n)}" data-k="fix" type="number" min="0" step="${s.fixCur === 'сум' ? 100000 : 10}" value="${s.fix ?? 0}" style="width:${s.fixCur === 'сум' ? 110 : 70}px;text-align:right"> <select data-pys="${esc(n)}" data-k="fixCur"><option value="$" ${s.fixCur !== 'сум' ? 'selected' : ''}>$</option><option value="сум" ${s.fixCur === 'сум' ? 'selected' : ''}>сум</option></select></td>
         <td class="n"><input data-pys="${esc(n)}" data-k="pct" type="number" min="0" max="100" step="0.1" value="${s.pct ?? 0}" style="width:60px;text-align:right"></td>
         <td><input type="checkbox" data-pys="${esc(n)}" data-k="bonus" ${s.bonus ? 'checked' : ''}></td>
         <td class="n"><input data-pys="${esc(n)}" data-k="fuel" type="number" min="0" step="50" value="${s.fuel ?? 0}" style="width:70px;text-align:right"></td>
@@ -185,8 +197,8 @@ EXT_PAGES.pay = async el => {
 
   const redraw = () => EXT_PAGES.pay(el), save = () => { CRMLocal.touch(); redraw(); };
   $('#pyFrom', body).onchange = e => { PAY.from = e.target.value; redraw(); };
-  $('#pyXls', body).onclick = () => UI.csv('зарплата-' + from, [['Сотрудник', 'Должность', 'Дней на работе', 'Из дней', 'Фикс, $', 'Собрано, $', 'Процент, $', 'Бонус, $', 'Курс', 'Км', 'Газ, сум', 'Авансы, сум', 'Штраф, сум', 'Прочее, сум', 'К выплате, сум', 'Ваучер'],
-    ...rows.map(r => [r.name, PAY.ROLE[r.role] || r.role, r.paidDays, r.days, Math.round(r.fix * 100) / 100, Math.round(r.collected), Math.round(r.pct * 100) / 100, r.bonus, rate, r.km, Math.round(r.fuel), Math.round(r.adv), Math.round(r.fine), Math.round(r.extra), r.total, p.voucher === r.name ? c.voucher : ''])]);
+  $('#pyXls', body).onclick = () => UI.csv('зарплата-' + from, [['Сотрудник', 'Должность', 'Дней на работе', 'Из дней', 'Фикс, $', 'Фикс, сум', 'Собрано, $', 'Процент, $', 'Бонус, $', 'Курс', 'Км', 'Газ, сум', 'Авансы, сум', 'Штраф, сум', 'Прочее, сум', 'К выплате, сум', 'Ваучер'],
+    ...rows.map(r => [r.name, PAY.ROLE[r.role] || r.role, r.paidDays, r.days, Math.round(fixUsdOf(r) * 100) / 100, r.fixUzs || 0, Math.round(r.collected), Math.round(r.pct * 100) / 100, r.bonus, rate, r.km, Math.round(r.fuel), Math.round(r.adv), Math.round(r.fine), Math.round(r.extra), r.total, PAY.hasV(p, r.name) ? c.voucher : ''])]);
   body.querySelectorAll('[data-pyopen]').forEach(b => b.onclick = () => PAY.dialog(rows.find(r => r.name === b.dataset.pyopen), from, closed, redraw));
   if (closed) { $('#pyReopen', body).onclick = () => { if (!confirm('Открыть ведомость заново? Суммы снова будут считаться; расчётные листы у сотрудников останутся до следующего закрытия.')) return; delete p.closed; delete p.rows; save(); }; }
   else {
@@ -195,7 +207,10 @@ EXT_PAGES.pay = async el => {
     $('#pyCbu', body).onclick = async () => { try { const r = await PAY.rateCbu(); p.rate = r.rate; p.rateAt = r.date; toast('Курс ЦБ на ' + r.date + ': ' + r.rate); save(); } catch (e) { toast(e.message); } };
     body.querySelectorAll('[data-pyw]').forEach(i => i.onchange = () => { const r = rows.find(x => x.name === i.dataset.pyw), v = i.value === '' ? null : Number(i.value); if (v === null || v === r.auto) delete p.worked[i.dataset.pyw]; else p.worked[i.dataset.pyw] = v; save(); });
     body.querySelectorAll('[data-pyk]').forEach(i => i.onchange = () => { const v = Number(i.value) || 0; if (v) p.km[i.dataset.pyk] = v; else delete p.km[i.dataset.pyk]; save(); });
-    body.querySelectorAll('input[name="pyV"]').forEach(i => i.onchange = () => { p.voucher = i.value || ''; save(); });
+    // a typed sum replaces the counted one; an empty box goes back to the count
+    const own = (box, attr) => body.querySelectorAll(`[data-${attr}]`).forEach(i => i.onchange = () => { const n = i.dataset[attr]; if (i.value === '') delete box[n]; else box[n] = Math.max(0, Number(i.value) || 0); save(); });
+    own(p.gas, 'pyg'); own(p.fine, 'pyf');
+    body.querySelectorAll('[data-pyv]').forEach(i => i.onchange = () => { const v = new Set(p.vouchers); if (i.checked) v.add(i.dataset.pyv); else v.delete(i.dataset.pyv); p.vouchers = [...v]; save(); });
     $('#pyClose', body).onclick = async () => {
       if (!rate) return toast('Сначала впишите курс доллара');
       if (!confirm(`Закрыть ведомость ${PLAN.label(from)}? Суммы зафиксируются, каждому с Telegram придёт расчётный лист.`)) return;
@@ -213,6 +228,7 @@ EXT_PAGES.pay = async el => {
     const s = c.staff[i.dataset.pys], k = i.dataset.k;
     if (k === 'on' || k === 'bonus' || k === 'fines') s[k] = i.checked;
     else if (k === 'role') { s.role = i.value; if (i.value === 'lead' && !s.team) s.team = []; }
+    else if (k === 'fixCur') s.fixCur = i.value === 'сум' ? 'сум' : '$';
     else s[k] = Number(i.value) || 0;
     save();
   });
@@ -224,7 +240,7 @@ EXT_PAGES.pay = async el => {
 PAY.dialog = (r, from, closed, redraw) => {
   if (!r) return;
   const p = PAY.per(from), lines = closed && r.lines ? r.lines : PAY.slip(r, from, p);
-  const m = modal(`<h3 style="margin:0 0 4px">${esc(r.name)}</h3><p class="mut" style="margin:0 0 10px">${esc(PAY.ROLE[r.role] || r.role)} · ${esc(PLAN.label(from))}${p.voucher === r.name ? ' · 🎁 ваучер в ресторан' : ''}</p>
+  const m = modal(`<h3 style="margin:0 0 4px">${esc(r.name)}</h3><p class="mut" style="margin:0 0 10px">${esc(PAY.ROLE[r.role] || r.role)} · ${esc(PLAN.label(from))}${PAY.hasV(p, r.name) ? ' · 🎁 ваучер в ресторан' : ''}</p>
     <table style="width:100%">${lines.map(([a, b]) => `<tr><td>${esc(a)}</td><td class="n" style="white-space:nowrap">${esc(b)}</td></tr>`).join('')}<tr><td><b>К выплате</b></td><td class="n"><b>${PAY.sum(r.total)}</b></td></tr></table>
     ${closed ? '' : `<h4 style="margin:14px 0 6px">Авансы</h4><div id="pyAdvL"></div>
       <div class="bar" style="flex-wrap:wrap"><input id="pyAD" type="date" value="${UI.localDate(Date.now())}"><input id="pyAS" type="number" min="0" step="1000" placeholder="сумма" style="width:120px"><select id="pyAC"><option value="сум">сум</option><option value="$">$</option></select><input id="pyAN" placeholder="комментарий" style="flex:1;min-width:120px"><button class="btn gray sm" id="pyAAdd" type="button">＋ Аванс</button></div>
