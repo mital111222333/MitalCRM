@@ -42,9 +42,44 @@ window.LIVE = (() => {
     return out;
   }
 
-  // today's live sections, all at once; a section that failed keeps its previous live rows
+  // the client balance of the plan period (the LINKO page «Статистика → Клиенты»), straight from LINKO every 30 seconds.
+  // Kept in memory only (LIVE.bal), never in the synced state: the 5-minute auto-loader still writes the official balance.
+  // Every client whose numbers moved since the previous check gets an entry in LIVE.feed (who paid / bought / returned, and when).
+  let bal = null, balErr = '';
+  const feed = [];
+  const BALQ = 'only_out_stock=False&is_only_delivered=False&last_status=False&exclude_closed_clients=false&only_payment_with_invoice=false';
+  const BALF = ['sold', 'ret', 'paid', 'oin', 'oout'];
+  async function pullBal(day) {
+    const from = window.PLAN ? PLAN.from(day) : day.slice(0, 8) + '01', at = new Date().toISOString();
+    const list = await rows(`stats/client_balances_expanded/?${BALQ}&begin_date=${from}&end_date=${day}&page=1&page_size=500`);
+    const cur = c => { const o = {}; for (const x of c.currencies || []) o[String(x.name || '').toUpperCase()] = { b0: +x.begin_balance || 0, sold: +x.order || 0, ret: +x.order_return || 0, paid: +x.payment || 0, oin: +x.none_type_plus || 0, oout: +x.none_type_minus || 0, b1: +x.end_balance || 0 }; return o; };
+    const rs = list.filter(c => c && typeof c === 'object' && 'currencies' in c).map(c => ({ no: c.client_id ?? c.id, id: c.id, name: String(c.name || '').trim(), cur: cur(c) }));
+    const s = JSON.stringify(rs);
+    if (bal && bal.s === s && bal.from === from) { bal.at = at; return false; }
+    if (bal && bal.from === from) { // what moved since the previous check
+      const was = new Map(bal.rows.map(r => [r.id, r]));
+      for (const r of rs) for (const [k, v] of Object.entries(r.cur)) {
+        const p = was.get(r.id)?.cur[k] || { sold: 0, ret: 0, paid: 0, oin: 0, oout: 0, b1: 0 }, d = {};
+        for (const f of BALF) if (Math.abs(v[f] - p[f]) >= 0.005) d[f] = v[f] - p[f];
+        if (Object.keys(d).length) feed.unshift({ at, no: r.no, name: r.name, cur: k, d, b1: v.b1, was: p.b1 });
+      }
+      feed.splice(300);
+    } else feed.length = 0; // first check or a new plan period: nothing to compare with
+    bal = { at, from, to: day, rows: rs, s };
+    return true;
+  }
+
+  // the balance and today's sections at the same time; true when anything new came
   async function pull() {
     if (!key()) return false;
+    const [j, b] = await Promise.allSettled([pullJobs(), pullBal(UI.localDate(Date.now()))]);
+    if (b.status === 'rejected') balErr = String(b.reason?.message || b.reason); else balErr = '';
+    if (j.status === 'rejected') throw j.reason;
+    return j.value || (b.status === 'fulfilled' && b.value);
+  }
+
+  // today's live sections, all at once; a section that failed keeps its previous live rows
+  async function pullJobs() {
     const jobs = (await LX.load()).filter(j => j.live), day = UI.localDate(Date.now()), at = new Date().toISOString();
     if (!jobs.length) return false;
     const prev = LX.live && LX.live.day === day ? LX.live : null, data = {}, date = {}, src = {};
@@ -134,5 +169,5 @@ window.LIVE = (() => {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { tick(); start(); } });
   addEventListener('load', () => { setTimeout(tick, 6000); start(); setInterval(() => { paint(); if (owed && !busyUser()) redraw(); }, 5000); });
 
-  return { tick, pull, api, rows, key, paint, redraw, status: () => ({ okAt, err, live: LX.live }) };
+  return { tick, pull, api, rows, key, paint, redraw, bal: () => bal, feed: () => feed, balErr: () => balErr, status: () => ({ okAt, err, live: LX.live, balAt: bal?.at, balErr }) };
 })();
