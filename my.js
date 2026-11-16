@@ -1,4 +1,4 @@
-// «Мой день» (Сегодня → Мой день) and «Очередь сбора» (Деньги → Дебиторка → Очередь сбора).
+// «Мой день» (Сегодня → Мой день; it also carries the former «Отчёт дня»: period KPIs, signals, agents' plan/fact table) and «Очередь сбора» (Деньги → Дебиторка → Очередь сбора).
 // Мой день: the one morning screen — who promised to pay today, who broke a promise, who to push today, which agent is behind
 // the pace, what is running out. Everything comes from data the CRM already has (REP.load, REMIND.lists, INST.state).
 // Очередь сбора: per agent, the debtors in the order they should be pushed today. Priority = overdue money first (61+ days ×3,
@@ -137,9 +137,10 @@ EXT_PAGES.my = async el => {
       <small>💰 сбор ${pm === null ? 'план не задан' : Math.round(pm * 100) + '%'}${a.need_collect_day > 0 ? ` · сегодня собрать <b>${m(a.need_collect_day)}</b>` : ''}</small>${bar(pm, 'Сбор')}</div>`;
   };
   let abc = []; try { abc = ABC.calc(d).rows.filter(c => c.down && c.cls !== 'C').sort((a, b) => b.lost - a.lost).slice(0, 5); } catch { /* optional */ }
+  const R = REP.day(d);
   const low = (d.low?.items || []).filter(i => i.status && i.status !== 'ok').slice(0, 6);
   el.innerHTML = `<div class="page-head"><div><h2>Мой день</h2><div class="sub">${UI.dateRu(t0)} · данные LINKO на ${UI.dateRu(d.upload.taken_at)}</div></div>
-      <div class="actions"><a class="btn gray" href="#/dayplan">План агентов</a><a class="btn" href="#/collect">Очередь сбора</a></div></div>
+      <div class="actions no-print">${REP.dayTools}<a class="btn gray" href="#/dayplan">План агентов</a><a class="btn" href="#/collect">Очередь сбора</a></div></div>
     ${REP.hero(d)}
     <div class="kpis">
       ${UI.tile('Сегодня собрать', m(needC), { sub: needC > 0 ? 'чтобы закрыть план сбора к концу периода' : 'план сбора закрыт или не задан' })}
@@ -148,6 +149,7 @@ EXT_PAGES.my = async el => {
       ${D.hasB ? UI.tile('Просрочено (31+ дней)', m(sum(over, 'over')), { sub: `${over.length} ${UI.plural(over.length, 'клиент', 'клиента', 'клиентов')}`, tone: over.length ? 'warn' : '' })
         : UI.tile('30+ дней без оплаты', m(sum(stale, 'debt')), { sub: `${stale.length} ${UI.plural(stale.length, 'клиент', 'клиента', 'клиентов')} с долгом`, tone: stale.length ? 'warn' : '' })}
       ${UI.tile('Сегодня продать', m(needS), { sub: needS > 0 ? 'чтобы закрыть план продаж' : 'план продаж закрыт или не задан' })}
+      ${R.kpis}
     </div>
     <div class="grid">
       ${UI.panel(`Дожать сегодня — топ-${todo.length}`, todo.length ? `<div id="myQ">${todo.map(MY.row).join('')}</div><div class="bar" style="margin:12px 0 0"><span class="mut">Отработано сегодня: ${doneN} из ${rows.length}</span><span class="spacer"></span><a class="btn gray sm" href="#/collect">Вся очередь по агентам →</a></div>` : '<div class="empty">Все должники на сегодня отработаны 👏</div>', { cls: 'w7', sub: 'Сначала просрочка и сорванные обещания. Отметьте результат одним нажатием.' })}
@@ -159,7 +161,11 @@ EXT_PAGES.my = async el => {
         ${abc.length ? UI.panel('Ключевые клиенты просели', abc.map(c => li(c, '−' + m(c.lost), ` · класс ${c.cls} · обычно ${m(c.avg)} за период`)).join('') + '<div class="bar" style="margin:10px 0 0"><span class="spacer"></span><a class="btn gray sm" href="#/abc">ABC клиентов →</a></div>', { cls: '', sub: 'Покупают заметно меньше обычного — поручите агенту визит' }) : ''}
         ${low.length ? UI.panel('Склад: заканчивается', low.map(i => `<div class="my-li"><span>${esc(i.name || i.product || '')}${i.warehouse ? ` <span class="mut">${esc(i.warehouse)}</span>` : ''}</span><b class="${i.available <= 0 ? 'neg' : ''}">${i.available <= 0 ? 'нет' : UI.fmt0(i.available)}${i.days_left != null && i.available > 0 ? ` · ${Math.round(i.days_left)} дн.` : ''}</b></div>`).join('') + '<div class="bar" style="margin:10px 0 0"><span class="spacer"></span><a class="btn gray sm" href="#/whlow">Весь список →</a></div>', { cls: '' }) : ''}
       </div>
+      ${R.signals}
+      ${R.signals.trim() ? R.insights : R.insights.replace("cls: 'w5'", "cls: 'w12'")}
+      ${R.table}
     </div>`;
+  REP.bindDayTools(el, d);
   MY.bind(el, rows, () => EXT_PAGES.my(el));
 };
 

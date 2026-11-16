@@ -4,7 +4,7 @@
 window.EXT_PAGES = window.EXT_PAGES || {};
 
 const REP = {
-  TABS: [['rday', 'Отчёт дня'], ['signals', '🚨 Сигналы'], ['rdebt', 'Дебиторка'], ['rsleep', 'Спящие клиенты'], ['rdays', 'По дням и неделям'], ['rdyn', 'Динамика по периодам'], ['tg', 'Telegram агентам']],
+  TABS: [['my', 'Мой день'], ['signals', '🚨 Сигналы'], ['rdebt', 'Дебиторка'], ['rsleep', 'Спящие клиенты'], ['rdays', 'По дням и неделям'], ['rdyn', 'Динамика по периодам'], ['tg', 'Telegram агентам']],
   BUCKETS: [['b7', 'до 7 дней', 'var(--c3)'], ['b30', '8–30 дней', 'var(--c4)'], ['b60', '31–60 дней', 'var(--c2)'], ['b99', 'больше 60 дней', 'var(--c8)']],
   MONTHS: ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'],
   today: () => UI.localDate(Date.now()),
@@ -130,22 +130,19 @@ REP.hero = d => {
   </section>`;
 };
 
-// ---------- Отчёт дня ----------
-EXT_PAGES.rday = async el => {
-  const d = await REP.load(), body = REP.shell(el, 'rday', d, '<button class="btn gray" id="rCopy">Скопировать текст</button><button class="btn gray" id="rPrint">Печать / PDF</button><button class="btn" id="rSend">Отправить в Telegram</button>');
-  if (d.empty) return REP.empty(body);
+// ---------- Отчёт дня: its blocks now live on «Мой день» (my.js); the old #/rday link opens «Мой день» ----------
+REP.day = d => {
   const T = agTotals(d), fc = d.forecast, pace = agPace(d), f = UI.fmt0, col = agColors(d);
-  const call = d.clients.filter(c => c.debt > 0).sort((a, b) => b.score - a.score).slice(0, 12);
   const od = d.tasks.filter(t => t.status === 'overdue'), open = d.tasks.filter(t => t.status === 'work');
   const lowN = d.low ? (d.low.counts.out || 0) + (d.low.counts.low || 0) + (d.low.counts.blocked || 0) : 0;
-  body.innerHTML = `${REP.hero(d)}<div class="kpis">
+  return {
+    kpis: `
     ${UI.tile('Долг клиентов', '$' + f(T.debt), { sub: `должников ${T.debtors}`, delta: UI.delta(T.d_debt, { inverse: true }), tone: 'warn' })}
     ${UI.tile('АКБ / ОКБ', `${T.akb} / ${T.okb}`, { sub: `активны ${UI.pct(T.akb, T.okb) ?? 0}%` })}
     ${(() => { const pc = PREV.compare(d); if (!pc) return ''; return pc.missing ? UI.tile(`К прошлому периоду`, '—', { sub: `загрузите баланс прошлого периода (с ${UI.dateRu(pc.prevFrom)}) — появится сравнение на ${pc.n}-й день` }) : UI.tile(`К прошлому периоду, ${pc.n}-й день`, `$${f(T.sold)}`, { sub: `тогда продано $${f(pc.total.sold)} ${PREV.chip(T.sold, pc.total.sold)}<br>собрано $${f(T.paid)} / тогда $${f(pc.total.paid)} ${PREV.chip(T.paid, pc.total.paid)}`, hint: `Сравнение с периодом от ${UI.dateRu(pc.prevFrom)}: загрузка на ${UI.dateRu(pc.prevDate)} (${pc.prevN}-й день)` }); })()}
     ${T.pool ? UI.tile('Сбор к ' + UI.dm(fc.period_end || d.upload.period_to), '$' + f(T.paid + (T.more_pool || 0)), { sub: `собрано ${f(T.paid)} + ещё соберётся ${f(T.more_pool || 0)} · ${UI.pct(T.paid + (T.more_pool || 0), T.pool)}% пула`, tone: T.paid + (T.more_pool || 0) >= T.pool ? 'good' : 'warn' }) : ''}
-    ${T.proj_sold ? UI.tile('Прогноз продаж', '≈ $' + f(T.proj_sold), { sub: T.plan ? `${UI.pct(T.proj_sold, T.plan)}% плана при текущем темпе` : '', tone: T.plan && T.proj_sold < T.plan * 0.9 ? 'warn' : 'good' }) : ''}
-  </div>
-  <div class="grid">
+    ${T.proj_sold ? UI.tile('Прогноз продаж', '≈ $' + f(T.proj_sold), { sub: T.plan ? `${UI.pct(T.proj_sold, T.plan)}% плана при текущем темпе` : '', tone: T.plan && T.proj_sold < T.plan * 0.9 ? 'warn' : 'good' }) : ''}`,
+    table: `
     ${UI.panel('Агенты: план и факт', `<div class="scroll" style="max-height:none"><table class="plan2"><thead>
       <tr><th rowspan="2">Агент</th><th colspan="5" class="grp">🛒 Продажи</th><th colspan="6" class="grp">💰 Сбор денег</th><th rowspan="2" class="n">Долг клиентов</th><th rowspan="2" class="n">Задания</th></tr>
       <tr><th class="n">План</th><th class="n">Продано</th><th class="n">%</th><th class="n">Осталось</th><th class="n">Нужно / день</th><th class="n">Пул</th><th class="n">Собрано</th><th class="n">%</th><th class="n">Осталось</th><th class="n">Ещё соберёт</th><th class="n">Итого к ${UI.dm(fc.period_end || d.upload.period_to)}</th></tr></thead><tbody>${d.agents.map(a => {
@@ -156,16 +153,21 @@ EXT_PAGES.rday = async el => {
         <td class="n">${a.pool ? f(a.pool) : '<span class="mut">—</span>'}</td><td class="n"><b>${f(a.paid)}</b>${a.d_paid ? `<br><small class="pos">+${f(a.d_paid)} за день</small>` : ''}</td><td class="n">${pp === null ? '—' : UI.pill(tone(pp), pp + '%')}</td><td class="n">${a.pool ? f(Math.max(0, a.pool - a.paid)) : '—'}${a.need_collect_day ? `<br><small>${f(a.need_collect_day)}/день</small>` : ''}</td><td class="n">${mp ? f(mp) : '<span class="mut">—</span>'}</td><td class="n"><b>${f(tot)}</b>${pt !== null ? `<br>${UI.pill(pt >= 100 ? 'good' : pt >= 90 ? 'info' : 'warn', pt + '% пула')}` : ''}</td>
         <td class="n">${f(a.debt)}<br><small>${a.debtors} кл.</small></td><td class="n">${myOd ? UI.pill('crit', myOd + ' просроч.') : ''}${myOpen ? ' ' + UI.pill('info', myOpen + ' в работе') : ''}${!myOd && !myOpen ? '<span class="mut">—</span>' : ''}</td></tr>`;
     }).join('')}</tbody><tfoot><tr><td><b>Итого</b></td><td class="n"><b>${f(T.plan)}</b></td><td class="n"><b>${f(T.sold)}</b></td><td class="n"><b>${UI.pct(T.sold, T.plan) ?? '—'}${T.plan ? '%' : ''}</b></td><td class="n"><b>${f(Math.max(0, T.plan - T.sold))}</b></td><td></td><td class="n"><b>${f(T.pool)}</b></td><td class="n"><b>${f(T.paid)}</b></td><td class="n"><b>${UI.pct(T.paid, T.pool) ?? '—'}${T.pool ? '%' : ''}</b></td><td class="n"><b>${f(Math.max(0, T.pool - T.paid))}</b></td><td class="n"><b>${f(T.more_pool || 0)}</b></td><td class="n"><b>${f(T.paid + (T.more_pool || 0))}</b>${T.pool ? `<br><small>${UI.pct(T.paid + (T.more_pool || 0), T.pool)}% пула</small>` : ''}</td><td class="n"><b>${f(T.debt)}</b></td><td></td></tr></tfoot></table></div>
-      <p class="mut" style="margin:10px 0 0">«Осталось» — сколько не хватает до плана. «Ещё соберёт» — ваши ожидания по клиентам до конца периода (вводятся в «Агенты → Клиенты и долги»), «Итого» = собрано + ещё соберёт.${pace !== null ? ` Цвет процента: зелёный — план выполнен, синий — по графику (прошло ${Math.round(pace * 100)}% периода), жёлтый — отстаёт, красный — сильно отстаёт.` : ''}</p>`, { cls: 'w12' })}
-    ${(() => { const sg = SIG.compute(d); return sg.length ? UI.panel(`🚨 Сигналы (${sg.length})`, `<ul class="insights">${sg.slice(0, 6).map(SIG.item).join('')}</ul>${sg.length > 6 ? `<p style="margin:8px 0 0"><a href="#/signals">Все сигналы (${sg.length}) →</a></p>` : ''}`, { cls: 'w12', sub: 'Самое срочное — нажмите на клиента или агента, чтобы открыть карточку' }) : ''; })()}
-    ${UI.panel('Что важно сегодня', `<ul class="insights">${agInsights(d).map(([k, i, t]) => `<li class="${k}"><span aria-hidden="true">${i}</span><span>${t}</span></li>`).join('')}${lowN ? `<li class="warn"><span aria-hidden="true">📦</span><span>На складе <b>${lowN}</b> товаров закончились или на исходе — <a href="#/whlow">посмотреть</a>.</span></li>` : ''}</ul>`, { cls: 'w5' })}
-    ${UI.panel('Кому звонить сегодня', call.length ? `<div class="scroll"><table><thead><tr><th>Клиент</th><th>Агент</th><th class="n">Долг</th><th class="n">Последняя оплата</th></tr></thead><tbody>${call.map(c => `<tr><td><a class="clink" data-client="${esc(c.name)}">${esc(c.name)}</a>${c.phone ? `<br><small><a href="tel:${esc(c.phone)}">${esc(c.phone)}</a></small>` : ''}</td><td>${esc(c.agent)}</td><td class="n">${f(c.debt)}</td><td class="n">${REP.pay(c)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Должников нет</div>', { cls: 'w7', sub: 'Крупный долг и давно не платили — в начале списка' })}
-  </div>`;
+      <p class="mut" style="margin:10px 0 0">«Осталось» — сколько не хватает до плана. «Ещё соберёт» — ваши ожидания по клиентам до конца периода (вводятся в «Агенты → Клиенты и долги»), «Итого» = собрано + ещё соберёт.${pace !== null ? ` Цвет процента: зелёный — план выполнен, синий — по графику (прошло ${Math.round(pace * 100)}% периода), жёлтый — отстаёт, красный — сильно отстаёт.` : ''}</p>`, { cls: 'w12', sub: 'Подробно по каждому агенту: план, факт, остаток и прогноз сбора' })}`,
+    signals: `
+    ${(() => { const sg = SIG.compute(d); return sg.length ? UI.panel(`🚨 Сигналы (${sg.length})`, `<ul class="insights">${sg.slice(0, 6).map(SIG.item).join('')}</ul>${sg.length > 6 ? `<p style="margin:8px 0 0"><a href="#/signals">Все сигналы (${sg.length}) →</a></p>` : ''}`, { cls: 'w7', sub: 'Самое срочное — нажмите на клиента или агента, чтобы открыть карточку' }) : ''; })()}`,
+    insights: `
+    ${UI.panel('Что важно сегодня', `<ul class="insights">${agInsights(d).map(([k, i, t]) => `<li class="${k}"><span aria-hidden="true">${i}</span><span>${t}</span></li>`).join('')}${lowN ? `<li class="warn"><span aria-hidden="true">📦</span><span>На складе <b>${lowN}</b> товаров закончились или на исходе — <a href="#/whlow">посмотреть</a>.</span></li>` : ''}</ul>`, { cls: 'w5' })}`,
+  };
+};
+REP.dayTools = '<button class="btn gray" id="rCopy">Скопировать текст</button><button class="btn gray" id="rPrint">Печать / PDF</button><button class="btn gray" id="rSend">Отправить в Telegram</button>';
+REP.bindDayTools = (el, d) => {
   const text = REP.teamText(d);
   $('#rCopy', el).onclick = async () => { const plain = text.replace(/<[^>]+>/g, ''); try { await navigator.clipboard.writeText(plain); toast('Текст отчёта скопирован'); } catch { prompt('Скопируйте:', plain); } };
   $('#rPrint', el).onclick = REP.print;
   $('#rSend', el).onclick = () => { location.hash = '#/tg'; };
 };
+EXT_PAGES.rday = el => { el.innerHTML = ''; location.replace('#/my'); };
 
 // ---------- График оплат клиентов: «13-500$, 14-1000$» (ext.payPlan) ----------
 const PAYPLAN = {

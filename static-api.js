@@ -150,7 +150,7 @@
   // The menu: 7 sections, 18 entries. An entry whose route opens a hub (HUBS) shows the hub's tabs above the page,
   // so related screens live together instead of as separate menu lines.
   window.EXT_MENU = {
-    'Сегодня': { '': [['Мой день', 'my'], ['Отчёт дня', 'rday'], ['Сигналы', 'signals']] },
+    'Сегодня': { '': [['Мой день', 'my'], ['Сигналы', 'signals']] },
     'Деньги': { '': [['Дебиторка', 'collect'], ['Оплаты по дням', 'lxpay'], ['Сроки и договоры', 'invo']] },
     'Команда': { '': [['Лидерборд', 'leaders'], ['Страница агента', 'agent'], ['Контроль агентов', 'disc'], ['Задания', 'atk'], ['Зарплата', 'pay']] },
     'Продажи': { '': [['Заказы по дням', 'lxday'], ['Клиенты и план', 'aclients'], ['Рост продаж', 'abc']] },

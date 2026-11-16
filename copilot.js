@@ -5,7 +5,7 @@
 // Горячая клавиша: Ctrl+J (на компьютере). Разговор общий с разделом «Аналитика → ИИ-ассистент».
 (() => {
   const PAGE_GROUP = {
-    today: ['rday', 'signals', 'home', 'overview'],
+    today: ['my', 'rday', 'signals', 'home', 'overview'],
     money: ['lxpay', 'debtprev', 'rdebt', 'lxage', 'ranalytics', 'balance', 'payments', 'cash'],
     sales: ['lxday', 'lxbrand', 'lxcross', 'lxprof', 'rsleep', 'orders', 'returns', 'rdays', 'rdyn'],
     agents: ['agents', 'agent', 'leaders', 'amap', 'aclients', 'atasks', 'aup', 'gps', 'routes'],

@@ -62,7 +62,7 @@ const REMIND = {
   },
   async sendNow() {
     const c = REMIND.conf(), tg = TG.conf(), L = REMIND.lists(); let n = 0;
-    if (!tg.token) throw new Error('Сначала подключите бота: Отчёт дня → Telegram агентам');
+    if (!tg.token) throw new Error('Сначала подключите бота: Настройки → Telegram агентам');
     const me = REMIND.text(L);
     if (!me) return 'Сегодня, завтра и просроченных обещанных оплат нет — отправлять нечего';
     const t0 = UI.localDate(Date.now()), send = async (chat, agent, text) => { if (c.fmt !== 'text') return REMIND.sendDoc(chat, await REMIND.xlsx(L, agent), `Оплаты_${UI.dm(t0).replace('.', '-')}${agent ? '_' + agent.split(' ')[0] : ''}.xlsx`, REMIND.caption(L, agent)); return TG.send(chat, text); };
@@ -89,7 +89,7 @@ const REMIND = {
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rmAg" ${c.agents ? 'checked' : ''}> Ещё и каждому агенту — список по его клиентам</label>
       </div>
       <div class="mut" style="margin:12px 0;font-size:13px">Сейчас: сегодня ${L.today.length} на $${s(L.today)} · завтра ${L.tomorrow.length} на $${s(L.tomorrow)} · не заплатили ${L.late.length}<br>
-        ${tg.token ? (tg.me?.id ? '✓ Бот подключён, ваш чат привязан' : '⚠️ Привяжите свой чат «Я (руководитель)» в Отчёт дня → Telegram агентам') : '⚠️ Бот не подключён: Отчёт дня → Telegram агентам'}</div>
+        ${tg.token ? (tg.me?.id ? '✓ Бот подключён, ваш чат привязан' : '⚠️ Привяжите свой чат «Я (руководитель)» в Настройки → Telegram агентам') : '⚠️ Бот не подключён: Настройки → Telegram агентам'}</div>
       <details style="font-size:13px;margin-bottom:10px"><summary><b>Чтобы приходило само, даже когда CRM закрыта</b> (один раз)</summary>
         <ol class="steps" style="margin:8px 0 0"><li>Откройте ваш проект Google Apps Script с автозагрузкой из LINKO.</li><li>Слева «＋» → «Скрипт», назовите <b>remind</b>, вставьте содержимое файла <b>remind.gs</b> и сохраните.</li><li>Вверху выберите функцию <b>setupRemind</b> → «Выполнить». Придёт тестовое сообщение — значит, всё работает.</li></ol>
         <p class="mut" style="margin:6px 0 0">Ключи вписывать не нужно: скрипт берёт их из файла автозагрузки. Настройки выше он читает из CRM.</p></details>

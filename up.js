@@ -57,7 +57,7 @@ EXT_PAGES.up = async el => {
     })()}
     ${whs.map((w, i) => UI.panel('📦 Склад ' + esc(w.name), `<div class="dz sm" data-wh="${i}" tabindex="0" role="button"><b>Остатки ${esc(w.name)}</b>перетащите или нажмите</div>
       <p class="mut" style="margin-bottom:0">${when(lastWh(w.name))}</p><div data-whmsg="${i}" role="status" style="margin-top:8px"></div>`, { cls: 'w4' })).join('')}
-    ${UI.panel('Что дальше', `<div class="bar" style="margin:0"><a class="btn" href="#/rday">Отчёт дня</a><a class="btn gray" href="#/rdebt">Дебиторка</a><a class="btn gray" href="#/whlow">Что заканчивается на складе</a><a class="btn gray" href="#/ai">Спросить ИИ</a><a class="btn gray" href="#/tg">Отправить агентам</a></div>`, { cls: 'w12' })}
+    ${UI.panel('Что дальше', `<div class="bar" style="margin:0"><a class="btn" href="#/my">Мой день</a><a class="btn gray" href="#/rdebt">Дебиторка</a><a class="btn gray" href="#/whlow">Что заканчивается на складе</a><a class="btn gray" href="#/ai">Спросить ИИ</a><a class="btn gray" href="#/tg">Отправить агентам</a></div>`, { cls: 'w12' })}
   </div>`;
 
   $('#upDay', el).onchange = e => { CRMLocal.ext().planDay = +e.target.value; CRMLocal.touch(); EXT_PAGES.up(el); };
@@ -70,7 +70,7 @@ EXT_PAGES.up = async el => {
       try {
         const d = await UI.rawUpload(`/api/ag/upload?file=${encodeURIComponent(f.name)}&date=${date}&from=${pf}&to=${date}`, f);
         if (d.error) { show(box, false, '✕ ' + esc(d.error)); continue; }
-        show(box, true, `✓ ${f.name}: ${d.clients} клиентов на ${UI.dateRu(date)}, период ${UI.dateRu(pf)}–${UI.dateRu(date)}${d.created ? ` · новых клиентов ${d.created}` : ''}${d.agent_changes ? ` · сменился агент у ${d.agent_changes}` : ''}${d.replaced ? ' · заменила загрузку за этот день' : ''}. <a href="#/rday">Открыть отчёт дня →</a>`);
+        show(box, true, `✓ ${f.name}: ${d.clients} клиентов на ${UI.dateRu(date)}, период ${UI.dateRu(pf)}–${UI.dateRu(date)}${d.created ? ` · новых клиентов ${d.created}` : ''}${d.agent_changes ? ` · сменился агент у ${d.agent_changes}` : ''}${d.replaced ? ' · заменила загрузку за этот день' : ''}. <a href="#/my">Открыть «Мой день» →</a>`);
       } catch (e) { show(box, false, '✕ ' + esc(e.message)); }
     }
   });
@@ -184,7 +184,7 @@ const UPALL = {
         else lines.push(`✕ ${esc(it.f.name)}: ${esc(it.error || 'не похоже ни на баланс, ни на остатки склада')}`);
       } catch (e) { lines.push(`✕ ${esc(it.f.name)}: ${esc(e.message)}`); }
     }
-    box.className = ''; box.innerHTML = lines.map(l => `<div class="${l.startsWith('✓') ? 'pos' : l.startsWith('✕') ? 'neg' : 'mut'}">${l}</div>`).join('') + (lines.some(l => l.startsWith('✓')) ? '<div style="margin-top:8px"><a class="btn" href="#/rday">Открыть отчёт дня</a></div>' : '');
+    box.className = ''; box.innerHTML = lines.map(l => `<div class="${l.startsWith('✓') ? 'pos' : l.startsWith('✕') ? 'neg' : 'mut'}">${l}</div>`).join('') + (lines.some(l => l.startsWith('✓')) ? '<div style="margin-top:8px"><a class="btn" href="#/my">Открыть «Мой день»</a></div>' : '');
   },
 };
 
@@ -297,7 +297,7 @@ window.LINKO_AUTO = {
     for (const u of CRMLocal.engine.getState().ag.uploads || []) if (!u.synth && Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // when LINKO gave each balance (for card payments by time)
     CRMLocal.grace && CRMLocal.grace.fix(CRMLocal.engine.getState()); // the final of the previous period takes the new time too
     for (const u of CRMLocal.engine.getState().wh.uploads || []) if (Date.now() - Date.parse(u.uploaded_at || 0) < 10 * 60000) u.snap_at = snap.at; // …and when LINKO gave each warehouse's stock
-    x.linkoAuto.importedAt = snap.at; x.linkoAuto.checkedAt = new Date().toISOString(); x.linkoAuto.result = box.textContent.replace(/Открыть отчёт дня/, '').trim().slice(0, 300); CRMLocal.touch();
+    x.linkoAuto.importedAt = snap.at; x.linkoAuto.checkedAt = new Date().toISOString(); x.linkoAuto.result = box.textContent.replace(/Открыть «Мой день»/, '').trim().slice(0, 300); CRMLocal.touch();
     if (!quiet && box.textContent.includes('✓')) { toast(`Данные из LINKO обновлены (${new Date(snap.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })})`); const ae = document.activeElement, typing = ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable) || document.querySelector('.modal-bg, dialog[open]'); if (!typing && typeof route === 'function') route(); }
     return true;
   },

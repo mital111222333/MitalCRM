@@ -3,7 +3,7 @@
   "name": "MITAL CRM — супервайзер",
   "short_name": "MITAL CRM",
   "description": "Продажи, сбор денег, агенты, маршруты и склад",
-  "start_url": "./#/rday",
+  "start_url": "./#/my",
   "scope": "./",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],
@@ -21,7 +21,7 @@
   ],
   "shortcuts": [
     { "name": "Загрузить данные", "short_name": "Загрузить", "url": "./#/up", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
-    { "name": "Отчёт дня", "url": "./#/rday", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "Мой день", "url": "./#/my", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
     { "name": "Маршруты", "url": "./#/amap", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
     { "name": "Лидерборд", "url": "./#/leaders", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
   ]
