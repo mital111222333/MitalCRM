@@ -50,6 +50,74 @@ const INST = {
   changed(msg = 'Правила рассрочки отправлены автозагрузке') { CRMLocal.touch(); clearTimeout(INST._t); INST._t = setTimeout(() => INST.publish().then(r => { if (!r.off) toast(msg); }).catch(e => toast(e.message)), 1200); },
   async state() { try { return await CLOUD.readJson(INST.STATE); } catch { return null; } },
 
+  // ---------- a client's contracts in the client card (card.js «📄 Договор») ----------
+  // the client is one of the contract's LINKO cards, or the other card of the same shop (contract ↔ spets)
+  contractsOf(name) { const b = INST.base(name); return INST.cfg().contracts.filter(k => (k.accounts || []).some(a => a === name || INST.base(a) === b)); },
+  // scans of the signed contract (photo / PDF) live in the private data repository: contracts/<id>/<file>;
+  // the contract keeps files: [{ path, name, type, size, at }]
+  gh(path) {
+    const cc = INST.cloud(); if (!cc) throw new Error('Включите «Синхронизацию», чтобы хранить сканы договоров');
+    return { url: `https://api.github.com/repos/${encodeURIComponent(cc.owner)}/${encodeURIComponent(cc.repo)}/contents/${path.split('/').map(encodeURIComponent).join('/')}`, h: { Authorization: 'Bearer ' + cc.token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' } };
+  },
+  async putFile(k, file) {
+    if (file.size > 25e6) throw new Error(`«${file.name}» больше 25 МБ — уменьшите файл`);
+    const b64 = await new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = () => bad(new Error('Не удалось прочитать файл')); r.readAsDataURL(file); });
+    const safe = file.name.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(-80) || 'file', path = `contracts/${k.id}/${Date.now().toString(36)}-${safe}`, { url, h } = INST.gh(path);
+    const r = await fetch(url, { method: 'PUT', headers: { ...h, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'CRM: скан договора ' + (k.title || k.id), content: b64 }) });
+    if (!r.ok) throw new Error('GitHub не принял файл: ' + r.status);
+    (k.files ||= []).push({ path, name: file.name, type: file.type || '', size: file.size, at: new Date().toISOString() }); CRMLocal.touch();
+  },
+  async openFile(f) {
+    const w = window.open('', '_blank'); // opened right on the click, otherwise the browser blocks the window
+    if (w) w.document.write('<p style="font:16px system-ui;padding:20px">Загружаю договор…</p>');
+    try {
+      const { url, h } = INST.gh(f.path), r = await fetch(url, { headers: { ...h, Accept: 'application/vnd.github.raw' }, cache: 'no-store' });
+      if (!r.ok) throw new Error('Файл не найден в хранилище: ' + r.status);
+      const blob = new Blob([await r.blob()], { type: f.type || 'application/octet-stream' }), u = URL.createObjectURL(blob);
+      if (w) w.location.href = u; else { const a = document.createElement('a'); a.href = u; a.download = f.name; a.click(); }
+      setTimeout(() => URL.revokeObjectURL(u), 120000);
+    } catch (e) { if (w) w.close(); toast(e.message); }
+  },
+  async delFile(k, f) {
+    const { url, h } = INST.gh(f.path), cur = await fetch(url + '?t=' + Date.now(), { headers: h, cache: 'no-store' });
+    if (cur.ok) { const r = await fetch(url, { method: 'DELETE', headers: { ...h, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'CRM: удалён скан договора', sha: (await cur.json()).sha }) }); if (!r.ok) throw new Error('GitHub не удалил файл: ' + r.status); }
+    k.files = (k.files || []).filter(x => x.path !== f.path); CRMLocal.touch();
+  },
+  async cardDialog(name) {
+    const list = INST.contractsOf(name), f = INST.money, t0 = UI.localDate(Date.now());
+    const m = modal(`<div class="card-head"><div><h3 style="margin:0">Договоры: ${esc(name)}</h3><div class="mut">${list.length} ${UI.plural(list.length, 'договор', 'договора', 'договоров')}</div></div><button class="btn gray sm" id="kX" aria-label="Закрыть">✕</button></div><div id="kB"><p class="mut">Загружаю…</p></div>`);
+    m.el.classList.add('wide'); $('#kX', m.el).onclick = m.close;
+    const st = INST.cfg().on && INST.cloud() ? await INST.state() : null, got = new Map((st?.contracts || []).map(k => [k.id, k])), canFiles = !!INST.cloud();
+    const draw = () => {
+      $('#kB', m.el).innerHTML = list.map(k => {
+        const s = got.get(k.id), P = INST.planOf(k), total = P.reduce((a, v) => a + v, 0), files = k.files || [];
+        const end = s?.end || UI.localDate(new Date(Number(k.start.slice(0, 4)), Number(k.start.slice(5, 7)) - 1 + P.length, Number(k.start.slice(8, 10)) - 1).getTime());
+        const state = t0 < k.start ? UI.pill('info', 'ещё не начался') : t0 > end ? UI.pill('muted', 'закончился') : UI.pill('good', 'действует');
+        const pct = (v, of, ok) => `${f(v)} ${UI.pill(ok ? 'good' : 'warn', Math.round(v / Math.max(1, of) * 100) + '%')}`;
+        return `<section style="border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0">
+          <div class="bar" style="margin:0 0 8px"><b style="font-size:16px">${esc(k.title || k.accounts.join(' + '))}</b> ${state}<span class="spacer"></span><button class="btn gray sm" data-kedit="${esc(k.id)}" type="button">Изменить условия</button></div>
+          <div class="kpis kpis-sm">
+            ${UI.tile('Срок', `${UI.dm(k.start)} — ${UI.dm(end)}`, { sub: `${P.length} мес. · с ${UI.dateRu(k.start)}` })}
+            ${UI.tile('План в месяц', P.every(v => v === P[0]) ? f(P[0]) : `${f(Math.min(...P))}–${f(Math.max(...P))}`, { sub: `всего по договору ${f(total)}` })}
+            ${s && s.bought != null ? UI.tile('С начала договора', f(s.paid), { sub: `взял ${f(s.bought)} · оплатил ${f(s.paid)}`, tone: s.paid >= (s.list || []).reduce((a, x) => a + x.plan, 0) - 0.5 ? 'good' : 'warn' }) : ''}
+            ${UI.tile('Агент', esc(k.agent || '—'), { sub: 'карточки: ' + k.accounts.map(esc).join(', ') })}
+          </div>
+          <div class="scroll"><table><thead><tr><th>Месяц</th><th class="n">План</th><th class="n">Взял</th><th class="n">Оплатил</th></tr></thead><tbody>${P.map((v, i) => { const x = s?.list?.[i]; return `<tr><td>${INST.monthName(k.start, i)}</td><td class="n">${f(v)}</td><td class="n">${x?.fact != null ? pct(x.fact, v, x.fact >= v) : '<span class="mut">—</span>'}</td><td class="n">${x?.paid != null ? pct(x.paid, v, x.paid >= v - 0.5) : '<span class="mut">—</span>'}</td></tr>`; }).join('')}</tbody></table></div>
+          ${!st ? '<p class="mut" style="margin:6px 0 0;font-size:12px">«Взял» и «Оплатил» считает автозагрузка — включите её в «Рассрочка и договоры → Настройки».</p>' : ''}
+          <div style="margin-top:12px"><b>📎 Документ договора</b>
+            ${files.length ? `<div style="display:grid;gap:6px;margin-top:8px">${files.map(x => `<div class="bar" style="margin:0"><button class="btn sm" data-kopen="${esc(k.id)}|${esc(x.path)}" type="button">${/pdf/i.test(x.type) || /\.pdf$/i.test(x.name) ? '📄' : '🖼'} Открыть: ${esc(x.name)}</button><span class="mut" style="font-size:12px">${UI.dateRu(x.at.slice(0, 10))} · ${Math.max(1, Math.round(x.size / 1024))} КБ</span><span class="spacer"></span><button class="btn gray sm" data-kdel="${esc(k.id)}|${esc(x.path)}" type="button" aria-label="Удалить файл">🗑</button></div>`).join('')}</div>` : '<p class="mut" style="margin:6px 0">Скан договора ещё не прикреплён.</p>'}
+            ${canFiles ? `<label class="btn gray sm" style="margin-top:8px;cursor:pointer">＋ Прикрепить скан или PDF<input type="file" data-kadd="${esc(k.id)}" accept="image/*,application/pdf" multiple hidden></label>` : '<p class="mut" style="font-size:12px">Чтобы прикреплять сканы, включите <a href="#/cloud">Синхронизацию</a>.</p>'}
+          </div></section>`;
+      }).join('');
+      const byId = id => list.find(k => k.id === id), fileOf = v => { const [id, path] = v.split('|'), k = byId(id); return [k, (k?.files || []).find(x => x.path === path)]; };
+      m.el.querySelectorAll('[data-kedit]').forEach(b => b.onclick = () => { m.close(); INST.contractDialog(byId(b.dataset.kedit)); });
+      m.el.querySelectorAll('[data-kopen]').forEach(b => b.onclick = () => { const [, x] = fileOf(b.dataset.kopen); if (x) INST.openFile(x); });
+      m.el.querySelectorAll('[data-kdel]').forEach(b => b.onclick = async () => { const [k, x] = fileOf(b.dataset.kdel); if (!x || !confirm(`Удалить файл «${x.name}»?`)) return; b.disabled = true; try { await INST.delFile(k, x); toast('Файл удалён'); } catch (e) { toast(e.message); } draw(); });
+      m.el.querySelectorAll('[data-kadd]').forEach(inp => inp.onchange = async () => { const k = byId(inp.dataset.kadd), fs = [...inp.files]; if (!fs.length) return; toast('Загружаю…'); let ok = 0; for (const file of fs) { try { await INST.putFile(k, file); ok++; } catch (e) { toast(e.message); } } if (ok) toast(`Прикреплено файлов: ${ok}`); draw(); });
+    };
+    draw();
+  },
+
   // ---------- views ----------
   money: v => '$' + UI.fmt0(Math.round(v || 0)),
   typeTag: c => (c.type === 'contract' ? ' <span class="pill info">договор</span>' : c.type === 'spec' ? ' <span class="pill warn">спец</span>' : ''),
@@ -160,7 +228,7 @@ const INST = {
     $('#icOk', m.el).onclick = () => {
       if (inp.value.trim()) add(inp.value);
       const d = Number($('#icD', m.el).value), p = Number($('#icP', m.el).value);
-      const y = { id: x.id, title: $('#icT', m.el).value.trim(), accounts: acc, monthly: Number($('#icM', m.el).value) || 0, months: plan.length, plan: plan.slice(), start: $('#icS', m.el).value, agent: $('#icG', m.el).value.trim(), ...(d ? { days: d } : {}), ...(p ? { parts: p } : {}) };
+      const y = { id: x.id, title: $('#icT', m.el).value.trim(), accounts: acc, monthly: Number($('#icM', m.el).value) || 0, months: plan.length, plan: plan.slice(), start: $('#icS', m.el).value, agent: $('#icG', m.el).value.trim(), ...(d ? { days: d } : {}), ...(p ? { parts: p } : {}), ...(x.files?.length ? { files: x.files } : {}) };
       if (!y.accounts.length || !y.plan.some(v => v > 0) || !y.start) { toast('Заполните карточки клиента, план по месяцам и дату начала'); return; }
       const i = c.contracts.findIndex(k => k.id === y.id); if (i >= 0) c.contracts[i] = y; else c.contracts.push(y);
       m.close(); INST.changed('Договор сохранён — автозагрузка посчитает закупки за 5 минут'); route();
