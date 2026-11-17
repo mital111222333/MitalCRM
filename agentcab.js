@@ -71,6 +71,37 @@ const AC = {
   },
   b64: text => { const bytes = new TextEncoder().encode(text); let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); },
 
+  // the same cabinet for agents who have their own CRM account (MITAL database, table agent_cabinets): the agent signs in with
+  // his login and sees it on me.html. Matched by the account's «Имя в LINKO». Works without the GitHub key and the personal codes.
+  // Only from the CRM of the person this device's data belongs to (CLOUD.gate), never from an agent's or another person's sign-in.
+  norm: s => String(s || '').toLowerCase().replace(/[’ʻʼ`´‘]/g, "'").replace(/\s+/g, ' ').trim(),
+  async publishDb({ force = false } = {}) {
+    const sb = window.AUTH?.sb, me = window.AUTH?.profile;
+    if (!sb || !me || me.role === 'agent' || window.CLOUD?.gate?.() || AC._busyDb) return { n: 0 };
+    AC._busyDb = true;
+    try {
+      const { data: ppl, error } = await sb.from('profiles').select('id, full_name, linko_name, is_active').eq('role', 'agent');
+      if (error) throw error;
+      const want = (ppl || []).filter(p => p.is_active && p.linko_name);
+      if (!want.length) return { n: 0, missing: [] };
+      const d = await REP.load(); if (d.empty) return { n: 0, missing: [] };
+      let stock = null; try { stock = await CRMLocal.request('GET', '/api/wh/stock'); } catch { /* no stock */ }
+      let disc = null; try { if (typeof DS !== 'undefined' && LX.has()) disc = DS.model(); } catch { /* no LINKO data */ }
+      const names = d.agents.map(a => a.agent), missing = [];
+      AC._lastDb ||= {}; let n = 0;
+      for (const p of want) {
+        const agent = names.find(x => AC.norm(x) === AC.norm(p.linko_name));
+        if (!agent) { missing.push(p.full_name); continue; }
+        const snap = await AC.snapshot(agent, d, stock, disc), key = JSON.stringify({ ...snap, at: '' });
+        if (!force && AC._lastDb[p.id] === key) continue;
+        const { error: e2 } = await sb.from('agent_cabinets').upsert({ agent_id: p.id, data: snap, updated_at: new Date().toISOString(), updated_by: me.id });
+        if (e2) throw e2;
+        AC._lastDb[p.id] = key; n++;
+      }
+      return { n, missing };
+    } finally { AC._busyDb = false; }
+  },
+
   // write every enabled agent's file (only when it changed); returns how many were written
   async publish({ force = false } = {}) {
     const c = AC.cloud(), A = AC.cfg(), on = Object.entries(A.agents).filter(([, v]) => v.on && v.code);
@@ -110,7 +141,11 @@ const AC = {
 
 // publish after the data changes (LINKO import, a balance upload) and on start; «режим офиса» refreshes every 15 minutes
 (() => {
-  const later = () => { clearTimeout(AC._t); AC._t = setTimeout(() => AC.publish().catch(e => console.warn('agent cabinets', e)), 20000); };
+  const later = () => { clearTimeout(AC._t); AC._t = setTimeout(() => {
+    AC.publish().catch(e => console.warn('agent cabinets', e));
+    AC.publishDb().catch(e => console.warn('agent cabinets (database)', e));
+  }, 20000); };
+  addEventListener('crm:login', later); // signed in on an open page: the agents get their cabinets without waiting for new data
   for (const k of ['importSnap', 'importFast', 'put']) { const orig = LX[k]; if (typeof orig === 'function') LX[k] = function (...a) { const r = orig.apply(this, a); later(); return r; }; }
   Promise.resolve(CRMLocal.ready).then(later);
   setInterval(async () => { if (!AC.office()) return; try { if (window.REFRESH?.run) await REFRESH.run(); } catch { /* refresh failed: publish what we have */ } later(); }, 15 * 60000);

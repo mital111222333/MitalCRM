@@ -150,6 +150,7 @@ function route() {
 }
 function gatePage(el, g) {
   if (g === 'wait') { el.innerHTML = '<div class="soon">Загрузка…</div>'; CRMLocal.ready.then(() => route()); return; }
+  if (g === 'agent' && navigator.onLine !== false) { el.innerHTML = '<div class="soon">Открываю ваш кабинет…</div>'; location.replace('me.html'); return; } // the agent's own page
   const out = '<button class="btn gray" id="gOut" type="button">Выйти из аккаунта</button>';
   el.innerHTML = g === 'agent'
     ? `<div class="empty-state"><h3>Здравствуйте, ${esc(me?.name || '')}!</h3><p>Вы вошли как <b>агент</b>. Ваш личный раздел в CRM появится позже.<br>

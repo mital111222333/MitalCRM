@@ -23,7 +23,14 @@
   if (h.get('k') && h.get('u')) { store.set('mital_me', { k: h.get('k'), u: h.get('u') }); history.replaceState(null, '', location.pathname + location.search); }
   const link = inTg && qs.get('u') ? { tg: TGA.initData, u: qs.get('u') } : store.get('mital_me');
   if (inTg) { try { TGA.ready(); TGA.expand(); if (TGA.colorScheme === 'dark') document.documentElement.dataset.theme = 'dark'; } catch { /* old Telegram */ } }
-  let tab = 'main', q = '', S = store.get('mital_me_data'), loading = false, doing = null;
+  // the third way in: the agent signed in to MITAL CRM with his own login (index.html sends agents here). The cabinet is read from
+  // the MITAL database (agent_cabinets, only his own row — the database rules check it); it is written there by his supervisor's CRM.
+  const SB_URL = 'https://oxchgcfyzszemqlvdjjr.supabase.co', SB_KEY = 'sb_publishable_FlwHIDb04LSfDA18DFo_Yw_YesRxk9g';
+  const sbUid = (() => { try { return JSON.parse(localStorage.getItem('crm_auth') || 'null')?.user?.id || ''; } catch { return ''; } })();
+  const SB = !link && sbUid && window.supabase?.createClient ? window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'crm_auth' } }) : null;
+  const DATA_KEY = SB ? 'mital_me_data:' + sbUid : 'mital_me_data'; // a shared phone never shows the previous agent's cabinet
+  const NO_ACT = 'Это отмечается в кабинете Telegram: кнопка «📱 Мой кабинет» в боте вашего руководителя.';
+  let tab = 'main', q = '', S = store.get(DATA_KEY), loading = false, doing = null;
   // chat tab: the agent's conversation with the bot through the chat worker (/agent/*), signed in by Telegram's initData
   const CH = { msgs: [], last: 0, timer: null, sending: false };
   const chatUrl = p => S?.chat ? S.chat.replace(/\/+$/, '') + p : '';
@@ -54,14 +61,34 @@
   const marks = () => store.get('mital_me_marks') || {}, markKey = t => t.src + ':' + t.id;
   const isOpen = t => (t.status === 'open' || t.status === 'returned') && !marks()[markKey(t)];
 
+  async function loadSb() {
+    loading = true; $('#meUpd').disabled = true; $('#meUpd').textContent = 'Обновляю…';
+    try {
+      const { data: { session } } = await SB.auth.getSession();
+      if (!session) { location.replace('./'); return; } // signed out: back to the sign-in page
+      const { data, error } = await SB.from('agent_cabinets').select('data, updated_at').eq('agent_id', session.user.id).maybeSingle();
+      if (error) throw error;
+      if (!data) msg('Кабинет ещё не готов: ваш руководитель должен открыть свою CRM — кабинет появится через минуту.', true);
+      else { S = data.data; store.set(DATA_KEY, S); msg(''); }
+    } catch (e) {
+      // the server refused the sign-in (expired, password changed, account blocked): sign in again; otherwise there is no connection
+      if (/jwt|token|auth|session|401|PGRST30/i.test(`${e?.code || ''} ${e?.message || ''} ${e?.status || ''}`)) {
+        try { await SB.auth.signOut(); } catch { /* offline */ } location.replace('./'); return;
+      }
+      msg(S ? 'Нет интернета — показаны последние сохранённые данные' : 'Нет интернета. Откройте страницу, когда появится связь.', true);
+    }
+    loading = false; $('#meUpd').disabled = false; $('#meUpd').textContent = '🔄 Обновить';
+    draw();
+  }
   async function load() {
+    if (SB) return loadSb();
     if (!link) return;
     loading = true; $('#meUpd').disabled = true; $('#meUpd').textContent = 'Обновляю…';
     try {
       const r = await fetch(link.u + (link.u.includes('?') ? '&' : '?') + (link.tg ? 'tg=' + encodeURIComponent(link.tg) : 'agent=' + encodeURIComponent(link.k)) + '&t=' + Date.now(), { cache: 'no-store' });
       const j = await r.json();
-      if (j.error) { msg(j.error, true); if (/закрыт|устарел|неверн/.test(j.error)) { S = null; store.set('mital_me_data', null); } }
-      else { S = j; store.set('mital_me_data', j); msg(''); const m = marks(), keep = {}; for (const t of j.tasks || []) if (m[markKey(t)] && (t.status === 'open' || t.status === 'returned')) keep[markKey(t)] = m[markKey(t)]; store.set('mital_me_marks', keep); }
+      if (j.error) { msg(j.error, true); if (/закрыт|устарел|неверн/.test(j.error)) { S = null; store.set(DATA_KEY, null); } }
+      else { S = j; store.set(DATA_KEY, j); msg(''); const m = marks(), keep = {}; for (const t of j.tasks || []) if (m[markKey(t)] && (t.status === 'open' || t.status === 'returned')) keep[markKey(t)] = m[markKey(t)]; store.set('mital_me_marks', keep); }
     } catch { msg(S ? 'Нет интернета — показаны последние сохранённые данные' : 'Нет интернета. Откройте страницу, когда появится связь.', !S); }
     loading = false; $('#meUpd').disabled = false; $('#meUpd').textContent = '🔄 Обновить';
     draw();
@@ -75,6 +102,7 @@
     return btoa(s);
   }
   async function sendDone(t, comment, file) {
+    if (!link) throw new Error(NO_ACT);
     const photo = file ? await shrink(file) : '';
     const body = JSON.stringify({ ...(link.tg ? { tg: link.tg } : { k: link.k }), act: 'done', src: t.src, id: t.id, comment, photo });
     const r = await fetch(link.u, { method: 'POST', body }); const j = await r.json();
@@ -96,6 +124,7 @@
   // Before sending, numbers far from the store keeper's OWN last count are asked once more (typos like 400 instead of 40).
   const CNT = { get: () => store.get('mital_cnt'), set: v => store.set('mital_cnt', v) };
   async function storePost(body) {
+    if (!link) throw new Error(NO_ACT);
     const r = await fetch(link.u, { method: 'POST', body: JSON.stringify({ ...(link.tg ? { tg: link.tg } : { k: link.k }), ...body }) });
     const j = await r.json(); if (j.error) throw new Error(j.error); return j;
   }
@@ -242,7 +271,7 @@
 
   function draw() {
     const body = $('#meBody');
-    if (!link) { body.innerHTML = '<div class="empty-state"><h3>Откройте кабинет из Telegram</h3><p>Нажмите кнопку «Мой кабинет» в боте MITAL — или откройте ссылку, которую прислал руководитель.</p></div>'; return; }
+    if (!link && !SB) { body.innerHTML = '<div class="empty-state"><h3>Откройте кабинет из Telegram</h3><p>Нажмите кнопку «Мой кабинет» в боте MITAL — или откройте ссылку, которую прислал руководитель.</p></div>'; return; }
     if (S && S.role === 'store') return drawStore(body);
     if (!S) { body.innerHTML = loading ? '<p class="mut">Загружаю…</p>' : '<div class="empty-state"><h3>Нет данных</h3><p>Причина — в сообщении выше. Если доступ закрыт, попросите руководителя прислать новую ссылку.</p></div>'; return; }
     const k = S.kpi, sp = pct(k.sold, k.plan), cp = pct(k.paid, k.pool), me = S.board.find(b => b.me);
@@ -391,6 +420,10 @@
     document.addEventListener('click', e => { if (e.target.closest('[data-chat]') && inTg) { try { TGA.close(); } catch { /* old Telegram */ } } });
     document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (!g) return; e.preventDefault(); tab = g.dataset.go; doing = null; draw(); scrollTo(0, 0); });
     $('#meUpd').onclick = load;
+    if (SB) {
+      const out = document.createElement('button'); out.type = 'button'; out.textContent = 'Выйти'; $('#meUpd').after(out);
+      out.onclick = async () => { try { await SB.auth.signOut(); } catch { /* offline */ } try { localStorage.removeItem('crm_me'); } catch { /* blocked */ } location.replace('./'); };
+    }
     // links inside Telegram: t.me opens in Telegram itself (the chat), other links in the browser — not inside the small app window
     document.addEventListener('click', e => { const a = e.target.closest('a[href^="http"]'); if (!a || !inTg) return; e.preventDefault(); if (a.href.startsWith('https://t.me/')) TGA.openTelegramLink(a.href); else TGA.openLink(a.href); });
     draw(); load();

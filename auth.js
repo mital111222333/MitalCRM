@@ -91,9 +91,21 @@ window.EXT_PAGES.users = async el => {
   if (!sb) { el.innerHTML = UI.empty('Нет связи', 'Раздел работает только с интернетом.'); return; }
   el.innerHTML = '<div class="soon">Загрузка…</div>';
   const at = location.hash;
-  const [p, r, l] = await Promise.all([sb.from('profiles').select('*'), sb.from('regions').select('*').order('name'), sb.from('supervisor_regions').select('*')]);
+  // agent names from the CRM data of this device (only when the data is the signed-in person's own) — «Имя в LINKO» is picked from them
+  const crmNames = (async () => { try { if (window.CLOUD?.gate?.() || typeof REP === 'undefined') return []; const d = await REP.load(); return d.empty ? [] : d.agents.map(a => a.agent).filter(n => n && n !== 'Без агента'); } catch { return []; } })();
+  const [p, r, l, cb, names] = await Promise.all([sb.from('profiles').select('*'), sb.from('regions').select('*').order('name'), sb.from('supervisor_regions').select('*'),
+    sb.from('agent_cabinets').select('agent_id, updated_at'), crmNames]);
   if (!el.isConnected || location.hash !== at) return; // the person went to another page while this one loaded: do not draw over it
   const err = p.error || r.error || l.error;
+  const cabAt = Object.fromEntries((cb.data || []).map(x => [x.agent_id, x.updated_at]));
+  const norm = v => String(v || '').toLowerCase().replace(/[’ʻʼ`´‘]/g, "'").replace(/\s+/g, ' ').trim(), known = new Set(names.map(norm));
+  // the agent's cabinet: when it was last sent, or why it cannot be
+  const cabText = x => {
+    if (x.role !== 'agent') return '';
+    if (!x.linko_name) return UI.pill('warn', 'нет имени в LINKO');
+    if (names.length && !known.has(norm(x.linko_name))) return UI.pill('crit', 'имя не найдено в LINKO');
+    return cabAt[x.id] ? `<span title="последнее обновление">✓ ${new Date(cabAt[x.id]).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>` : UI.pill('muted', 'ещё не отправлен');
+  };
   if (err) { el.innerHTML = UI.empty('Не удалось загрузить', esc(err.message)); return; }
   const people = p.data.sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.full_name.localeCompare(b.full_name, 'ru'));
   const regions = r.data, links = l.data, byId = Object.fromEntries(people.map(x => [x.id, x])), regName = Object.fromEntries(regions.map(x => [x.id, x.name]));
@@ -110,11 +122,11 @@ window.EXT_PAGES.users = async el => {
     supervisor: 'Вы видите себя и своих агентов. Добавлять людей могут администратор и РОП.', agent: 'Вы видите себя и своего супервайзера.' }[myRole] || '';
 
   el.innerHTML = `<div class="page-head"><div><h2>Пользователи</h2><div class="sub">${esc(seeText)}</div></div>
-      <div class="tools">${manager ? '<button class="btn" id="uadd">+ Добавить человека</button>' : ''}<button class="btn gray" id="uout">Выйти из аккаунта</button></div></div>
+      <div class="tools">${names.length ? '<button class="btn gray" id="ucab" title="Отправить агентам их кабинеты сейчас, не дожидаясь новых данных">↻ Обновить кабинеты агентов</button>' : ''}${manager ? '<button class="btn" id="uadd">+ Добавить человека</button>' : ''}<button class="btn gray" id="uout">Выйти из аккаунта</button></div></div>
     <div class="grid">
-    ${UI.panel('Команда', `<div class="tscroll"><table><thead><tr><th>Имя</th><th>Логин</th><th>Роль</th><th>Супервайзер</th><th>Регион</th><th>Имя в LINKO</th><th>Статус</th>${manager ? '<th></th>' : ''}</tr></thead><tbody>
+    ${UI.panel('Команда', `<div class="tscroll"><table><thead><tr><th>Имя</th><th>Логин</th><th>Роль</th><th>Супервайзер</th><th>Регион</th><th>Имя в LINKO</th><th>Кабинет</th><th>Статус</th>${manager ? '<th></th>' : ''}</tr></thead><tbody>
       ${people.map(x => `<tr${x.is_active ? '' : ' class="mut"'}><td><b>${esc(x.full_name)}</b>${x.id === AUTH.profile?.id ? ' <span class="mut">(вы)</span>' : ''}</td><td>${esc(x.login)}</td><td>${esc(ROLE_RU[x.role])}</td>
-        <td>${esc(byId[x.supervisor_id]?.full_name || '')}</td><td>${esc(whereText(x))}</td><td>${esc(x.linko_name || '')}</td>
+        <td>${esc(byId[x.supervisor_id]?.full_name || '')}</td><td>${esc(whereText(x))}</td><td>${esc(x.linko_name || '')}</td><td>${cabText(x)}</td>
         <td>${x.is_active ? UI.pill('good', 'активен') : UI.pill('crit', 'заблокирован')}</td>
         ${manager ? `<td>${canEdit(x) ? `<button class="btn gray sm" data-edit="${x.id}">Изменить</button>` : ''}</td>` : ''}</tr>`).join('')}
       </tbody></table></div>`, { sub: `${people.length} ${UI.plural(people.length, 'человек', 'человека', 'человек')}` })}
@@ -123,6 +135,15 @@ window.EXT_PAGES.users = async el => {
     </div>`;
 
   const again = () => EXT_PAGES.users(el);
+  const cbBtn = $('#ucab', el);
+  if (cbBtn) cbBtn.onclick = async () => {
+    cbBtn.disabled = true;
+    try {
+      const r = await AC.publishDb({ force: true });
+      toast(`Кабинетов отправлено: ${r.n}` + (r.missing?.length ? `. Не найдены в LINKO: ${r.missing.join(', ')} — исправьте «Имя в LINKO»` : ''));
+      again();
+    } catch (e) { toast('Не удалось: ' + (e.message || e)); cbBtn.disabled = false; }
+  };
   $('#uout', el).onclick = async () => { try { await fetch('/api/logout', { method: 'POST' }); } catch { /* offline */ } signOut(); };
 
   if (manager) {
@@ -149,7 +170,8 @@ window.EXT_PAGES.users = async el => {
         <div id="f_agent"><label>Супервайзер<select id="f_sv"><option value="">— выберите —</option>${sups.map(s => `<option value="${s.id}" ${x?.supervisor_id === s.id ? 'selected' : ''}>${esc(s.full_name)}</option>`).join('')}</select></label>
           <label>Регион<select id="f_reg"><option value="">— выберите —</option>${regions.map(g => `<option value="${g.id}" ${x?.region_id === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label></div>
         <div id="f_sup"><label>Регионы, которые он ведёт сам (его команда агентов)</label>${regions.map(g => `<label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" data-reg="${g.id}" ${mine.includes(g.id) ? 'checked' : ''}> ${esc(g.name)}</label>`).join('')}</div>
-        <label>Имя в LINKO (точно как в отчётах LINKO)<input id="f_linko" value="${esc(x?.linko_name || '')}"></label>
+        <label>Имя в LINKO (выберите из списка — по нему агент получает свой кабинет)<input id="f_linko" list="f_names" autocomplete="off" value="${esc(x?.linko_name || '')}"></label>
+        <datalist id="f_names">${names.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
         <label>Телефон<input id="f_phone" value="${esc(x?.phone || '')}"></label>
       </div><small id="f_err" class="neg" role="alert"></small>
       ${isNew ? '<p class="mut" style="margin:8px 0 0">Запишите логин и пароль и передайте человеку лично. Пароль он сможет сменить сам: клик по своему имени вверху.</p>' : ''}
