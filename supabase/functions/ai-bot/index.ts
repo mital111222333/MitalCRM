@@ -11,7 +11,7 @@
 //   ALLOWED_USERS  ваш Telegram ID (несколько — через запятую). Пусто → бот только сообщает ID тому, кто ему пишет
 //   GEMINI_KEY     ключ Gemini (тот же, что в CRM → ИИ-ассистент, или новый на aistudio.google.com)
 //   GH_TOKEN       GitHub-токен с правом ЧТЕНИЯ репозитория mitalcrm-data
-//   необязательные: GEMINI_MODEL (по умолчанию gemini-flash-latest), GH_OWNER, GH_REPO, TZ_NAME (Asia/Tashkent)
+//   необязательные: GEMINI_MODEL (по умолчанию gemini-3.1-flash-lite — самые большие бесплатные лимиты), GH_OWNER, GH_REPO, TZ_NAME (Asia/Tashkent)
 // Подключение webhook: откройте в браузере  <адрес функции>?setup=<TG_SECRET>
 // «Verify JWT» у функции должен быть выключен (Telegram не присылает токен Supabase).
 
@@ -22,7 +22,7 @@ const CFG = {
   secret: () => env('TG_SECRET'),
   allowed: () => env('ALLOWED_USERS').split(/[,\s]+/).filter(Boolean),
   gKey: () => env('GEMINI_KEY'),
-  model: () => env('GEMINI_MODEL', 'gemini-flash-latest'),
+  model: () => env('GEMINI_MODEL', 'gemini-3.1-flash-lite'),
   ghToken: () => env('GH_TOKEN'),
   owner: () => env('GH_OWNER', 'mital111222333'),
   repo: () => env('GH_REPO', 'mitalcrm-data'),
@@ -221,6 +221,8 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       const contracts = db.contracts.filter((k: any) => (k.accounts || []).some((x: string) => norm(x) === norm(name)));
       const files = db.contractCfg.filter((k: any) => (k.accounts || []).some((x: string) => norm(x) === norm(name))).reduce((s: number, k: any) => s + (k.files || []).length, 0);
       const prom = (db.promises[name] || []).slice(-1)[0];
+      const instOrd = (db.instClients.get(name)?.orders || []).map((o: any) => o.d).sort().at(-1);
+      const lastOrd = [ords[0]?.date, instOrd].filter(Boolean).sort().at(-1);
       return {
         client: name, agent: info.agent || d.agent || '', phone: info.phone || d.phone || '', landmark: info.landmark || d.guide || '', address: d.address || '', type: info.type || '',
         debt: debtOf(db, name), promise_to_pay: prom ? { date: prom.d, sum: prom.s } : undefined,
@@ -229,7 +231,7 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
         contract_files: files,
         last_orders: ords.slice(0, 5).map((o: any) => ({ id: o.id, date: o.date, sum: o.sum, returned: o.ret || undefined, paid: o.paid })),
         last_payments: ps.slice(0, 5).map((p: any) => ({ date: p.date, amount: p.amount, by: p.by })),
-        last_order_date: ords[0]?.date || null, days_without_order: ords[0] ? daysBetween(ords[0].date, todayStr()) : null,
+        last_order_date: lastOrd || null, days_without_order: lastOrd ? daysBetween(lastOrd, todayStr()) : null,
         history_from: db.meta.orders_history_from,
       };
     },
@@ -321,7 +323,7 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       const g = resolveAgent(db, a.agent); if (a.agent && !g.name) return g;
       const t = todayStr();
       const rows = [...db.instClients.values()].filter((c: any) => (!g.name || c.agent === g.name) && (n(c.today) > 0.5 || n(c.late) > 0.5))
-        .map((c: any) => { const p = (db.promises[c.name] || []).slice(-1)[0]; return { client: c.name, agent: g.name ? undefined : c.agent, due_today: r2(n(c.today)), overdue: r2(n(c.late)), debt: r2(n(c.debt)), last_payment: c.lastPay || 'не было', promise: p ? `${p.d} — $${p.s}${p.d < t ? ' (сорвал)' : p.d === t ? ' (сегодня)' : ''}` : undefined, phone: c.phone }; })
+        .map((c: any) => { const p = (db.promises[c.name] || []).slice(-1)[0]; return { client: c.name, agent: g.name ? undefined : c.agent, due_today: r2(n(c.today)), overdue: r2(n(c.late)), debt: r2(n(c.debt)), last_payment: c.lastPay || 'не было', promise: p ? `${dm(p.d)} — ${$(p.s)}${p.d < t ? ' (сорвал)' : p.d === t ? ' (сегодня)' : ''}` : undefined, phone: c.phone }; })
         .sort((x, y) => (y.due_today + y.overdue) - (x.due_today + x.overdue));
       const lim = Math.min(n(a.limit) || 15, 50);
       return { date: t, count: rows.length, due_today_total: sum(rows, 'due_today'), overdue_total: sum(rows, 'overdue'), rows: rows.slice(0, lim), counted_at: db.meta.debts_counted };
@@ -402,10 +404,77 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
 };
 
 // ───────────────────────────── Gemini ─────────────────────────────
+// every function also takes two service fields: explain (the user wants analysis / advice → the AI writes the answer itself)
+// and heard (for a voice message — what was heard). Without explain the bot answers from a template: one Gemini request per question.
+const SERVICE = {
+  explain: { type: 'boolean', description: 'true ТОЛЬКО если пользователь просит анализ, сравнение, вывод, совет или ответ, который нельзя дать простым показом цифр. Для простых вопросов «сколько / какой остаток / покажи» — не указывай.' },
+  heard: { type: 'string', description: 'если сообщение голосовое — дословно, что услышал' },
+};
 const declarations = Object.entries(TOOLS).map(([name, t]) => ({
   name, description: t.desc,
-  parameters: Object.keys(t.params).length ? { type: 'object', properties: t.params, required: ['client_card', 'send_contract_files'].includes(name) ? ['client'] : name === 'agent_report' ? ['agent'] : name === 'find_client' ? ['query'] : [] } : undefined,
+  parameters: { type: 'object', properties: { ...t.params, ...SERVICE }, required: ['client_card', 'send_contract_files'].includes(name) ? ['client'] : name === 'agent_report' ? ['agent'] : name === 'find_client' ? ['query'] : [] },
 }));
+
+// ───────────────────────────── ready answers (no second AI request) ─────────────────────────────
+const $ = (v: any) => '$' + Math.round(n(v)).toLocaleString('ru-RU').replace(/ /g, ' ');
+const dm = (d: any) => { const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}.${m[2]}` : String(d || '—'); };
+const per = (r: any) => String(r.period || '').replace(/(\d{4})-(\d{2})-(\d{2})/g, '$3.$2');
+const warn = (r: any) => r.warning ? `\n⚠️ ${r.warning}` : '';
+const lines = (rows: any[], f: (x: any, i: number) => string, max = 15) => rows.slice(0, max).map(f).join('\n');
+
+const TPL: Record<string, (r: any) => string> = {
+  find_client: r => !r.found ? 'Такого клиента не нашёл. Напишите точнее или по-латински.' :
+    `Нашёл (${r.found}):\n` + lines(r.clients, (c: any) => `• ${c.name} — ${c.agent || 'без агента'}${c.landmark ? ', ' + c.landmark : ''}${c.debt > 0.5 ? ', долг ' + $(c.debt) : ''}`),
+  client_card: r => {
+    const d = r.debt || {}, out = [`📇 ${r.client}`, `Агент: ${r.agent || '—'}${r.phone ? ' · ' + r.phone : ''}`];
+    if (r.landmark || r.address) out.push(`📍 ${[r.landmark, r.address].filter(Boolean).join(', ')}`);
+    out.push(d.total > 0.5 ? `💰 Долг: ${$(d.total)}` : '💰 Долга нет');
+    if (d.by_age && d.total > 0.5) { const a = Object.entries(d.by_age).filter(([, v]) => n(v) > 0.5).map(([k, v]) => `${k}: ${$(v)}`); if (a.length) out.push('   ' + a.join(' · ')); }
+    if (n(d.overdue_by_schedule) > 0.5) out.push(`🔴 Просрочено по графику: ${$(d.overdue_by_schedule)}`);
+    if (n(d.due_today) > 0.5) out.push(`🟠 Срок сегодня: ${$(d.due_today)}`);
+    if (d.next_payment?.d) out.push(`📅 Следующий платёж: ${dm(d.next_payment.d)} — ${$(d.next_payment.s)}`);
+    if (r.promise_to_pay) out.push(`🤝 Обещал: ${$(r.promise_to_pay.sum)} на ${dm(r.promise_to_pay.date)}`);
+    const viaBal = r.balance_file && n(r.balance_file.paid) > 0.5 ? ` (по баланс-файлу за период оплачено ${$(r.balance_file.paid)} — переводом)` : '';
+    out.push(`💵 Последняя оплата: ${r.last_payments?.[0] ? `${dm(r.last_payments[0].date)} — ${$(r.last_payments[0].amount)}` : d.last_payment ? dm(d.last_payment) : 'наличными нет с ' + dm(r.history_from) + viaBal}`);
+    out.push(`🛒 Последний заказ: ${r.last_order_date ? `${dm(r.last_order_date)} (${r.days_without_order} дн. назад)` : 'нет с ' + dm(r.history_from)}`);
+    if (r.balance_file) out.push(`📒 Баланс ${per(r.balance_file)}: взял ${$(r.balance_file.bought)}, вернул ${$(r.balance_file.returned)}, оплатил ${$(r.balance_file.paid)}`);
+    for (const k of r.contracts || []) out.push(`📄 Договор: ${$(k.monthly_plan)}/мес × ${k.months} мес, с ${dm(k.start)}${k.this_month ? ` · этот месяц: оплачено ${$(k.this_month.paid)} из ${$(k.this_month.plan)}` : ''}`);
+    if (r.contract_files) out.push(`🖼 Сканов договора: ${r.contract_files} (скажите «пришли договор»)`);
+    return out.join('\n');
+  },
+  orders: r => [`🛒 Заказы ${per(r)}${r.client ? ' · ' + r.client : ''}${r.agent ? ' · ' + r.agent : ''}`,
+    `Заказов: ${r.orders_count} на ${$(r.orders_sum)}${n(r.returns_sum) > 0.5 ? `\nВозвраты: ${$(r.returns_sum)} → чистые продажи ${$(r.net_sales)}` : ''}${!r.client ? `\nКлиентов брали: ${r.clients_count}` : ''}`,
+    r.orders?.length ? lines(r.orders, (o: any) => `• ${dm(o.date)} №${o.id}${o.client ? ' ' + o.client : ''} — ${$(o.sum)}${o.products ? '\n   ' + o.products.join('; ') : ''}`) + (r.orders_count > 15 ? `\n…и ещё ${r.orders_count - 15}` : '') : ''].filter(Boolean).join('\n') + warn(r),
+  payments: r => [`💵 Оплаты ${per(r)}: ${r.count} шт. на ${$(r.total)}`,
+    lines(r.payments || [], (p: any) => `• ${dm(p.date)}${p.client ? ' ' + p.client : ''} — ${$(p.amount)}${p.by && p.agent && p.by !== p.agent ? ` (принял ${p.by})` : ''}`),
+    r.count > 15 ? `…и ещё ${r.count - 15}` : '', 'ℹ️ Только наличные из LINKO; переводы на карту — в баланс-файле.'].filter(Boolean).join('\n') + warn(r),
+  agent_report: r => {
+    const out = [`👤 ${r.agent} · ${per(r)}`, `🛒 Продажи: ${$(r.orders_sum)} (${r.orders_count} заказов, ${r.active_clients} клиентов)`];
+    if (n(r.returns_sum) > 0.5) out.push(`↩️ Возвраты: ${$(r.returns_sum)} → чистые ${$(r.net_sales)}`);
+    if (r.plan?.plan) out.push(`🎯 План периода с ${dm(r.plan.period_from)}: ${$(r.plan.plan)}`);
+    out.push(`💵 Собрал наличными: ${$(r.collected_cash)} (${r.payments_count} оплат)`);
+    if (r.balance_file) out.push(`📒 По баланс-файлу ${per(r.balance_file)}: продано ${$(r.balance_file.sold)}, оплачено вкл. карту ${$(r.balance_file.paid_incl_card)}`);
+    if (r.linko_period_stats) out.push(`📱 LINKO: визитов ${r.linko_period_stats.visits}, отказов ${r.linko_period_stats.rejects}, АКБ ${r.linko_period_stats.akb}`);
+    out.push(`📋 Долг его клиентов: ${$(r.clients_debt_total)} (${r.debtors_count} кл.), просрочено по графику ${$(r.overdue_by_schedule)}`);
+    if (r.top_debtors?.length) out.push('Главные должники:\n' + lines(r.top_debtors, (d: any) => `• ${d.client} — ${$(d.debt)}${d.over_30_days > 0.5 ? ` (старше 30 дн: ${$(d.over_30_days)})` : ''}`, 7));
+    return out.join('\n') + warn(r);
+  },
+  agents_overview: r => [`👥 Агенты ${per(r)}`, lines(r.agents, (a: any, i: number) => `${i + 1}. ${a.agent}\n   продажи ${$(a.sales)} (${a.orders} зак.) · собрал ${$(a.collected_cash)} · долг клиентов ${$(a.clients_debt)}`, 20),
+    `Итого: продажи ${$(r.team_sales)} · собрано ${$(r.team_collected)} · долг ${$(r.team_debt)}`].join('\n') + warn(r),
+  debtors: r => !r.count ? 'Должников по этому условию нет.' : [`📋 Должники${r.filter.agent !== 'все' ? ' · ' + r.filter.agent : ''}${r.filter.older_than_days ? ` · старше ${r.filter.older_than_days - 1} дн.` : ''}${r.filter.region ? ' · ' + r.filter.region : ''}`,
+    `${r.count} клиентов на ${$(r.total)}`, lines(r.rows, (d: any, i: number) => `${i + 1}. ${d.client} — ${$(d.amount)}${d.total_debt ? ` (всего ${$(d.total_debt)})` : ''}${d.agent ? ' · ' + d.agent.split(' ')[0] : ''}${d.phone ? ' · ' + d.phone : ''}`, r.shown),
+    r.count > r.shown ? `…и ещё ${r.count - r.shown}` : '', `Данные LINKO: ${r.updated}`].filter(Boolean).join('\n'),
+  collect_today: r => !r.count ? '✅ Сегодня дожимать некого: сроков и просрочек нет.' : [`📞 Кого дожимать · ${dm(r.date)}`, `Срок сегодня: ${$(r.due_today_total)} · просрочено: ${$(r.overdue_total)} (${r.count} кл.)`,
+    lines(r.rows, (c: any, i: number) => `${i + 1}. ${c.client}${c.agent ? ' · ' + c.agent.split(' ')[0] : ''} — ${c.due_today > 0.5 ? 'сегодня ' + $(c.due_today) + (c.overdue > 0.5 ? ', ' : '') : ''}${c.overdue > 0.5 ? 'просрочка ' + $(c.overdue) : ''}${c.promise ? `\n   🤝 обещал ${c.promise}` : ''}${c.phone ? `\n   ${c.phone}` : ''}`)].join('\n'),
+  sleeping_clients: r => !r.count ? 'Таких клиентов нет.' : [`😴 Давно не брали (${r.count})`, lines(r.rows, (c: any) => `• ${c.client}${c.agent ? ' · ' + c.agent.split(' ')[0] : ''} — ${c.days} дн. (последний ${dm(c.last_order)})${c.debt > 0.5 ? ', долг ' + $(c.debt) : ''}`, 20), `ℹ️ ${r.note}`].join('\n'),
+  top_products: r => [`🏆 Топ товаров ${per(r)}`, lines(r.products, (p: any, i: number) => `${i + 1}. ${p.product} — ${p.qty} шт., ${$(p.sum)}`), `Всего: ${$(r.total_sum)}`].join('\n') + warn(r),
+  stock: r => r.warehouses.map((w: any) => `🏬 ${w.warehouse} (на ${dm(w.taken_at)})\n` + (w.items.length ? lines(w.items, (i: any) => `• ${i.name} — ${i.available} шт.${i.reserved ? ` (+${i.reserved} в резерве)` : ''}`, 25) : 'ничего не найдено')).join('\n\n') || 'Склад не найден.',
+  send_contract_files: r => r.sent ? `Отправил ${r.sent} файл(а) договора ${r.client}.` : `${r.client}: ${r.note || 'файлы не отправились'}`,
+  data_status: r => `🔄 LINKO обновлено: ${r.linko_updated}\nДолги пересчитаны: ${r.debts_counted}\nCRM сохранена: ${r.crm_saved}\nИстория заказов: с ${dm(r.orders_history_from)} по ${dm(r.orders_history_to)}`,
+};
+function ambiguity(r: any) {
+  return r?.error ? `${r.error}${r.candidates?.length ? ':\n' + r.candidates.map((c: string) => '• ' + c).join('\n') : ''}` : '';
+}
 
 function systemPrompt(db: any) {
   const t = todayStr(), wd = new Intl.DateTimeFormat('ru-RU', { timeZone: CFG.tz(), weekday: 'long' }).format(new Date());
@@ -423,7 +492,9 @@ function systemPrompt(db: any) {
 5. «Остаток клиента» = его долг (сколько должен). Для этого вызывай client_card.
 6. Отвечай на языке пользователя (русский или узбекский), коротко и по делу — читают с телефона. Без markdown, без таблиц и звёздочек. Списки — через «•». Деньги так: $12 444.
 7. Можешь в конце дать 1 короткий практический совет, если он прямо следует из цифр (например, кого дожать сегодня).
-8. Если сообщение голосовое — первой строкой напиши, что услышал: 🎤 «текст вопроса», затем ответ.`;
+8. Если сообщение голосовое — передай в поле heard функции, что услышал; если отвечаешь текстом сам — первой строкой 🎤 «что услышал».
+9. Для простых вопросов (показать цифры, список, карточку) вызывай функцию БЕЗ explain — бот сам покажет ответ. explain=true только когда нужен твой анализ, сравнение или совет.
+10. Если нужно несколько функций для одного вопроса — вызывай их сразу вместе, в одном ответе.`;
 }
 
 const HIST = new Map<number, { at: number; items: any[] }>();
@@ -445,7 +516,9 @@ async function gemini(body: any) {
 export async function ask(db: any, chatId: number, userParts: any[], qText: string) {
   const contents: any[] = [...history(chatId), { role: 'user', parts: userParts }];
   const used: string[] = [];
-  for (let step = 0; step < 7; step++) {
+  let requests = 0;
+  for (let step = 0; step < 6; step++) {
+    requests++;
     const d = await gemini({
       systemInstruction: { parts: [{ text: systemPrompt(db) }] }, contents,
       tools: [{ functionDeclarations: declarations }], generationConfig: { temperature: 0.1 },
@@ -459,19 +532,53 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       text = text.replace(/\*\*|__|^#+\s*/gm, '').replace(/^\s*[-*]\s+/gm, '• ');
       const heard = (text.match(/^🎤\s*«([^»]+)»/) || [])[1];
       remember(chatId, heard || qText, text);
-      return { text: text || 'Не нашёл, что ответить. Переформулируйте, пожалуйста.', used };
+      return { text: text || 'Не нашёл, что ответить. Переформулируйте, пожалуйста.', used, requests };
     }
-    const responses = [];
+    const responses = [], done: { name: string; args: any; result: any }[] = [];
     for (const p of calls) {
-      const { name, args } = p.functionCall; used.push(name);
+      const { name } = p.functionCall, args = { ...(p.functionCall.args || {}) }; used.push(name);
       let result: any;
-      try { result = TOOLS[name] ? await TOOLS[name].run(db, args || {}, { chatId }) : { error: 'нет такой функции' }; } catch (e) { result = { error: (e as Error).message }; }
+      try { result = TOOLS[name] ? await TOOLS[name].run(db, args, { chatId }) : { error: 'нет такой функции' }; } catch (e) { result = { error: (e as Error).message }; }
+      done.push({ name, args, result });
       responses.push({ functionResponse: { name, response: { result } } });
+    }
+    // simple question → answer from the template right away, without a second Gemini request
+    if (step === 0 && done.every(c => !c.args.explain && (TPL[c.name] || c.result?.error))) {
+      const heard = done.map(c => c.args.heard).find(Boolean);
+      const body = done.map(c => ambiguity(c.result) || TPL[c.name](c.result)).join('\n\n');
+      const text = (heard ? `🎤 «${heard}»\n\n` : '') + body;
+      remember(chatId, heard || qText, text.slice(0, 1500));
+      return { text, used, requests };
     }
     contents.push({ role: 'user', parts: responses });
   }
-  return { text: 'Вопрос получился слишком сложным — разбейте, пожалуйста, на части.', used };
+  return { text: 'Вопрос получился слишком сложным — разбейте, пожалуйста, на части.', used, requests };
 }
+
+// ───────────────────────────── quick commands (no AI at all) ─────────────────────────────
+function planPeriod() {
+  const t = todayStr(), [y, m, d] = t.split('-').map(Number);
+  const from = d >= 16 ? `${y}-${String(m).padStart(2, '0')}-16` : (m === 1 ? `${y - 1}-12-16` : `${y}-${String(m - 1).padStart(2, '0')}-16`);
+  return { from, to: t };
+}
+async function command(text: string, chatId: number): Promise<string | null> {
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|sleep|data)(?:@\w+)?\s*(.*)$/i); if (!m) return null;
+  const cmd = m[1].toLowerCase(), arg = m[2].trim(), db = await loadDB();
+  const run = (name: string, a: any) => { const r = TOOLS[name].run(db, a, { chatId }); return ambiguity(r) || TPL[name](r); };
+  if (cmd === 'today') return run('collect_today', { agent: arg || undefined, limit: 20 });
+  if (cmd === 'dolg') return run('debtors', { agent: arg || undefined, limit: 20 });
+  if (cmd === 'agents') return run('agents_overview', planPeriod());
+  if (cmd === 'sleep') return run('sleeping_clients', { agent: arg || undefined, min_days: 14 });
+  if (cmd === 'data') return run('data_status', {});
+  if (cmd === 'sklad') return run('stock', { product: arg || undefined });
+  if (!arg) return 'Напишите имя: /k Фозилхон';
+  const f = TOOLS.find_client.run(db, { query: arg }, { chatId });
+  if (f.found === 1) return run('client_card', { client: f.clients[0].name });
+  return TPL.find_client(f);
+}
+
+// the same text question asked again within 5 minutes, with nothing else asked in between, is answered from memory
+const ANS = new Map<string, { at: number; text: string; mem?: string }>();
 
 // ───────────────────────────── Telegram ─────────────────────────────
 async function tg(method: string, params: any) {
@@ -498,6 +605,14 @@ const HELP = `Я AI-помощник MITAL CRM. Спрашивайте текс�
 • Пришли договор Pop Sarvarbek
 • Кто не брал товар больше 2 недель?
 • Остаток Liman ATF на складе в Фергане
+Быстрые команды (мгновенно, без ИИ):
+/today — кого дожимать сегодня
+/dolg — должники (можно: /dolg Адхамжон)
+/agents — итоги агентов за период
+/k Фозилхон — карточка клиента
+/sleep — кто давно не брал
+/sklad Liman ATF — остатки
+/data — когда обновлялись данные
 /new — начать разговор заново`;
 
 const seen = new Map<number, number>();
@@ -519,10 +634,16 @@ async function handle(u: any) {
   const typing = setInterval(() => tg('sendChatAction', { chat_id: chatId, action: 'typing' }), 4500);
   try {
     const t0 = Date.now();
-    const [db, vp] = await Promise.all([loadDB(/^\/fresh/.test(text)), voice ? voicePart(voice.file_id) : null]);
-    const parts = vp ? [vp, { text: '(голосовое сообщение — сначала напиши, что услышал)' }] : [{ text }];
+    const quick = text ? await command(text, chatId) : null;
+    if (quick) { console.log('command', Date.now() - t0, 'ms'); return await say(chatId, quick); }
+    if (/^\/fresh/.test(text)) { await loadDB(true); return await say(chatId, '🔄 Данные обновлены.'); }
+    const key = text ? `${chatId}|${norm(text)}` : '', hit = key && ANS.get(key);
+    if (hit && Date.now() - hit.at < 300e3 && history(chatId).at(-1)?.parts?.[0]?.text === hit.mem) return await say(chatId, hit.text);
+    const [db, vp] = await Promise.all([loadDB(), voice ? voicePart(voice.file_id) : null]);
+    const parts = vp ? [vp, { text: '(голосовое сообщение: передай в поле heard, что услышал)' }] : [{ text }];
     const res = await ask(db, chatId, parts, text || '[голосовое]');
-    console.log('ok', Date.now() - t0, 'ms', res.used.join(','));
+    console.log('ok', Date.now() - t0, 'ms', 'gemini requests:', res.requests, res.used.join(','));
+    if (key) { ANS.set(key, { at: Date.now(), text: res.text, mem: history(chatId).at(-1)?.parts?.[0]?.text }); if (ANS.size > 200) ANS.clear(); }
     await say(chatId, res.text);
   } catch (e) {
     console.error(e);
@@ -537,7 +658,7 @@ async function serve(req: Request) {
     if (CFG.secret() && url.searchParams.get('setup') === CFG.secret()) {
       const hook = env('SUPABASE_URL') ? `${env('SUPABASE_URL')}/functions/v1/ai-bot` : `https://${url.host}/functions/v1/ai-bot`;
       const r = await tg('setWebhook', { url: hook, secret_token: CFG.secret(), allowed_updates: ['message', 'edited_message'], drop_pending_updates: true });
-      await tg('setMyCommands', { commands: [{ command: 'help', description: 'Что я умею' }, { command: 'new', description: 'Начать разговор заново' }, { command: 'fresh', description: 'Обновить данные сейчас' }] });
+      await tg('setMyCommands', { commands: [{ command: 'today', description: 'Кого дожимать сегодня' }, { command: 'dolg', description: 'Должники' }, { command: 'agents', description: 'Итоги агентов за период' }, { command: 'k', description: 'Карточка клиента: /k имя' }, { command: 'sleep', description: 'Кто давно не брал' }, { command: 'sklad', description: 'Остатки: /sklad товар' }, { command: 'data', description: 'Свежесть данных' }, { command: 'fresh', description: 'Обновить данные сейчас' }, { command: 'new', description: 'Начать разговор заново' }, { command: 'help', description: 'Что я умею' }] });
       return new Response(JSON.stringify({ webhook: hook, telegram: r }, null, 2), { headers: { 'Content-Type': 'application/json; charset=utf-8' } });
     }
     return new Response('MITAL AI bot is running');
