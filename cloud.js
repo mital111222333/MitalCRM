@@ -295,6 +295,7 @@ window.CLOUD = (() => {
   // the button «Перенести мои данные в базу»: the first copy of this device's data goes to the signed-in person's workspace
   async function moveToDb() {
     const p = me(); if (!p) throw new Error('Войдите в свой аккаунт (агентам перенос не нужен)');
+    if (p.role !== 'admin') throw new Error('Перенос со старого хранилища нужен только администратору: у вас данные сразу в базе');
     if (foreign()) throw new Error('На этом устройстве данные другого аккаунта');
     const { data: row, error } = await AUTH.sb.from('workspaces').select('version, summary').eq('owner_id', p.id).maybeSingle();
     if (error) throw sbErr(error, 'нет связи');
@@ -349,6 +350,28 @@ window.CLOUD = (() => {
 
   return {
     on: () => !!store(), store, foreign, moveToDb, checkDb, wsOwner: () => get(WS.owner),
+    // «this device is now mine»: the other account's data is removed from this browser (it stays in the database) and the
+    // signed-in person's own data is loaded from the database. Refused while the other account has unsent changes here.
+    async takeDevice() {
+      const p = me(); if (!p) throw new Error('Войдите в свой аккаунт');
+      if (get(LS.dirty)) throw new Error('Здесь есть несохранённые изменения другого аккаунта. Пусть он войдёт и сохранит их, потом повторите.');
+      CRMLocal.engine.reset(); await CRMLocal.save();
+      set(WS.owner, p.id); set(LS.sha, null); set(LS.dirty, null); set(LS.user, null);
+      await sync();
+    },
+    // may the signed-in person see the CRM data kept in THIS browser? (the data on a device is one, not per account)
+    //   'agent'   — agents never see the CRM (their own screen comes later; now: the cabinet in Telegram)
+    //   'foreign' — the data here belongs to another account (or to nobody known while there is data): nothing is shown
+    //   'wait'    — the local data is still loading
+    //   null      — yes: the device is his, or it is empty, or it is the admin's own old device not moved yet
+    gate() {
+      const p = window.AUTH?.profile; if (!p) return null; // not signed in: app.js shows the sign-in form
+      if (p.role === 'agent') return 'agent';
+      if (!CRMLocal.engine) return 'wait';
+      const o = get(WS.owner);
+      if (o) return o === p.id ? null : 'foreign';
+      return isEmpty() || p.role === 'admin' ? null : 'foreign';
+    },
     // read another (small) file of the data repository, e.g. linko-latest.json written by the auto-loader
     // remembers each file's ETag: an unchanged file costs one tiny request (304) instead of a full download
     async readJson(path) {
@@ -564,7 +587,7 @@ function loadCss(href) {
     if (!AUTH?.sb || !p || p.role === 'agent') return;
     const grid = el.querySelector('.grid'); if (!grid) return;
     const box = document.createElement('div'); box.style.display = 'contents'; grid.prepend(box);
-    const st = CLOUD.store(), foreign = CLOUD.foreign();
+    const st = CLOUD.store(), foreign = CLOUD.gate() === 'foreign';
     const rows = r => `<div class="tscroll"><table><thead><tr><th></th><th class="n">На этом устройстве</th><th class="n">В базе</th></tr></thead><tbody>
       ${[['Загрузок склада', 'wh'], ['Загрузок по агентам', 'ag'], ['Клиентов с карточками', 'clients'], ['Заданий', 'tasks'], ['Разделов настроек', 'ext']]
         .map(([t, k]) => `<tr><td>${t}</td><td class="n">${UI.fmt0(r.local[k])}</td><td class="n ${r.local[k] === r.remote[k] ? '' : 'neg'}">${UI.fmt0(r.remote[k])}</td></tr>`).join('')}</tbody></table></div>
@@ -595,11 +618,9 @@ function loadCss(href) {
     });
     $('#dbCheck', box)?.addEventListener('click', e => run(e.target, () => CLOUD.checkDb()));
     $('#dbClear', box)?.addEventListener('click', async () => {
-      if (CLOUD.status().dirty) return toast('Есть несохранённые изменения другого аккаунта — пусть он сначала войдёт и сохранит их');
       if (!confirm('Удалить с этого устройства данные другого аккаунта и загрузить ваши из базы? В базе его данные останутся.')) return;
-      CRMLocal.engine.reset(); await CRMLocal.save();
-      try { localStorage.setItem('crm_ws_owner', p.id); localStorage.removeItem('crm_cloud_sha'); localStorage.removeItem('crm_cloud_dirty'); } catch { /* storage blocked */ }
-      await CLOUD.sync(); EXT_PAGES.cloud(el);
+      try { await CLOUD.takeDevice(); } catch (e) { return toast(e.message || String(e)); }
+      EXT_PAGES.cloud(el);
     });
   };
 }

@@ -142,8 +142,31 @@ function route() {
     if (to && to !== name) { location.hash = '#/' + to; return; }
     el.innerHTML = '<div class="soon">Для вашей роли нет доступных разделов. Обратитесь к администратору.</div>'; return;
   }
+  // the CRM data in this browser is shown only to the account it belongs to (cloud.js → CLOUD.gate); agents never see it
+  const g = window.CLOUD?.gate?.();
+  document.body.classList.toggle('gated', !!g && g !== 'wait');
+  if (g) return gatePage(el, g);
   (PAGES[name] || PAGES.soon)(el);
 }
+function gatePage(el, g) {
+  if (g === 'wait') { el.innerHTML = '<div class="soon">Загрузка…</div>'; CRMLocal.ready.then(() => route()); return; }
+  const out = '<button class="btn gray" id="gOut" type="button">Выйти из аккаунта</button>';
+  el.innerHTML = g === 'agent'
+    ? `<div class="empty-state"><h3>Здравствуйте, ${esc(me?.name || '')}!</h3><p>Вы вошли как <b>агент</b>. Ваш личный раздел в CRM появится позже.<br>
+        Пока ваши клиенты, долги, план и зарплата — в Telegram: кнопка <b>«📱 Мой кабинет»</b> в боте супервайзера.</p><div class="bar" style="justify-content:center">${out}</div></div>`
+    : `<div class="empty-state"><h3>На этом устройстве данные другого аккаунта</h3><p>Чтобы не перепутать и не показать чужие данные, CRM здесь закрыта.<br>
+        Если это ваше устройство, очистите его — ваши данные загрузятся из базы, а данные того аккаунта останутся у него в базе.</p>
+        <div class="bar" style="justify-content:center"><button class="btn" id="gTake" type="button">Очистить устройство и загрузить мои данные</button>${out}</div><p class="neg" id="gErr" role="alert"></p></div>`;
+  $('#gOut', el).onclick = async () => { try { await api('/api/logout', { method: 'POST', body: {} }); } catch { /* already signed out */ } signOut(); };
+  const take = $('#gTake', el);
+  if (take) take.onclick = async () => {
+    if (!confirm('Удалить с этого устройства данные другого аккаунта и загрузить ваши из базы? В базе его данные останутся.')) return;
+    take.disabled = true;
+    try { await CLOUD.takeDevice(); route(); } catch (e) { $('#gErr', el).textContent = e.message || String(e); take.disabled = false; }
+  };
+}
+// a device joins its owner a moment after start (cloud.js «claim»): a closed page opens by itself when that happens
+document.addEventListener('cloud-status', () => { if (document.body.classList.contains('gated') && !window.CLOUD?.gate?.()) route(); });
 window.onhashchange = route;
 
 (async function boot() {
