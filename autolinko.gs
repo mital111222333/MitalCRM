@@ -82,20 +82,10 @@ function base_() {
 function collect_() {
   const today = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd');
   const from = planFrom_(today), files = [];
-  const q = 'only_out_stock=False&is_only_delivered=False&last_status=False&exclude_closed_clients=false&only_payment_with_invoice=false&begin_date=' + from + '&end_date=' + today;
   // 1) client balance: LINKO's Excel export (it has agents), otherwise the same numbers from the API
-  let got = false;
-  for (const u of [CFG.LINKO_API + 'stats/client_balances_expanded/export/?token=' + CFG.LINKO_TOKEN + '&' + q, CFG.LINKO_API + 'stats/client_balances_expanded/export/?' + q]) {
-    let r; try { r = fetch_(u, { headers: auth_(), muteHttpExceptions: true, followRedirects: true }); } catch (e) { continue; }
-    const b = r.getContent();
-    if (r.getResponseCode() === 200 && b.length > 4 && b[0] === 0x50 && b[1] === 0x4b) { files.push({ name: 'balance - ' + today + 'T000000.xlsx', b64: Utilities.base64Encode(b) }); got = true; break; }
-  }
-  if (!got) {
-    const list = all_('stats/client_balances_expanded/?' + q + '&page=1&page_size=500');
-    const rows = [['№', 'Клиент', 'Агент', 'Баланс на начало периода', 'Продано', 'Возврат', 'Оплачено', 'Прочие приходы', 'Прочие расходы', 'Баланс на конец']];
-    list.forEach(c => { const u = (c.currencies || []).filter(x => x.name === 'USD')[0] || {}; rows.push([c.client_id || c.id, c.name, '', n_(u.begin_balance), n_(u.order), n_(u.order_return), n_(u.payment), n_(u.none_type_plus), n_(u.none_type_minus), n_(u.end_balance)]); });
-    files.push({ name: 'balance - ' + today + 'T000000.csv', b64: Utilities.base64Encode(csv_(rows), Utilities.Charset.UTF_8) });
-  }
+  files.push(balanceFile_(from, today, 'balance - ' + today + 'T000000'));
+  // 1b) the previous period through its extra day (16.10–16.11), exactly as LINKO shows it — for payroll and final reports
+  try { const pv = prevBalance_(today); if (pv) files.push(pv); } catch (e) { if (/ключ/.test(e.message || '')) throw e; Logger.log('Итог прошлого периода: ' + mask_(e.message || e)); }
   // 2) stock of every warehouse (branch) that has goods; the list of branches is looked up once every 6 hours
   const P = PropertiesService.getScriptProperties();
   let known = null; try { known = JSON.parse(P.getProperty('branches') || 'null'); } catch (e) { known = null; }
@@ -640,6 +630,7 @@ function now_() {
     list.forEach(c => { const u = (c.currencies || []).filter(x => x.name === 'USD')[0] || {}; rows.push([c.client_id || c.id, c.name, '', n_(u.begin_balance), n_(u.order), n_(u.order_return), n_(u.payment), n_(u.none_type_plus), n_(u.none_type_minus), n_(u.end_balance)]); });
     files.push({ name: 'balance - ' + today + 'T000000.csv', b64: Utilities.base64Encode(csv_(rows), Utilities.Charset.UTF_8) });
   }
+  try { const pv = prevBalance_(today); if (pv) files.push(pv); } catch (e) { Logger.log('Итог прошлого периода: ' + mask_(e.message || e)); }
   // 2) warehouses
   const found = [];
   lists.filter(l => l.br).forEach(l => {
@@ -695,6 +686,30 @@ function fetchAll_(reqs) {
   if (!reqs.length) return [];
   try { return UrlFetchApp.fetchAll(reqs); }
   catch (e) { return reqs.map(r => { try { const o = Object.assign({}, r); delete o.url; return fetch_(r.url, o); } catch (e2) { return e2 instanceof Error ? e2 : new Error(String(e2)); } }); }
+}
+
+// the LINKO client balance of one period as a file: the Excel export (it has agents), otherwise the same numbers from the API
+function balanceFile_(from, to, name) {
+  const q = 'only_out_stock=False&is_only_delivered=False&last_status=False&exclude_closed_clients=false&only_payment_with_invoice=false&begin_date=' + from + '&end_date=' + to;
+  for (const u of [CFG.LINKO_API + 'stats/client_balances_expanded/export/?token=' + CFG.LINKO_TOKEN + '&' + q, CFG.LINKO_API + 'stats/client_balances_expanded/export/?' + q]) {
+    let r; try { r = fetch_(u, { headers: auth_(), muteHttpExceptions: true, followRedirects: true }); } catch (e) { continue; }
+    const b = r.getContent();
+    if (r.getResponseCode() === 200 && b.length > 4 && b[0] === 0x50 && b[1] === 0x4b) return { name: name + '.xlsx', b64: Utilities.base64Encode(b) };
+  }
+  const list = all_('stats/client_balances_expanded/?' + q + '&page=1&page_size=500');
+  const rows = [['№', 'Клиент', 'Агент', 'Баланс на начало периода', 'Продано', 'Возврат', 'Оплачено', 'Прочие приходы', 'Прочие расходы', 'Баланс на конец']];
+  list.forEach(c => { const u = (c.currencies || []).filter(x => x.name === 'USD')[0] || {}; rows.push([c.client_id || c.id, c.name, '', n_(u.begin_balance), n_(u.order), n_(u.order_return), n_(u.payment), n_(u.none_type_plus), n_(u.none_type_minus), n_(u.end_balance)]); });
+  return { name: name + '.csv', b64: Utilities.base64Encode(csv_(rows), Utilities.Charset.UTF_8) };
+}
+// In the first 10 days of a plan period: the balance of the PREVIOUS period through the 16th (e.g. 16.10–16.11), straight from LINKO.
+// Without it the CRM glues the final together from its last snapshot of the 15th + the snapshot of the 16th, and misses payments
+// made after the last snapshot of a day (the loader sleeps 23:00–7:00) or accepted in LINKO later with an earlier date.
+// The CRM reads the period from the name «balance 2026-10-16_2026-11-16 - 2026-11-17T000000.xlsx» and keeps LINKO's «Оплачено».
+function prevBalance_(today) {
+  const P = planFrom_(today), age = Math.round((Date.parse(today + 'T12:00:00Z') - Date.parse(P + 'T12:00:00Z')) / 864e5);
+  if (age < 0 || age > 9) return null;
+  const O = planFrom_(Utilities.formatDate(new Date(Date.parse(P + 'T12:00:00Z') - 864e5), 'UTC', 'yyyy-MM-dd'));
+  return balanceFile_(O, P, 'balance ' + O + '_' + P + ' - ' + today + 'T000000');
 }
 
 function planFrom_(d) {

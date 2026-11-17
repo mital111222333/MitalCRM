@@ -46,10 +46,11 @@ const PAY = {
     const end = PLAN.end(from), grace = UI.localDate(Date.parse(end + 'T12:00:00') + 864e5);
     const own = (CRMLocal.engine.getState().ag.uploads || []).filter(u => u.period_from === from && !u.synth).sort((a, b) => (a.taken_at < b.taken_at ? 1 : a.taken_at > b.taken_at ? -1 : b.id - a.id));
     const all = (CRMLocal.engine.getState().ag.uploads || []).filter(u => u.period_from === from);
-    const top = all.find(u => u.period_to === grace) || own.find(u => u.taken_at <= end) || own[0];
+    // the LINKO file of the period through the 16th wins over the final the CRM glued together itself (synth)
+    const top = own.find(u => u.period_to === grace) || all.find(u => u.period_to === grace) || own.find(u => u.taken_at <= end) || own[0];
     if (!top) return null;
     const d = await CRMLocal.request('GET', '/api/ag/dashboard?upload=' + top.id);
-    return d && !d.error && !d.empty ? { d, at: top.taken_at, final: top.period_to === grace } : null;
+    return d && !d.error && !d.empty ? { d, at: top.taken_at, final: top.period_to === grace, linko: top.period_to === grace && !top.synth } : null;
   },
   // days at work in the period from the attendance sheet: a report = 1, half a day = 0.5, командировка = 1; the rest are not paid
   workedOf(name, from, end) {
@@ -157,7 +158,7 @@ EXT_PAGES.pay = async el => {
       <button class="btn gray sm" id="pyXls" type="button">⬇ Excel</button>
       ${closed ? `<span class="pill good">месяц закрыт ${new Date(p.closed).toLocaleDateString('ru-RU')}</span> <button class="btn gray sm" id="pyReopen" type="button">Открыть заново</button>` : '<button class="btn" id="pyClose" type="button">✓ Закрыть месяц и разослать</button>'}</div>
     ${!rate ? '<p class="neg"><b>Впишите курс доллара</b> (или «Курс ЦБ») — без него суммы в $ не переводятся в сумы.</p>' : ''}
-    ${!D ? '<p class="mut">⚠ Нет баланса LINKO за этот период — собранные деньги, процент и бонус = 0.</p>' : !D.final && end < UI.localDate(Date.now()) ? '<p class="mut">⚠ Итогового баланса за этот период (с оплатами 16-го) ещё нет — сбор по последнему балансу периода.</p>' : ''}
+    ${!D ? '<p class="mut">⚠ Нет баланса LINKO за этот период — собранные деньги, процент и бонус = 0.</p>' : !D.final && end < UI.localDate(Date.now()) ? '<p class="mut">⚠ Итогового баланса за этот период (с оплатами 16-го) ещё нет — сбор по последнему балансу периода.</p>' : D.final && !D.linko ? '<p class="mut">⚠ Итог периода собран CRM из снимков (15-е + оплаты 16-го) — файла LINKO за период по 16-е ещё нет, суммы могут немного отличаться от LINKO. Обновите скрипт автозагрузки.</p>' : ''}
     <div class="kpis">
       ${UI.tile('К выплате всего', rate ? PAY.sum(tot('total')) : 'нужен курс', { sub: rows.length + ' чел.' + (rate ? '' : ' · впишите курс $'), hero: true })}
       ${UI.tile('Фикс + % + бонус', PAY.usd(tot('usd')) + (totFixUzs ? ' + ' + PAY.sum(totFixUzs) : ''), { sub: rate ? '≈ ' + PAY.sum(tot('usd') * rate + totFixUzs) : 'нужен курс' })}
