@@ -310,12 +310,24 @@ window.CLOUD = (() => {
   }
 
   // downloads the database copy again and compares it with this device, item by item
+  // first sends what changed here since the last save (the LINKO auto-loader changes the data by itself every few minutes),
+  // then compares the data exactly as it is written to the file (empty fields are not written, so they are not compared)
   async function checkDb() {
+    await CRMLocal.save();
+    if (store() === 'sb' && get(LS.dirty)) await sync({ quiet: true });
     const remote = await pullSb({ fresh: true });
     if (remote.missing) throw new Error('В базе ещё нет ваших данных');
-    await CRMLocal.flushLocal?.();
-    const local = CRMLocal.engine.getState();
-    return { same: stable(local) === stable(remote.state), local: counts(local), remote: counts(remote.state), version: ver(remote.sha), savedAt: remote.savedAt };
+    const local = JSON.parse(JSON.stringify(CRMLocal.engine.getState())), there = JSON.parse(JSON.stringify(remote.state));
+    const diffs = [];
+    (function walk(a, b, path) {
+      if (diffs.length >= 8) return;
+      if (stable(a) === stable(b)) return;
+      if (a && b && typeof a === 'object' && typeof b === 'object' && Array.isArray(a) === Array.isArray(b)) {
+        if (Array.isArray(a) && a.length !== b.length) return diffs.push(`${path} (${a.length} здесь, ${b.length} в базе)`);
+        for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) walk(a[k], b[k], path ? `${path}.${k}` : k);
+      } else diffs.push(path || 'всё');
+    })(local, there, '');
+    return { same: !diffs.length, diffs, dirty: !!get(LS.dirty), local: counts(local), remote: counts(there), version: ver(remote.sha), savedAt: remote.savedAt };
   }
 
   // signing in or out on an open page: pick up the person's workspace without a reload
@@ -554,8 +566,9 @@ function loadCss(href) {
     const rows = r => `<div class="tscroll"><table><thead><tr><th></th><th class="n">На этом устройстве</th><th class="n">В базе</th></tr></thead><tbody>
       ${[['Загрузок склада', 'wh'], ['Загрузок по агентам', 'ag'], ['Клиентов с карточками', 'clients'], ['Заданий', 'tasks'], ['Разделов настроек', 'ext']]
         .map(([t, k]) => `<tr><td>${t}</td><td class="n">${UI.fmt0(r.local[k])}</td><td class="n ${r.local[k] === r.remote[k] ? '' : 'neg'}">${UI.fmt0(r.remote[k])}</td></tr>`).join('')}</tbody></table></div>
-      <p style="margin-bottom:0">${r.same ? '<b class="pos">✓ Полностью совпадает</b> — каждая запись в базе такая же, как здесь.' : '<b class="neg">✗ Есть различия.</b> Ничего не удаляйте и напишите об этом.'}
-      <span class="mut">Версия в базе: ${r.version}, сохранена ${new Date(r.savedAt).toLocaleString('ru-RU')}.</span></p>`;
+      <p style="margin-bottom:0">${r.same ? '<b class="pos">✓ Полностью совпадает</b> — каждая запись в базе такая же, как здесь.' : `<b class="neg">✗ Есть различия.</b> Ничего не удаляйте и напишите об этом.${r.dirty ? ' Последние изменения ещё не отправились: подождите минуту и проверьте снова.' : ''}`}
+      <span class="mut">Версия в базе: ${r.version}, сохранена ${new Date(r.savedAt).toLocaleString('ru-RU')}.</span></p>
+      ${r.diffs?.length ? `<p class="mut" style="margin-bottom:0">Где различие: ${r.diffs.map(d => `<code>${esc(d)}</code>`).join(', ')}</p>` : ''}`;
     const body = foreign
       ? `<p style="margin-top:0"><b class="neg">На этом устройстве данные другого аккаунта.</b> Чтобы не перепутать данные, синхронизация здесь остановлена.</p>
          <p class="mut">Если тот человек уже сохранил свои данные в базу, это устройство можно очистить и загрузить ваши. Его данные останутся в базе.</p>
