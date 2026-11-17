@@ -147,7 +147,8 @@ tfoot td { background: var(--card-2); }
   nav.top .logo { display: inline; font: 700 19px var(--display); color: #fff; text-decoration: none; letter-spacing: -.02em; margin: 0; }
   nav.top .crumb { color: #9fb4c4; font-weight: 500; font-size: 13px; }
   nav.top .crumb::before { content: "/ "; color: #5d7486; }
-  nav.top .user, nav.top #me { display: none; }
+  nav.top .user:not(#out), nav.top #me { display: none; }
+  nav.top #out { color: #dfe8ef; margin-left: 10px; white-space: nowrap; }
   #cloudBadge { background: #ffffff14; border-color: #ffffff26; color: #dfe8ef; }
   #themeBtn { background: #ffffff14; border-color: #ffffff26; color: #dfe8ef; margin: 0; }
   main { padding: 16px 14px calc(84px + env(safe-area-inset-bottom)); }

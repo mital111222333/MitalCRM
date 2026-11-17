@@ -168,7 +168,7 @@
     [['abc', 'ABC клиентов'], ['anew', 'Новые точки'], ['rsleep', 'Спящие клиенты'], ['wake', 'Возврат спящих'], ['assort', 'Ассортимент'], ['lxcross', 'Кому что предложить'], ['lxbrand', 'Бренды и товары']],
     [['whstock', 'Остатки'], ['whlow', 'Заканчивается'], ['whmove', 'Движение'], ['whorder', 'Заявка в Ташкент'], ['wh', 'Обзор']],
     [['ranalytics', 'Аналитика'], ['rdyn', 'По периодам'], ['rdays', 'По дням и неделям'], ['lxprof', 'Прибыль по товарам'], ['ai', 'ИИ-ассистент']],
-    [['cloud', 'Синхронизация'], ['tg', 'Telegram агентам'], ['access', 'Доступ агентов'], ['chat', 'Чаты Telegram'], ['up', 'Загрузить вручную'], ['aup', 'Загрузки баланса'], ['whup', 'Загрузки склада'], ['archive', 'Архив'], ['data', 'Резервная копия']],
+    [['cloud', 'Синхронизация'], ['users', 'Пользователи'], ['tg', 'Telegram агентам'], ['access', 'Доступ агентов'], ['chat', 'Чаты Telegram'], ['up', 'Загрузить вручную'], ['aup', 'Загрузки баланса'], ['whup', 'Загрузки склада'], ['archive', 'Архив'], ['data', 'Резервная копия']],
   ];
   window.MENU_OPTIONAL = {};
   window.MENU_HIDDEN = r => { if (!(r in MENU_OPTIONAL)) return false; let on = []; try { on = JSON.parse(localStorage.getItem('crm_menu_extra') || '[]'); } catch { /* none */ } return !on.includes(r); };

@@ -236,7 +236,7 @@ td input.cell { width: 92px; text-align: right; padding: 4px 8px; min-height: 30
 @media (max-width: 1100px) { #me .role { display: none; } nav.top .menu > button { padding-left: 9px; padding-right: 9px; } nav.top .logo { margin-right: 10px; } .branch { max-width: 120px; margin-right: 8px; } }
 
 /* static (serverless) version: no sign-in, no branches, no password */
-.static-mode #branch, .static-mode #out { display: none !important; }
+.static-mode #branch { display: none !important; }
 .static-mode #me { pointer-events: none; cursor: default; }
 
 /* ============ Add-ons: sync, reports, AI, Telegram ============ */

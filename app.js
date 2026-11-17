@@ -73,7 +73,7 @@ function profileModal() {
 function render() {
   const app = $('#app');
   if (!token || !me) {
-    app.innerHTML = `<form class="login"><h3>Вход</h3><input name="login" placeholder="Логин" autocomplete="username" autofocus><input name="password" type="password" placeholder="Пароль" autocomplete="current-password"><button class="btn">Войти</button><small id="err" class="neg" role="alert"></small></form>`;
+    app.innerHTML = `<form class="login"><h3>Вход</h3><input name="login" placeholder="Логин или почта" autocomplete="username" autofocus><input name="password" type="password" placeholder="Пароль" autocomplete="current-password"><button class="btn">Войти</button><small id="err" class="neg" role="alert"></small></form>`;
     $('form').onsubmit = async e => {
       e.preventDefault();
       const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ login: e.target.login.value, password: e.target.password.value }) });
