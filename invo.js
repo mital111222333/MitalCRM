@@ -298,7 +298,7 @@ const INVO = {
   },
   orderCard(r, after) {
     const M = LX.model(), f = INVO.money2, x = r.x || {}, pl = INVO.planOf(r), today = UI.localDate(Date.now()), c = INVO.cfg();
-    const lines = M.lines.filter(l => String(l.order) === String(r.id));
+    const same = l => String(l.order) === String(r.id), lines = M.lines.filter(same).concat(M.lines.some(same) ? [] : (LX.ordX?.lines || []).filter(same)); // an older order taken from LINKO on «Заказы по дням»
     const disc = Math.round((x.disc ?? r.disc) * 10) / 10, std = c.form.std ?? 10, tg = CRMLocal.ext().tg || {}, on = !!INST.cfg().on;
     const meOk = !!tg.me?.id, agOk = !!tg.chats?.[r.agent]?.id, hour = String(INST.cfg().hour ?? 9).padStart(2, '0') + ':00';
     const ok = (v, yes, no) => v ? `<div>✅ ${yes}</div>` : `<div class="neg">⚠ ${no}</div>`;
