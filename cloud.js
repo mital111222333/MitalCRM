@@ -1,9 +1,11 @@
-// Cloud sync: the whole CRM state is kept as one compressed file in YOUR PRIVATE GitHub repository,
-// so the same data opens on the computer, the phone and any other device. GitHub Pages (this site) stays public;
-// the data repository is private and is reached only with the access key saved on each device.
-//
-//   file in the data repo: crm-data.json.gz  =  gzip(JSON {app, savedAt, device, state})
-//   every device remembers the version (sha) it last saw; a change made elsewhere is pulled on open and when the tab comes back.
+// Cloud sync: the whole CRM state is kept as one compressed file, so the same data opens on the computer, the phone and any other device.
+// Two stores:
+//   • the MITAL database (Supabase): each team lead's own workspace, reached by signing in — no keys on devices. РОП and admin can read it.
+//     file: Storage «workspaces»/<account id>/v<version>.json.gz; the keys inside the state (bot token, AI key…) go to workspace_secrets.
+//   • the old way: YOUR PRIVATE GitHub repository, file crm-data.json.gz, reached with the access key saved on each device.
+//   Once a device moved its data to the database («Синхронизация» → «База MITAL») it uses only the database.
+//   Both files are gzip(JSON {app, savedAt, device, state}); every device remembers the version it last saw.
+// LINKO files (linko-latest.json…) and the agents' cabinets are still read from / written to GitHub until LINKO moves to the server.
 window.CLOUD = (() => {
   // user: set when the unsent changes include your own edits, not only LINKO data the CRM loaded by itself
   const LS = { cfg: 'crm_cloud', sha: 'crm_cloud_sha', dirty: 'crm_cloud_dirty', at: 'crm_cloud_at', user: 'crm_cloud_user' };
@@ -15,6 +17,16 @@ window.CLOUD = (() => {
   if (get(LS.dirty)) set(LS.user, '1'); // unsent changes left from before this page opened are always treated as yours
   const cfg = () => { try { const c = JSON.parse(get(LS.cfg) || 'null'); return c && c.owner && c.repo && c.token ? c : null; } catch { return null; } };
   const device = () => (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ? 'Телефон' : 'Компьютер') + ' · ' + (navigator.platform || '');
+
+  // ---------- where the state is kept: the MITAL database (Supabase, per person) or the old GitHub file ----------
+  // crm_ws_owner = the account this device's data belongs to. It is set only when the data is moved to the database
+  // (or on a device that had no data yet). A different person signing in here never gets this data sent to his workspace.
+  const WS = { owner: 'crm_ws_owner', BUCKET: 'workspaces' };
+  const me = () => (window.AUTH && AUTH.sb && AUTH.profile && AUTH.profile.role !== 'agent' ? AUTH.profile : null);
+  const sbOn = () => { const p = me(); return !!p && get(WS.owner) === p.id; };
+  const foreign = () => { const o = get(WS.owner), p = window.AUTH?.profile; return !!o && !!p && o !== p.id; }; // data of another account
+  // once the data moved to the database this device never writes the GitHub file again (not even offline or signed out)
+  const store = () => (get(WS.owner) ? (sbOn() ? 'sb' : null) : cfg() ? 'gh' : null);
 
   // a setup link (#/cloud?c=...) carries the connection settings to a new device: read it before the app starts routing
   try {
@@ -55,7 +67,87 @@ window.CLOUD = (() => {
   // returns {missing:true} | {sha, savedAt, device, state}
   // quick check first: if the cloud file is unchanged since we last saw it, GitHub answers 304 with no body — nothing is downloaded or unpacked
   let etag = null, etagSha = null; const jsonMemo = {};
-  async function pull(c = cfg()) {
+  const pull = (c = cfg(), o = {}) => (store() === 'sb' ? pullSb(o) : pullGh(c));
+  const push = (c = cfg(), o = {}) => (store() === 'sb' ? pushSb(o) : pushGh(c, o));
+
+  // ---------- the database store ----------
+  // secrets (Telegram bot token, AI key, LINKO web key…) are kept apart: only the owner can read them, РОП and admin see the CRM without them
+  const SECRET = ['token', 'key', 'secret'];
+  function splitSecrets(state) {
+    const ext = {}, secrets = {};
+    for (const [k, v] of Object.entries(state.ext || {})) {
+      if (v && typeof v === 'object' && !Array.isArray(v) && SECRET.some(s => s in v)) {
+        const keep = { ...v }, hide = {};
+        for (const s of SECRET) if (s in keep) { hide[s] = keep[s]; delete keep[s]; }
+        ext[k] = keep; secrets[k] = hide;
+      } else ext[k] = v;
+    }
+    return { state: { ...state, ext }, secrets };
+  }
+  const joinSecrets = (state, secrets) => {
+    const ext = { ...(state.ext || {}) };
+    for (const [k, v] of Object.entries(secrets || {})) ext[k] = { ...(ext[k] || {}), ...v };
+    return { ...state, ext };
+  };
+  const ver = sha => (/^sb\d+$/.test(sha || '') ? Number(sha.slice(2)) : null);
+  const fileOf = (owner, v) => `${owner}/v${v}.json.gz`;
+  const sbErr = (e, what) => new Error(`База MITAL: ${what}: ${e?.message || e}`);
+  let lastSecrets = null;
+
+  // {missing:true} | {sha:'sb<version>', unchanged:true} | {sha, savedAt, device, state}
+  async function pullSb({ fresh = false, owner = me()?.id } = {}) {
+    const sb = AUTH.sb;
+    const { data: row, error } = await sb.from('workspaces').select('version, saved_at, device').eq('owner_id', owner).maybeSingle();
+    if (error) throw Object.assign(sbErr(error, 'не удалось проверить версию'), { net: /fetch/i.test(error.message) });
+    if (!row) return { missing: true };
+    const sha = 'sb' + row.version;
+    if (!fresh && sha === get(LS.sha)) return { sha, unchanged: true };
+    const { data: blob, error: e2 } = await sb.storage.from(WS.BUCKET).download(fileOf(owner, row.version));
+    if (e2) throw sbErr(e2, 'не удалось скачать данные');
+    const data = JSON.parse(await gunzip(new Uint8Array(await blob.arrayBuffer())));
+    let state = data.state;
+    if (owner === me()?.id) {
+      const { data: s } = await sb.from('workspace_secrets').select('data').eq('owner_id', owner).maybeSingle();
+      lastSecrets = JSON.stringify(s?.data || {}); state = joinSecrets(state, s?.data);
+    }
+    return { sha, savedAt: data.savedAt, device: data.device, state };
+  }
+
+  async function pushSb({ force = false } = {}) {
+    const sb = AUTH.sb, owner = me().id;
+    await CRMLocal.flushLocal?.();
+    const full = CRMLocal.engine.getState(), savedAt = new Date().toISOString();
+    const { state, secrets } = splitSecrets(full);
+    const bytes = await gzip(JSON.stringify({ app: 'mitalcrm', savedAt, device: device(), state }));
+    if (bytes.length > 48e6) throw new Error('Данных стало слишком много (больше 48 МБ). Удалите старые загрузки в разделах «Загрузки».');
+    const { data: row, error } = await sb.from('workspaces').select('version').eq('owner_id', owner).maybeSingle();
+    if (error) throw sbErr(error, 'не удалось проверить версию');
+    const known = ver(get(LS.sha)), cur = row ? row.version : 0;
+    if (!force && row && known !== cur) return { conflict: true }; // somebody saved a newer version meanwhile
+    const next = cur + 1, path = fileOf(owner, next);
+    const up = await sb.storage.from(WS.BUCKET).upload(path, new Blob([bytes], { type: 'application/gzip' }), { upsert: true, contentType: 'application/gzip' });
+    if (up.error) throw sbErr(up.error, 'не удалось сохранить данные');
+    const s = CRMLocal.engine.summary(), meta = { version: next, saved_at: savedAt, saved_by: owner, device: device(), size: bytes.length, summary: s };
+    const q = row ? sb.from('workspaces').update(meta).eq('owner_id', owner).eq('version', cur).select('version')
+      : sb.from('workspaces').insert({ owner_id: owner, ...meta }).select('version');
+    const { data: done, error: e3 } = await q;
+    if (e3 || !done?.length) {
+      await sb.storage.from(WS.BUCKET).remove([path]);
+      if (e3 && !/duplicate/i.test(e3.message)) throw sbErr(e3, 'не удалось записать версию');
+      return { conflict: true };
+    }
+    const sj = JSON.stringify(secrets);
+    if (sj !== lastSecrets) {
+      const { error: e4 } = await sb.from('workspace_secrets').upsert({ owner_id: owner, data: secrets, updated_at: savedAt });
+      if (e4) throw sbErr(e4, 'не удалось сохранить ключи');
+      lastSecrets = sj;
+    }
+    if (next > 5) sb.storage.from(WS.BUCKET).remove([fileOf(owner, next - 5)]).catch(() => {}); // keep the last 5 versions
+    set(LS.sha, 'sb' + next); set(LS.dirty, null); set(LS.user, null); set(LS.at, savedAt);
+    return { ok: true, size: bytes.length };
+  }
+
+  async function pullGh(c = cfg()) {
     const known = get(LS.sha), useTag = etag && etagSha && etagSha === known;
     const r = await gh(c, 'GET', null, 'application/vnd.github+json', useTag ? { 'If-None-Match': etag } : {});
     if (r.status === 304 && useTag) return { sha: etagSha, unchanged: true };
@@ -74,7 +166,7 @@ window.CLOUD = (() => {
     return { sha: meta.sha, savedAt: data.savedAt, device: data.device, state: data.state };
   }
 
-  async function push(c = cfg(), { force = false } = {}) {
+  async function pushGh(c = cfg(), { force = false } = {}) {
     await CRMLocal.flushLocal?.();
     const state = CRMLocal.engine.getState(), savedAt = new Date().toISOString();
     const bytes = await gzip(JSON.stringify({ app: 'mitalcrm', savedAt, device: device(), state }));
@@ -104,6 +196,7 @@ window.CLOUD = (() => {
       pending: ['busy', '☁ Есть несохранённые изменения', 'Отправятся в облако через несколько секунд'],
       error: ['err', '☁ Ошибка синхронизации', message],
       conflict: ['err', '☁ Нужно выбрать версию', 'Данные изменены и здесь, и на другом устройстве'],
+      foreign: ['err', '☁ Данные другого аккаунта', 'На этом устройстве данные другого человека: синхронизация остановлена (Настройки → Синхронизация)'],
     }[status];
     b.className = 'cb-' + view[0]; b.innerHTML = `<span aria-hidden="true">☁</span><span class="cbt">${view[1].replace(/^☁ /, '')}</span>`; b.setAttribute('aria-label', view[1]); b.title = view[2] || '';
   };
@@ -135,7 +228,7 @@ window.CLOUD = (() => {
 
   // one sync step: send local changes, or pick up a newer cloud version
   async function sync({ force = false, quiet = false } = {}) {
-    const c = cfg(); if (!c) return setStatus('off');
+    const c = cfg(); if (!store()) return setStatus(foreign() ? 'foreign' : 'off');
     if (conflict) return;
     if (busy) return busy;
     busy = (async () => {
@@ -145,7 +238,7 @@ window.CLOUD = (() => {
           setStatus('saving');
           const r = await push(c, { force });
           if (r.conflict) {
-            const remote = await pull(c);
+            const remote = await pull(c, { fresh: true });
             // only LINKO data loaded by itself was unsent (two devices took the same new LINKO file at once):
             // take the cloud version and load LINKO on top of it if it is still newer — nothing of yours is lost, no question asked
             if (!get(LS.user) && !force && !remote.missing) {
@@ -160,7 +253,7 @@ window.CLOUD = (() => {
         if (!quiet) setStatus('loading');
         const remote = await pull(c);
         lastCheck = Date.now();
-        if (remote.missing) { setStatus('saving'); await push(c); return setStatus('ok'); }
+        if (remote.missing) { if (store() === 'sb' && isEmpty()) return setStatus('ok'); setStatus('saving'); await push(c); return setStatus('ok'); } // an empty device never creates an empty workspace
         const known = get(LS.sha);
         if (remote.sha === known) { setStatus('ok'); window.LINKO_AUTO?.check(); return; }
         const summary = CRMLocal.engine.summary(), localEmpty = !summary.wh && !summary.ag && !summary.tasks;
@@ -175,26 +268,75 @@ window.CLOUD = (() => {
 
   // called by static-api.js after every local save
   function changed() {
-    if (!cfg()) return;
+    if (!store()) return;
     set(LS.dirty, '1'); if (!autoN) set(LS.user, '1'); setStatus('pending');
     clearTimeout(timer); timer = setTimeout(() => sync(), 3000);
   }
+
+  // ---------- moving to the database ----------
+  const counts = st => ({ wh: st?.wh?.uploads?.length || 0, ag: st?.ag?.uploads?.length || 0, clients: Object.keys(st?.ag?.clients || {}).length, tasks: st?.ag?.tasks?.length || 0, ext: Object.keys(st?.ext || {}).length });
+  const isEmpty = () => { const s = CRMLocal.engine.summary(); return !s.wh && !s.ag && !s.tasks; };
+  // the same JSON whatever the key order: used to prove the copy in the database equals the data on this device
+  const stable = v => (Array.isArray(v) ? `[${v.map(stable).join(',')}]` : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',')}}` : JSON.stringify(v ?? null));
+
+  // a signed-in team lead on a device without an owner: if his workspace already exists, this device joins it
+  // (sync asks which version to keep when this device has its own data); a device with no data at all starts in the database
+  async function claim() {
+    const p = me(); if (!p || get(WS.owner)) return;
+    try {
+      const { data: row, error } = await AUTH.sb.from('workspaces').select('version, summary').eq('owner_id', p.id).maybeSingle();
+      if (error) return;
+      const blank = row && !row.summary?.wh && !row.summary?.ag && !row.summary?.tasks;
+      // a device with real data never joins an empty workspace by itself: its data is moved with the button, nothing is asked
+      if (row ? !(blank && !isEmpty()) : isEmpty() && !cfg()) { set(WS.owner, p.id); set(LS.sha, null); }
+    } catch { /* offline: next time */ }
+  }
+
+  // the button «Перенести мои данные в базу»: the first copy of this device's data goes to the signed-in person's workspace
+  async function moveToDb() {
+    const p = me(); if (!p) throw new Error('Войдите в свой аккаунт (агентам перенос не нужен)');
+    if (foreign()) throw new Error('На этом устройстве данные другого аккаунта');
+    const { data: row, error } = await AUTH.sb.from('workspaces').select('version, summary').eq('owner_id', p.id).maybeSingle();
+    if (error) throw sbErr(error, 'нет связи');
+    const blank = row && !row.summary?.wh && !row.summary?.ag && !row.summary?.tasks; // only an empty start was saved there: safe to replace
+    if (row && !blank) throw new Error('Ваши данные уже есть в базе. Обновите страницу: CRM предложит, какую версию оставить.');
+    if (isEmpty()) throw new Error('На этом устройстве нет данных для переноса. Откройте CRM там, где ваши данные (обычно основной компьютер).');
+    if (cfg() && get(LS.dirty) && !get(WS.owner)) await sync({ quiet: true }); // the GitHub copy gets the last changes too: it stays as a backup
+    set(WS.owner, p.id); set(LS.sha, null);
+    const r = await pushSb({ force: !!blank });
+    if (r.conflict) throw new Error('Данные в базе только что изменились — обновите страницу');
+    setStatus('ok');
+    return checkDb();
+  }
+
+  // downloads the database copy again and compares it with this device, item by item
+  async function checkDb() {
+    const remote = await pullSb({ fresh: true });
+    if (remote.missing) throw new Error('В базе ещё нет ваших данных');
+    await CRMLocal.flushLocal?.();
+    const local = CRMLocal.engine.getState();
+    return { same: stable(local) === stable(remote.state), local: counts(local), remote: counts(remote.state), version: ver(remote.sha), savedAt: remote.savedAt };
+  }
+
+  // signing in or out on an open page: pick up the person's workspace without a reload
+  addEventListener('crm:login', async () => { await claim(); if (store()) sync({ quiet: false }); else setStatus(foreign() ? 'foreign' : 'off'); });
+  addEventListener('crm:logout', () => { clearTimeout(timer); setStatus(store() ? status : 'off'); });
 
   // start: after the local data is loaded
   (async () => {
     await CRMLocal.ready;
     badge();
     new MutationObserver(() => { if (!document.querySelector('nav.top #cloudBadge') && document.querySelector('nav.top')) badge(); }).observe(document.getElementById('app'), { childList: true });
-    if (cfg()) await sync({ quiet: false });
+    await claim(); if (store()) await sync({ quiet: false }); else if (foreign()) setStatus('foreign');
     // newer versions from other devices are picked up every 30 seconds by live.js (and by «🔄 Обновить»); unsaved local changes are sent on their own
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden' && get(LS.dirty)) { clearTimeout(timer); sync({ quiet: true }); }
     });
-    addEventListener('online', () => cfg() && get(LS.dirty) && sync({ quiet: true }));
+    addEventListener('online', () => store() && get(LS.dirty) && sync({ quiet: true }));
   })();
 
   return {
-    on: () => !!cfg(),
+    on: () => !!store(), store, foreign, moveToDb, checkDb, wsOwner: () => get(WS.owner),
     // read another (small) file of the data repository, e.g. linko-latest.json written by the auto-loader
     // remembers each file's ETag: an unchanged file costs one tiny request (304) instead of a full download
     async readJson(path) {
@@ -218,7 +360,7 @@ window.CLOUD = (() => {
       finally { autoN--; }
     },
     async connect(c) {
-      const test = await pull(c); // throws a readable error if the key or the repo is wrong
+      const test = await pullGh(c); // throws a readable error if the key or the repo is wrong
       set(LS.cfg, JSON.stringify(c)); set(LS.sha, null);
       if (test.missing) { set(LS.dirty, '1'); return sync(); }
       return sync({ quiet: false });
@@ -397,4 +539,52 @@ function loadScript(src) {
 }
 function loadCss(href) {
   return new Promise((ok, fail) => { if (document.querySelector(`link[href="${href}"]`)) return ok(); const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; l.onload = ok; l.onerror = fail; document.head.appendChild(l); });
+}
+
+// ---------- panel «База MITAL» on top of the sync page: move this device's data to the database and prove it arrived intact ----------
+{
+  const basePage = EXT_PAGES.cloud;
+  EXT_PAGES.cloud = async el => {
+    await basePage(el);
+    const p = window.AUTH?.profile;
+    if (!AUTH?.sb || !p || p.role === 'agent') return;
+    const grid = el.querySelector('.grid'); if (!grid) return;
+    const box = document.createElement('div'); box.style.display = 'contents'; grid.prepend(box);
+    const st = CLOUD.store(), foreign = CLOUD.foreign();
+    const rows = r => `<div class="tscroll"><table><thead><tr><th></th><th class="n">На этом устройстве</th><th class="n">В базе</th></tr></thead><tbody>
+      ${[['Загрузок склада', 'wh'], ['Загрузок по агентам', 'ag'], ['Клиентов с карточками', 'clients'], ['Заданий', 'tasks'], ['Разделов настроек', 'ext']]
+        .map(([t, k]) => `<tr><td>${t}</td><td class="n">${UI.fmt0(r.local[k])}</td><td class="n ${r.local[k] === r.remote[k] ? '' : 'neg'}">${UI.fmt0(r.remote[k])}</td></tr>`).join('')}</tbody></table></div>
+      <p style="margin-bottom:0">${r.same ? '<b class="pos">✓ Полностью совпадает</b> — каждая запись в базе такая же, как здесь.' : '<b class="neg">✗ Есть различия.</b> Ничего не удаляйте и напишите об этом.'}
+      <span class="mut">Версия в базе: ${r.version}, сохранена ${new Date(r.savedAt).toLocaleString('ru-RU')}.</span></p>`;
+    const body = foreign
+      ? `<p style="margin-top:0"><b class="neg">На этом устройстве данные другого аккаунта.</b> Чтобы не перепутать данные, синхронизация здесь остановлена.</p>
+         <p class="mut">Если тот человек уже сохранил свои данные в базу, это устройство можно очистить и загрузить ваши. Его данные останутся в базе.</p>
+         <div class="bar"><button class="btn danger" id="dbClear">Очистить устройство и загрузить мои данные…</button></div>`
+      : st === 'sb'
+        ? `<p style="margin-top:0">✓ Ваши данные хранятся в <b>базе MITAL</b>: на любом устройстве войдите своим логином — данные откроются сами.
+           Ключи (Telegram-бот, ИИ, LINKO) лежат отдельно, их видите только вы.</p>
+           <div class="bar"><button class="btn gray" id="dbCheck">Проверить, что всё совпадает</button></div><div id="dbRes" role="status"></div>`
+        : `<p style="margin-top:0">Сейчас данные хранятся ${CLOUD.cfg() ? 'в файле на GitHub' : 'только в этом браузере'}. Перенесите их в <b>базу MITAL</b> —
+           тогда на других устройствах будет достаточно войти своим логином, без ключей и ссылок, а РОП увидит вашу CRM.</p>
+           <p class="mut">Сначала сделайте резервную копию (Настройки → Резервная копия). Копия на GitHub остаётся как запасная, её никто не удаляет.</p>
+           <div class="bar"><button class="btn" id="dbMove">Перенести мои данные в базу</button></div><div id="dbRes" role="status"></div>`;
+    box.innerHTML = UI.panel('База MITAL', body, { cls: 'w12', sub: `Аккаунт: ${esc(p.full_name)} · ${esc(AUTH.ROLE_RU[p.role] || p.role)}` });
+    const res = $('#dbRes', box);
+    const run = async (btn, fn) => {
+      btn.disabled = true; res.innerHTML = '<p class="mut">Работаю… не закрывайте страницу.</p>';
+      try { res.innerHTML = rows(await fn()); } catch (e) { res.innerHTML = `<p class="neg">${esc(e.message || e)}</p>`; } finally { btn.disabled = false; }
+    };
+    $('#dbMove', box)?.addEventListener('click', e => {
+      if (!confirm('Перенести все данные этого устройства в базу MITAL? После переноса это устройство будет сохранять данные только в базу.')) return;
+      run(e.target, async () => { const r = await CLOUD.moveToDb(); setTimeout(() => EXT_PAGES.cloud(el).then(() => { const x = $('#dbRes', el); if (x) x.innerHTML = rows(r); }), 0); return r; });
+    });
+    $('#dbCheck', box)?.addEventListener('click', e => run(e.target, () => CLOUD.checkDb()));
+    $('#dbClear', box)?.addEventListener('click', async () => {
+      if (CLOUD.status().dirty) return toast('Есть несохранённые изменения другого аккаунта — пусть он сначала войдёт и сохранит их');
+      if (!confirm('Удалить с этого устройства данные другого аккаунта и загрузить ваши из базы? В базе его данные останутся.')) return;
+      CRMLocal.engine.reset(); await CRMLocal.save();
+      try { localStorage.setItem('crm_ws_owner', p.id); localStorage.removeItem('crm_cloud_sha'); localStorage.removeItem('crm_cloud_dirty'); } catch { /* storage blocked */ }
+      await CLOUD.sync(); EXT_PAGES.cloud(el);
+    });
+  };
 }

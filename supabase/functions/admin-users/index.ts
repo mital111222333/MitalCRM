@@ -29,12 +29,15 @@ async function profile(id: string) {
   return data;
 }
 
+// who may lead a team of agents and have regions: a supervisor, and also an admin or РОП who runs his own regions
+const LEADS = ['supervisor', 'admin', 'rop'];
+
 // checks the links of an agent and returns the clean fields
 async function links(role: string, b: Record<string, unknown>) {
   const out: Record<string, unknown> = { supervisor_id: null, region_id: null };
   if (role === 'agent') {
     const sv = b.supervisor_id ? await profile(String(b.supervisor_id)) : null;
-    if (!sv || sv.role !== 'supervisor') throw new Fail('Выберите супервайзера агента');
+    if (!sv || !LEADS.includes(sv.role)) throw new Fail('Выберите супервайзера агента');
     if (!b.region_id) throw new Fail('Выберите регион агента');
     out.supervisor_id = sv.id; out.region_id = String(b.region_id);
   }
@@ -44,7 +47,7 @@ async function links(role: string, b: Record<string, unknown>) {
 async function setRegions(id: string, role: string, ids: unknown) {
   const { error: e1 } = await db.from('supervisor_regions').delete().eq('supervisor_id', id);
   if (e1) throw e1;
-  if (role !== 'supervisor' || !Array.isArray(ids) || !ids.length) return;
+  if (!LEADS.includes(role) || !Array.isArray(ids) || !ids.length) return;
   const { error } = await db.from('supervisor_regions').insert(ids.map(r => ({ supervisor_id: id, region_id: String(r) })));
   if (error) throw error;
 }
@@ -98,8 +101,8 @@ Deno.serve(async req => {
         };
         const { error } = await db.from('profiles').update(fields).eq('id', id);
         if (error) throw error;
-        if (role === 'supervisor' && Array.isArray(b.region_ids)) await setRegions(id, role, b.region_ids);
-        if (role !== 'supervisor') await setRegions(id, role, []);
+        if (LEADS.includes(role) && Array.isArray(b.region_ids)) await setRegions(id, role, b.region_ids);
+        if (!LEADS.includes(role)) await setRegions(id, role, []);
       } else if (action === 'set_password') {
         const { error } = await db.auth.admin.updateUserById(id, { password: checkPassword(b.password) });
         if (error) throw new Fail(error.message);

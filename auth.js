@@ -52,10 +52,14 @@ window.AUTH = (() => {
       if (!b.login || !b.password) return json({ error: 'Введите логин и пароль' });
       const { error } = await sb.auth.signInWithPassword({ email: email(String(b.login)), password: String(b.password) });
       if (error) return json({ error: /invalid/i.test(error.message) ? 'Неверный логин или пароль' : /banned/i.test(error.message) ? 'Аккаунт заблокирован. Обратитесь к администратору.' : error.message });
-      try { const p = await load(); if (!p) return json({ error: 'Аккаунт не настроен: обратитесь к администратору' }); return json({ token: 'sb', user: meJson(p) }); }
+      try { const p = await load(); if (!p) return json({ error: 'Аккаунт не настроен: обратитесь к администратору' }); setTimeout(() => dispatchEvent(new Event('crm:login')), 0); return json({ token: 'sb', user: meJson(p) }); }
       catch (e) { return json({ error: 'Не удалось загрузить профиль: ' + (e.message || e) }); }
     }
-    if (path === '/api/logout') { try { await sb?.auth.signOut(); } catch { /* offline */ } remember(null); return json({ ok: true }); }
+    if (path === '/api/logout') {
+      try { if (window.CLOUD?.store?.() === 'sb' && CLOUD.status().dirty) await CLOUD.sync({ quiet: true }); } catch { /* sent later */ } // unsent changes go first
+      try { await sb?.auth.signOut(); } catch { /* offline */ }
+      remember(null); dispatchEvent(new Event('crm:logout')); return json({ ok: true });
+    }
     if (path === '/api/me/password') {
       let b = {}; try { b = JSON.parse(opts.body || '{}'); } catch { /* empty */ }
       if (!sb || !profile) return json({ error: 'Нет связи с сервером' });
@@ -93,8 +97,12 @@ window.EXT_PAGES.users = async el => {
   const regions = r.data, links = l.data, byId = Object.fromEntries(people.map(x => [x.id, x])), regName = Object.fromEntries(regions.map(x => [x.id, x.name]));
   const myRole = AUTH.role(), manager = AUTH.isManager(), isAdmin = myRole === 'admin';
   const svRegions = id => links.filter(x => x.supervisor_id === id).map(x => x.region_id);
-  const whereText = x => x.role === 'supervisor' ? svRegions(x.id).map(id => regName[id]).filter(Boolean).join(', ') || '—'
-    : x.role === 'agent' ? (regName[x.region_id] || '—') : 'вся страна';
+  const LEADS = ['supervisor', 'admin', 'rop']; // may lead a team of agents and have own regions
+  const whereText = x => {
+    if (x.role === 'agent') return regName[x.region_id] || '—';
+    const own = svRegions(x.id).map(id => regName[id]).filter(Boolean).join(', ');
+    return x.role === 'supervisor' ? own || '—' : own ? `вся страна · ведёт: ${own}` : 'вся страна';
+  };
   const canEdit = x => manager && (isAdmin || x.role !== 'admin');
   const seeText = { admin: 'Вы видите всех и можете всё менять.', rop: 'Вы видите всю страну и можете менять данные. Администраторов меняет только администратор.',
     supervisor: 'Вы видите себя и своих агентов. Добавлять людей могут администратор и РОП.', agent: 'Вы видите себя и своего супервайзера.' }[myRole] || '';
@@ -127,7 +135,7 @@ window.EXT_PAGES.users = async el => {
   }
 
   function form(x) {
-    const isNew = !x, sups = people.filter(s => s.role === 'supervisor' && s.is_active);
+    const isNew = !x, sups = people.filter(s => LEADS.includes(s.role) && s.is_active && (s.role === 'supervisor' || svRegions(s.id).length));
     const roleOpts = Object.entries(ROLE_RU).filter(([k]) => isAdmin || k !== 'admin');
     const mine = x ? svRegions(x.id) : [];
     const m = modal(`<h3>${isNew ? 'Новый человек' : esc(x.full_name)}</h3>
@@ -138,7 +146,7 @@ window.EXT_PAGES.users = async el => {
         <label>Роль<select id="f_role" ${x && x.id === AUTH.profile?.id ? 'disabled' : ''}>${roleOpts.map(([k, v]) => `<option value="${k}" ${(x?.role || 'agent') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <div id="f_agent"><label>Супервайзер<select id="f_sv"><option value="">— выберите —</option>${sups.map(s => `<option value="${s.id}" ${x?.supervisor_id === s.id ? 'selected' : ''}>${esc(s.full_name)}</option>`).join('')}</select></label>
           <label>Регион<select id="f_reg"><option value="">— выберите —</option>${regions.map(g => `<option value="${g.id}" ${x?.region_id === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label></div>
-        <div id="f_sup"><label>Регионы супервайзера</label>${regions.map(g => `<label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" data-reg="${g.id}" ${mine.includes(g.id) ? 'checked' : ''}> ${esc(g.name)}</label>`).join('')}</div>
+        <div id="f_sup"><label>Регионы, которые он ведёт сам (его команда агентов)</label>${regions.map(g => `<label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" data-reg="${g.id}" ${mine.includes(g.id) ? 'checked' : ''}> ${esc(g.name)}</label>`).join('')}</div>
         <label>Имя в LINKO (точно как в отчётах LINKO)<input id="f_linko" value="${esc(x?.linko_name || '')}"></label>
         <label>Телефон<input id="f_phone" value="${esc(x?.phone || '')}"></label>
       </div><small id="f_err" class="neg" role="alert"></small>
@@ -146,7 +154,7 @@ window.EXT_PAGES.users = async el => {
       <div class="bar" style="margin-top:12px">${!isNew && x.id !== AUTH.profile?.id ? `<button class="btn gray" id="f_pw">Новый пароль</button><button class="btn ${x.is_active ? 'danger' : 'gray'}" id="f_act">${x.is_active ? 'Заблокировать' : 'Разблокировать'}</button>` : ''}
         <span class="spacer"></span><button class="btn gray" id="f_x">Закрыть</button><button class="btn" id="f_ok">${isNew ? 'Создать' : 'Сохранить'}</button></div>`);
     const q = s => $(s, m.el);
-    const sync = () => { const role = q('#f_role').value; q('#f_agent').hidden = role !== 'agent'; q('#f_sup').hidden = role !== 'supervisor'; };
+    const sync = () => { const role = q('#f_role').value; q('#f_agent').hidden = role !== 'agent'; q('#f_sup').hidden = !LEADS.includes(role); };
     q('#f_role').onchange = sync; sync();
     if (isNew) q('#f_gen').onclick = () => { q('#f_pass').value = AUTH.genPassword(); };
     q('#f_x').onclick = m.close;
