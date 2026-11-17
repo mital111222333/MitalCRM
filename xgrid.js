@@ -9,6 +9,8 @@
 const XGRID = (() => {
   const SKIP = 'table.xg, table.xltable, table.noxg, table.upl, table.matrix, table.plan2, .xgx-pop table, .modal table.small';
   const MEM = new Map();                 // filters + sort per page/columns, kept while the app is open
+  const STALE = new Set();               // tables read while invisible: read again once shown (see «rebuild»)
+  window.addEventListener('crm:refresh', () => STALE.forEach(f => f()));
   const TOT_KEY = 'xgx-totals-v1';       // the chosen total functions are remembered in this browser
   let totPref = {}; try { totPref = JSON.parse(localStorage.getItem(TOT_KEY) || '{}') || {}; } catch { totPref = {}; }
   const saveTot = () => { try { localStorage.setItem(TOT_KEY, JSON.stringify(totPref)); } catch {} };
@@ -248,11 +250,13 @@ table.xgx tfoot td.xgx-t small{font-weight:400;color:var(--muted);margin-right:3
     };
     const tsv = list => [heads, ...list.map(r => r.v.map((x, i) => (cols[i].kind === 'num' && x.n !== null ? String(x.n).replace('.', ',') : x.s)))].map(l => l.map(v => String(v).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
     const copy = async () => {
+      ensure();
       const list = shown.filter(r => !sel.size || sel.has(r));
       try { await navigator.clipboard.writeText(tsv(list)); toast2(`Скопировано строк: ${list.length} — вставьте в Excel (Ctrl+V)`); } catch { toast2('Не удалось скопировать'); }
     };
     const toXl = () => {
       if (typeof XL === 'undefined') return toast2('Обновите страницу');
+      ensure();
       const list = shown.filter(r => !sel.size || sel.has(r));
       const xc = cols.map((c, i) => ({ h: c.h, t: c.kind === 'num' ? 'm' : c.kind === 'date' ? 'd' : 's', w: Math.min(45, Math.max(8, c.h.length + 3, ...list.slice(0, 300).map(r => r.v[i].s.length + 2))), total: i === 0 ? 'label' : fnOf(c) === 'sum' ? 'sum' : undefined }));
       const data = list.map(r => r.v.map((x, i) => (cols[i].kind === 'num' ? x.n ?? (x.s && !/^[—–-]$/.test(x.s) ? x.s : '') : cols[i].kind === 'date' ? (x.d && /\d{4}/.test(x.s) ? x.d : x.s) : x.s)));
@@ -267,6 +271,7 @@ table.xgx tfoot td.xgx-t small{font-weight:400;color:var(--muted);margin-right:3
 
     // ----- filter popup -----
     const filterPop = (i, th) => {
+      ensure();
       const c = cols[i], st = S.f[i] || {};
       const src = rows.filter(r => passes(r, i)), mp = new Map();
       for (const r of src) { const k = kOf(c, r), o = mp.get(k) || { sv: svOf(c, r), n: 0 }; o.n++; mp.set(k, o); }
@@ -360,8 +365,17 @@ table.xgx tfoot td.xgx-t small{font-weight:400;color:var(--muted);margin-right:3
     });
 
     // ----- the page may redraw rows of this same table: read them again and re-apply filters -----
+    // The live refresh (live.js) draws the new page into an invisible copy (visibility:hidden) and shows it when ready.
+    // In such a copy the browser gives NO text for the cells (innerText skips invisible content), only the values of inputs —
+    // so a table read there would export, copy, filter and total empty names and sums. Such a reading is marked stale and
+    // done again as soon as the table is visible: on «crm:refresh» (the copy was shown) and right before Excel / copy / filter.
+    const hiddenNow = () => getComputedStyle(t).visibility !== 'visible';
+    let stale = false;
+    const fix = () => { if (!t.isConnected) STALE.delete(fix); else if (stale && !hiddenNow()) rebuild(); };
+    const ensure = () => { if (stale && !hiddenNow()) rebuild(); };
     const rebuild = () => {
       read(); rows.forEach((r, o) => { r.o = o; });
+      stale = hiddenNow(); if (stale) STALE.add(fix); else STALE.delete(fix);
       for (const k of Object.keys(S.f)) if (!cols[+k]?.filt) delete S.f[k];
       sel = new Set(); anchor = null; setupHead(); apply();
     };

@@ -90,7 +90,9 @@ window.EXT_PAGES.users = async el => {
   const { sb, ROLE_RU, ROLE_ORDER } = AUTH;
   if (!sb) { el.innerHTML = UI.empty('Нет связи', 'Раздел работает только с интернетом.'); return; }
   el.innerHTML = '<div class="soon">Загрузка…</div>';
+  const at = location.hash;
   const [p, r, l] = await Promise.all([sb.from('profiles').select('*'), sb.from('regions').select('*').order('name'), sb.from('supervisor_regions').select('*')]);
+  if (!el.isConnected || location.hash !== at) return; // the person went to another page while this one loaded: do not draw over it
   const err = p.error || r.error || l.error;
   if (err) { el.innerHTML = UI.empty('Не удалось загрузить', esc(err.message)); return; }
   const people = p.data.sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.full_name.localeCompare(b.full_name, 'ru'));

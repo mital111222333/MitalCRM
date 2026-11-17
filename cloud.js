@@ -557,7 +557,9 @@ function loadCss(href) {
 {
   const basePage = EXT_PAGES.cloud;
   EXT_PAGES.cloud = async el => {
+    const at = location.hash;
     await basePage(el);
+    if (!el.isConnected || location.hash !== at) return; // another page is open now
     const p = window.AUTH?.profile;
     if (!AUTH?.sb || !p || p.role === 'agent') return;
     const grid = el.querySelector('.grid'); if (!grid) return;
