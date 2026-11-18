@@ -768,7 +768,11 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
   data_status: {
     desc: 'Когда обновлялись данные и с какой даты есть история заказов. Вызывай, если спрашивают про свежесть данных.',
     params: {},
-    run(db) { return { ...db.meta, agents: db.agents, debts_summary_text: db.debtSummary.slice(0, 1500) }; },
+    run(db) {
+      const s = db.snap, K: Record<string, string> = { pay: 'зарплата', discipline: 'дисциплина', leaderboard: 'лидерборд', leaderboard_past: 'итог прошлого периода', signals: 'сигналы', calendar: 'календарь оплат', tasks: 'задания' };
+      const crm_summary = s ? { at: nowTime(s.at), ok: Object.keys(K).filter(k => s[k] != null).map(k => K[k]), missing: Object.keys(K).filter(k => s[k] == null && !s.errors?.[k]).map(k => K[k]), errors: Object.entries(s.errors || {}).map(([k, v]) => `${K[k] || k}: ${v}`) } : null;
+      return { ...db.meta, agents: db.agents, debts_summary_text: db.debtSummary.slice(0, 1500), crm_summary };
+    },
   },
   plan_forecast: {
     desc: 'Прогноз выполнения плана за текущий плановый период (16–15): факт чистых продаж, план, прогноз на конец периода, % выполнения, сколько нужно продавать в день, чтобы выполнить. По одному агенту или всем.',
@@ -1040,7 +1044,8 @@ const TPL: Record<string, (r: any) => string> = {
   top_products: r => [`🏆 Топ товаров ${per(r)}`, lines(r.products, (p: any, i: number) => `${i + 1}. ${p.product} — ${p.qty} шт., ${$(p.sum)}`), `Всего: ${$(r.total_sum)}`].join('\n') + warn(r),
   stock: r => r.warehouses.map((w: any) => `🏬 ${w.warehouse} (на ${dm(w.taken_at)})\n` + (w.items.length ? lines(w.items, (i: any) => `• ${i.name} — ${i.available} шт.${i.reserved ? ` (+${i.reserved} в резерве)` : ''}`, 25) : 'ничего не найдено')).join('\n\n') || 'Склад не найден.',
   send_contract_files: r => r.sent ? `Отправил ${r.sent} файл(а) договора ${r.client}.` : `${r.client}: ${r.note || 'файлы не отправились'}`,
-  data_status: r => `🔄 LINKO обновлено: ${r.linko_updated}\nДолги пересчитаны: ${r.debts_counted}\nCRM сохранена: ${r.crm_saved}\nИстория заказов: с ${dm(r.orders_history_from)} по ${dm(r.orders_history_to)}`,
+  data_status: r => `🔄 LINKO обновлено: ${r.linko_updated}\nДолги пересчитаны: ${r.debts_counted}\nCRM сохранена: ${r.crm_saved}\nИстория заказов: с ${dm(r.orders_history_from)} по ${dm(r.orders_history_to)}`
+    + (r.crm_summary ? `\n📊 Сводка CRM для бота: ${r.crm_summary.at}\n✅ ${r.crm_summary.ok.join(', ') || '—'}${r.crm_summary.missing.length ? `\n▫️ нет данных: ${r.crm_summary.missing.join(', ')}` : ''}${r.crm_summary.errors.length ? `\n⚠️ ${r.crm_summary.errors.join('\n⚠️ ')}` : ''}` : '\n📊 Сводки CRM для бота нет — откройте MitalCRM'),
   plan_forecast: r => [`📈 Прогноз плана ${per(r)}`, `Рабочих дней: прошло ${r.work_days_passed} из ${r.work_days_total}, осталось ${r.work_days_left}`,
     lines(r.rows, (x: any) => `• ${x.agent}: факт ${$(x.fact)}` + (x.plan ? ` из ${$(x.plan)} (${x.done_pct}%)\n   прогноз ${$(x.forecast)} → ${x.forecast_pct}%${x.forecast_pct < 100 && x.need_per_day ? ` · нужно ${$(x.need_per_day)}/день (сейчас ${$(x.now_per_day)})` : ' ✅'}` : ` · прогноз ${$(x.forecast)} (план не задан)`), 20),
     `ℹ️ ${r.method}`].join('\n') + warn(r),
