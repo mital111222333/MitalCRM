@@ -116,6 +116,25 @@ async function ghJson(path: string): Promise<any> {
 }
 const safeJson = (p: string) => ghJson(p).catch(e => { console.warn(p, e.message); return null; });
 
+// Since stage 3 the CRM saves its state to the MITAL database: Storage «workspaces»/<owner>/v<version>.json.gz (cloud.js → pushSb).
+// The GitHub copy crm-data.json.gz is no longer updated, so the bot reads the workspace (CRM_OWNER_ID, else the newest one).
+async function sbWorkspace(): Promise<any> {
+  try {
+    if (!CFG.sbUrl() || !CFG.sbKey()) return null;
+    const h = { apikey: CFG.sbKey(), Authorization: 'Bearer ' + CFG.sbKey() }, own = env('CRM_OWNER_ID');
+    const q = `${CFG.sbUrl()}/rest/v1/workspaces?select=owner_id,version,saved_at${own ? '&owner_id=eq.' + encodeURIComponent(own) : ''}&order=saved_at.desc&limit=1`;
+    const r = await fetch(q, { headers: h }); if (!r.ok) return null;
+    const w = (await r.json())?.[0]; if (!w?.owner_id || !w.version) return null;
+    const f = await fetch(`${CFG.sbUrl()}/storage/v1/object/workspaces/${w.owner_id}/v${w.version}.json.gz`, { headers: h });
+    if (!f.ok) { console.warn('workspace file', f.status); return null; }
+    const b = new Uint8Array(await f.arrayBuffer());
+    const text = b[0] === 0x1f && b[1] === 0x8b ? await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).text() : new TextDecoder().decode(b);
+    const data = JSON.parse(text);
+    return data?.state ? { ...data, savedAt: data.savedAt || w.saved_at, from: 'workspace' } : null;
+  } catch (e) { console.warn('workspace', (e as Error).message); return null; }
+}
+const newerCrm = (a: any, b: any) => !a ? b : !b ? a : Date.parse(a.savedAt || 0) >= Date.parse(b.savedAt || 0) ? a : b;
+
 const arcCache = new Map<string, any>(); // archived days never change except the last two
 let DBC: { at: number; db: any } | null = null;
 
@@ -127,11 +146,12 @@ async function loadDB(force = false) {
   if (!force && DBC && Date.now() - DBC.at < 120e3) return DBC.db;
   const errs: string[] = [];
   const main = (p: string) => ghJson(p).catch(e => { errs.push(e.message); console.warn(p, e.message); return null; });
-  const [crm, fast, extra, inst, tree] = await Promise.all([
-    main('crm-data.json.gz'), main('linko-fast.json'), main('linko-extra.json'), main('inst-state.json'),
+  const [ghCrm, ws, fast, extra, inst, tree] = await Promise.all([
+    main('crm-data.json.gz'), sbWorkspace(), main('linko-fast.json'), main('linko-extra.json'), main('inst-state.json'),
     gh('git/trees/HEAD?recursive=1').then(r => r.json()).catch(() => ({ tree: [] })),
   ]);
-  if (!crm && !fast) {
+  const crm = newerCrm(ws, ghCrm);
+  if (!ghCrm && !fast) { // GitHub unreachable: LINKO orders/payments come only from there, so the workspace alone is not enough
     const why = /GitHub (401|403)/.test(errs[0] || '') ? 'GitHub не принял токен (неверный или просрочен)' : /GitHub 404/.test(errs[0] || '') ? 'GitHub отвечает 404 — у токена нет доступа к репозиторию' : errs[0] || 'файлы не найдены';
     const db: any = build(null, null, null, null, [], []);
     db.meta.data_error = dataError(why) + await tokenDiagnosis();
@@ -224,7 +244,7 @@ function build(crm: any, fast: any, extra: any, inst: any, arcs: any[], arcPaths
   return {
     clients, agents, agentByRaw, orders, items, pays, rets: [...dedupRets.values()], debtors, instClients,
     contracts: inst?.contracts || [], contractCfg: ext.inst?.contracts || [], promises: ext.payPlan || {},
-    balance: lastUp, stock, freq: extra?.data?.freq || [], workper: extra?.data?.workper || [], workFrom: extra?.from, workTo: extra?.to,
+    balance: lastUp, uploads: S.ag?.uploads || [], stock, freq: extra?.data?.freq || [], workper: extra?.data?.workper || [], workFrom: extra?.from, workTo: extra?.to,
     plans: planKeys.length ? { from: planKeys.at(-1), byAgent: ext.agentPlans[planKeys.at(-1)!] } : null,
     // LINKO stock recommendation (the same list as the «Склад — заканчивается» sheet of autolinko.gs)
     recom: (extra?.data?.recom || []).map((r: any) => ({
@@ -494,6 +514,30 @@ const salesOf = (db: any, a: { from?: string; to?: string; agent?: string }) => 
   const list = ordersOf(db, a), rets = db.rets.filter((r: any) => inRange(r.date, a.from, a.to) && (!a.agent || r.agent === a.agent));
   return { orders: list.length, sum: sum(list), returns: sum(rets), net: r2(sum(list) - sum(rets)), clients: new Set(list.map((o: any) => o.client)).size };
 };
+// The LINKO balance file («Баланс клиентов») of a period, so the bot gives exactly LINKO's numbers for from…to:
+//   sold = «Продано», ret = «Возврат», paid = «Оплачено» (cash AND card), end = «Баланс на конец периода» (minus = clients owe).
+// A finished plan period is kept in the CRM as the final upload «16.10–16.11» (static-api.js → GRACE). Checked against LINKO
+// 16.10–15.11 on 2026-11-18 (Adxamjon: sold 22 527,822, returns 1 372,596, paid 18 012,683; team paid 76 726,207, end −124 050,741):
+// its sold, returns AND paid are already LINKO's numbers for 16.10–15.11 — nothing more may be taken out. Only b1 is not used
+// (it can be the balance after the 16th), the end balance is computed by LINKO's own identity instead:
+//   end = start − sold + returns + paid + other in + other out (other out is negative).
+function balanceFor(db: any, from?: string, to?: string) {
+  if (!from) return null;
+  const own = (db.uploads as any[]).filter(u => u.period_from === from && (u.rows || []).length)
+    .sort((x, y) => String(y.period_to + y.taken_at).localeCompare(String(x.period_to + x.taken_at)));
+  const nextDay = to ? addDays(to, 1) : '';
+  const u = (to && own.find(x => x.period_to === nextDay)) || own.find(x => !to || x.period_to <= to);
+  if (!u) return null;
+  const grace = !!to && u.period_to === nextDay;
+  const byAgent = new Map<string, { sold: number; ret: number; paid: number; end: number }>();
+  for (const r of u.rows) {
+    const end = grace ? n(r.b0) - n(r.sold) + n(r.ret) + n(r.paid) + n(r.other_in) + n(r.other_out) : n(r.b1);
+    const ag = r.agent || db.clients[r.client]?.agent || 'Без агента', t = byAgent.get(ag) || { sold: 0, ret: 0, paid: 0, end: 0 };
+    t.sold += n(r.sold); t.ret += n(r.ret); t.paid += n(r.paid); t.end += end; byAgent.set(ag, t);
+  }
+  const asOf = grace ? to! : u.period_to;
+  return { from, to: asOf, period: `${dm(from)} — ${dm(asOf)}`, byAgent };
+}
 const WRITES = new Set(['remember', 'forget', 'reminder_add', 'reminder_cancel', 'notebooklm_export', 'send_contract_files']);
 
 const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, ctx: any) => any }> = {
@@ -576,14 +620,15 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       const lateSum = r2([...db.instClients.values()].filter((c: any) => c.agent === ag).reduce((s: number, c: any) => s + n(c.late), 0));
       const overlaps = db.workFrom && (!a.to || a.to >= db.workFrom) && (!a.from || a.from <= db.workTo);
       const wp = overlaps && db.workper.find((w: any) => db.agentByRaw(`${w.first_name} ${w.second_name}`) === ag);
-      const bal = (db.balance?.rows || []).filter((r: any) => r.agent === ag);
+      const pb = balanceFor(db, a.from, a.to), pa = pb?.byAgent.get(ag);
+      const bal = pb ? [] : (db.balance?.rows || []).filter((r: any) => r.agent === ag);
       return {
         agent: ag, period: `${a.from || 'начало'} — ${a.to || 'сегодня'}`, warning: histNote(db, a.from),
         orders_count: list.length, orders_sum: sum(list), returns_sum: sum(rets), net_sales: r2(sum(list) - sum(rets)), active_clients: new Set(list.map((o: any) => o.client)).size,
         collected_cash: sum(ps, 'amount'), payments_count: ps.length,
         plan: db.plans?.byAgent?.[ag] ? { period_from: db.plans.from, plan: db.plans.byAgent[ag].plan } : undefined,
         linko_period_stats: wp ? { period: `${db.workFrom} — ${db.workTo}`, sales_fact: r2(n(wp.sales_fact)), orders: n(wp.order_count), akb: n(wp.akb), visits: n(wp.all_visit_count), rejects: n(wp.total_rejects) } : undefined,
-        balance_file: bal.length ? { period: `${db.balance.period_from} — ${db.balance.period_to}`, sold: sum(bal, 'sold'), returned: sum(bal, 'ret'), paid_incl_card: sum(bal, 'paid') } : undefined,
+        balance_file: pa ? { period: pb!.period, sold: r2(pa.sold), returned: r2(pa.ret), paid_incl_card: r2(pa.paid), debt_at_end: r2(-pa.end) } : bal.length ? { period: `${db.balance.period_from} — ${db.balance.period_to}`, sold: sum(bal, 'sold'), returned: sum(bal, 'ret'), paid_incl_card: sum(bal, 'paid') } : undefined,
         clients_debt_total: sum(debts, 'debt'), overdue_by_schedule: lateSum, debtors_count: debts.length, top_debtors: debts.slice(0, 7),
       };
     },
@@ -592,13 +637,26 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
     desc: 'Сравнение всех агентов за период: продажи, возвраты, собранные оплаты, клиенты, долг клиентов. Для вопросов «кто лучше/хуже», «итоги команды».',
     params: { from: { type: 'string' }, to: { type: 'string' } },
     run(db, a) {
-      const rows = (db.agents as string[]).map(ag => {
+      const bal = balanceFor(db, a.from, a.to);
+      const names = [...new Set([...(db.agents as string[]), ...(bal ? bal.byAgent.keys() : [])])];
+      const rows = names.map(ag => {
         const list = ordersOf(db, { from: a.from, to: a.to, agent: ag }), ps = paysOf(db, { from: a.from, to: a.to, agent: ag });
         const rets = db.rets.filter((r: any) => inRange(r.date, a.from, a.to) && r.agent === ag);
-        const debt = r2([...db.debtors.values()].filter((d: any) => d.agent === ag).reduce((s: number, d: any) => s + d.total, 0));
-        return { agent: ag, orders: list.length, sales: sum(list), returns: sum(rets), collected_cash: sum(ps, 'amount'), clients: new Set(list.map((o: any) => o.client)).size, clients_debt: debt };
-      }).sort((x, y) => y.sales - x.sales);
-      return { period: `${a.from || 'начало'} — ${a.to || 'сегодня'}`, warning: histNote(db, a.from), agents: rows, team_sales: sum(rows, 'sales'), team_collected: sum(rows, 'collected_cash'), team_debt: sum(rows, 'clients_debt') };
+        const b = bal?.byAgent.get(ag);
+        // with a balance file: exactly LINKO's numbers for the period, debt = «Баланс на конец периода»;
+        // without one: orders minus returns, cash only, and today's debt
+        const debt = b ? r2(-b.end) : r2([...db.debtors.values()].filter((d: any) => d.agent === ag).reduce((s: number, d: any) => s + d.total, 0));
+        return { agent: ag, orders: list.length, sales: b ? r2(b.sold) : r2(sum(list) - sum(rets)), returns: b ? r2(b.ret) : sum(rets),
+          collected: b ? r2(b.paid) : sum(ps, 'amount'), collected_cash: sum(ps, 'amount'),
+          clients: new Set(list.map((o: any) => o.client)).size, clients_debt: debt };
+      }).filter(r => r.orders || r.sales || r.collected || Math.abs(r.clients_debt) > 0.5).sort((x, y) => y.sales - x.sales);
+      return {
+        period: bal ? bal.period : `${a.from || 'начало'} — ${a.to || 'сегодня'}`, warning: histNote(db, a.from), agents: rows,
+        debt_as_of: bal ? dm(bal.to) : 'сейчас',
+        source: bal ? `баланс клиентов LINKO за ${bal.period} (по дате транзакции): продажи без возвратов, оплачено наличными и переводом, долг = баланс на конец периода`
+          : 'заказы минус возвраты; собрано — только наличные (баланс-файла LINKO за этот период в CRM нет); долг — текущий',
+        team_sales: sum(rows, 'sales'), team_returns: sum(rows, 'returns'), team_collected: sum(rows, 'collected'), team_debt: sum(rows, 'clients_debt'),
+      };
     },
   },
   debtors: {
@@ -865,14 +923,15 @@ const TPL: Record<string, (r: any) => string> = {
     if (n(r.returns_sum) > 0.5) out.push(`↩️ Возвраты: ${$(r.returns_sum)} → чистые ${$(r.net_sales)}`);
     if (r.plan?.plan) out.push(`🎯 План периода с ${dm(r.plan.period_from)}: ${$(r.plan.plan)}`);
     out.push(`💵 Собрал наличными: ${$(r.collected_cash)} (${r.payments_count} оплат)`);
-    if (r.balance_file) out.push(`📒 По баланс-файлу ${per(r.balance_file)}: продано ${$(r.balance_file.sold)}, оплачено вкл. карту ${$(r.balance_file.paid_incl_card)}`);
+    if (r.balance_file) out.push(`📒 Баланс LINKO ${per(r.balance_file)}: продано ${$(r.balance_file.sold)}, возврат ${$(r.balance_file.returned)}, оплачено вкл. карту ${$(r.balance_file.paid_incl_card)}${r.balance_file.debt_at_end !== undefined ? `, долг на конец ${$(r.balance_file.debt_at_end)}` : ''}`);
     if (r.linko_period_stats) out.push(`📱 LINKO: визитов ${r.linko_period_stats.visits}, отказов ${r.linko_period_stats.rejects}, АКБ ${r.linko_period_stats.akb}`);
     out.push(`📋 Долг его клиентов: ${$(r.clients_debt_total)} (${r.debtors_count} кл.), просрочено по графику ${$(r.overdue_by_schedule)}`);
     if (r.top_debtors?.length) out.push('Главные должники:\n' + lines(r.top_debtors, (d: any) => `• ${d.client} — ${$(d.debt)}${d.over_30_days > 0.5 ? ` (старше 30 дн: ${$(d.over_30_days)})` : ''}`, 7));
     return out.join('\n') + warn(r);
   },
-  agents_overview: r => [`👥 Агенты ${per(r)}`, lines(r.agents, (a: any, i: number) => `${i + 1}. ${a.agent}\n   продажи ${$(a.sales)} (${a.orders} зак.) · собрал ${$(a.collected_cash)} · долг клиентов ${$(a.clients_debt)}`, 20),
-    `Итого: продажи ${$(r.team_sales)} · собрано ${$(r.team_collected)} · долг ${$(r.team_debt)}`].join('\n') + warn(r),
+  agents_overview: r => [`👥 Агенты ${per(r)}`, lines(r.agents, (a: any, i: number) => `${i + 1}. ${a.agent}\n   продажи ${$(a.sales)} (${a.orders} зак.) · собрал ${$(a.collected)} · долг на ${r.debt_as_of} ${$(a.clients_debt)}`, 20),
+    `Итого: продажи ${$(r.team_sales)}${n(r.team_returns) > 0.5 ? ` (возвраты ${$(r.team_returns)})` : ''} · собрано ${$(r.team_collected)} · долг на ${r.debt_as_of} ${$(r.team_debt)}`,
+    `ℹ️ Источник: ${r.source}`].filter(Boolean).join('\n') + warn(r),
   debtors: r => !r.count ? 'Должников по этому условию нет.' : [`📋 Должники${r.filter.agent !== 'все' ? ' · ' + r.filter.agent : ''}${r.filter.older_than_days ? ` · старше ${r.filter.older_than_days - 1} дн.` : ''}${r.filter.region ? ' · ' + r.filter.region : ''}`,
     `${r.count} клиентов на ${$(r.total)}`, lines(r.rows, (d: any, i: number) => `${i + 1}. ${d.client} — ${$(d.amount)}${d.total_debt ? ` (всего ${$(d.total_debt)})` : ''}${d.agent ? ' · ' + d.agent.split(' ')[0] : ''}${d.phone ? ' · ' + d.phone : ''}`, r.shown),
     r.count > r.shown ? `…и ещё ${r.count - r.shown}` : '', `Данные LINKO: ${r.updated}`].filter(Boolean).join('\n'),
@@ -1174,7 +1233,8 @@ async function exportMd(db: any, chatId: number) {
     `# MITAL — сводка продаж на ${dm(t)}.${t.slice(0, 4)} ${L.time}`,
     `Источник: MitalCRM (${CFG.name}). Данные LINKO обновлены ${db.meta.linko_updated}. Все суммы в долларах США. Плановый период компании — с 16-го по 15-е: сейчас ${P.from} — ${P.end}. История заказов есть с ${db.meta.orders_history_from}. Оплаты — наличные из транзакций LINKO; переводы на карту видны только в баланс-файле CRM. Супервайзер: Саидбонур (Фергана, Наманган, Андижан).`,
     `## Команда за текущий период (${P.from} — ${t})`,
-    mdTable(['Агент', 'Заказов', 'Продажи', 'Возвраты', 'Собрано наличными', 'Клиентов', 'Долг клиентов'], ov.agents.map((a: any) => [a.agent, a.orders, a.sales, a.returns, a.collected_cash, a.clients, a.clients_debt])),
+    mdTable(['Агент', 'Заказов', 'Продажи', 'Возвраты', 'Собрано', 'Из них наличными', 'Клиентов', 'Долг клиентов'], ov.agents.map((a: any) => [a.agent, a.orders, a.sales, a.returns, a.collected, a.collected_cash, a.clients, a.clients_debt])),
+    `Источник: ${ov.source}.`,
     `Итого: продажи ${ov.team_sales}, собрано ${ov.team_collected}, долг клиентов ${ov.team_debt}.`,
     `## План и прогноз`, `Рабочих дней в периоде ${fc.work_days_total}, прошло ${fc.work_days_passed}, осталось ${fc.work_days_left}. ${fc.method}.`,
     mdTable(['Агент', 'Факт', 'План', 'Выполнено %', 'Прогноз', 'Прогноз %', 'Нужно в день'], fc.rows.map((x: any) => [x.agent, x.fact, x.plan ?? '—', x.done_pct ?? '—', x.forecast, x.forecast_pct ?? '—', x.need_per_day ?? '—'])),

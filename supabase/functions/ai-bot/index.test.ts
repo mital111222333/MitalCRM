@@ -68,7 +68,10 @@ const XLSX = await zip({
 const FILES: Record<string, Uint8Array> = { docx1: DOCX, xlsx1: XLSX };
 
 // ───── mini PostgREST ─────
-const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [] };
+const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [], workspaces: [] };
+// the CRM workspace in Supabase Storage (newer than the GitHub copy): the same state plus one client that only it has
+const WS_FILE = await gz({ app: 'mitalcrm', savedAt: new Date(Date.now() + 1000).toISOString(), state: { ...crm.state, ag: { ...crm.state.ag, clients: { ...crm.state.ag.clients, 'Workspace Only': { agent: AG2 } } } } });
+DB.workspaces.push({ owner_id: 'u1', version: 7, saved_at: new Date().toISOString() });
 let seq = 1;
 const isTime = (k: string) => k.endsWith('_at');
 const cmp = (k: string, a: any, b: string) => isTime(k) ? Date.parse(a) - Date.parse(b) : typeof a === 'number' ? a - Number(b) : String(a ?? '').localeCompare(b);
@@ -157,6 +160,7 @@ function say(text: string) { return { candidates: [{ content: { role: 'model', p
     if (res.__status) return new Response(JSON.stringify(res.body), { status: res.__status });
     return new Response(JSON.stringify({ usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 50 }, ...res }));
   }
+  if (url.host === 'sb.test' && url.pathname === '/storage/v1/object/workspaces/u1/v7.json.gz') return new Response(WS_FILE);
   if (url.host === 'sb.test') {
     assert(init.headers?.apikey === 'service', 'Supabase apikey header');
     return postgrest(url, method, init.body ? JSON.parse(init.body) : undefined, init.headers?.Prefer || '');
@@ -175,6 +179,45 @@ D.test('time: local → UTC, invalid dates, working days, plan period', () => {
   eq(M.localToUtc('2026-11-19T25:00'), null, 'hour 25 rejected');
   eq(M.workDays('2026-11-16', '2026-12-15'), 26, '30 days minus 4 Sundays');
   const P = M.planPeriod(); assert(P.from.endsWith('-16') && P.end.endsWith('-15') && P.from <= P.to && P.to <= P.end, 'plan period 16 → 15: ' + JSON.stringify(P));
+});
+
+D.test('agents overview: balance file of the period like «Лидерборд», else orders minus returns', () => {
+  const o = (id: number, date: string, client: string, total_price: number) => ({ id, created_date: date + ' 10:00:00', 'client.name': client, total_price, status: 3 });
+  const S = {
+    ag: {
+      clients: { A1: { agent: 'Agent One' }, B1: { agent: 'Agent Two' } },
+      uploads: [
+        { period_from: '2026-10-16', period_to: '2026-11-15', taken_at: '2026-11-15', rows: [{ client: 'A1', agent: 'Agent One', sold: 900, ret: 100, paid: 300 }, { client: 'B1', sold: 50, ret: 0, paid: 10 }] },
+        // the final upload: sales up to the 15th, money plus the 16th — this one must win
+        { period_from: '2026-10-16', period_to: '2026-11-16', taken_at: '2026-11-17', rows: [
+          // Adxamjon in LINKO 16.10–15.11: start −19 239,324, sold 22 527,822, returns 1 372,596, paid 18 012,683
+          { client: 'A1', agent: 'Agent One', b0: -19239.324, sold: 22527.822, sold0: 23000, ret: 1372.596, paid: 18012.683, other_in: 0, other_out: 0, b1: -20000 },
+          { client: 'B1', b0: 0, sold: 50, ret: 0, paid: 20, other_in: 0, other_out: -10, b1: -40 }] },
+        // the 16th alone: its 2 092,68 must NOT be taken out of the final's paid again (that was the bug)
+        { period_from: '2026-11-16', period_to: '2026-11-16', taken_at: '2026-11-16', rows: [{ client: 'A1', agent: 'Agent One', b0: -22381.867, sold: 50, ret: 0, paid: 0, paid0: 2092.683, other_in: 0, other_out: 0, b1: -20339 }] },
+      ],
+    },
+    wh: { uploads: [] }, ext: {},
+  };
+  const fastD = { data: { orders: [o(1, '2026-10-20', 'A1', 1000), o(2, '2026-11-01', 'B1', 50), o(3, '2026-09-20', 'A1', 70)], pays: [{ id: 1, type: 1, amount: 200, 'currency.name': 'USD', created_date: '2026-10-25 10:00:00', 'client.name': 'A1' }] } };
+  const extraD = { data: { returns: [{ id: 9, created_date: '2026-10-30 10:00:00', 'client.name': 'A1', total_price: 100 }] } };
+  const db = M.build({ state: S }, fastD, extraD, null, [], []);
+  const r = M.TOOLS.agents_overview.run(db, { from: '2026-10-16', to: '2026-11-15' }, {});
+  const a1 = r.agents.find((x: any) => x.agent === 'Agent One'), a2 = r.agents.find((x: any) => x.agent === 'Agent Two');
+  // exactly LINKO 16.10–15.11: end = −19 239,324 − 22 527,822 + 1 372,596 + 18 012,683 = −22 381,867 → debt 22 381,87
+  eq([a1.sales, a1.returns, a1.collected, a1.clients_debt, a1.collected_cash, a1.orders], [22527.82, 1372.6, 18012.68, 22381.87, 200, 1], 'Agent One = LINKO 16.10–15.11');
+  eq([a2.sales, a2.collected, a2.clients_debt], [50, 20, 40], 'row without agent → client master agent, other out counted');
+  eq([r.team_debt, r.team_collected], [22421.87, 18032.68], 'team totals');
+  const txt = M.TPL.agents_overview(r);
+  assert(/16\.10 — 15\.11/.test(txt) && !/16\.11/.test(txt) && /долг на 15\.11/.test(txt), 'period 16.10–15.11 everywhere, no 16.11: ' + txt);
+  const n = M.TOOLS.agents_overview.run(db, { from: '2026-10-17', to: '2026-11-15' }, {}); // no balance file for this period
+  eq(n.agents.find((x: any) => x.agent === 'Agent One').sales, 900, 'without balance file: orders 1000 minus return 100');
+  assert(/только наличные/.test(n.source), 'fallback source explained');
+});
+
+D.test('CRM state comes from the Supabase workspace when it is newer than GitHub', async () => {
+  const db = await M.loadDB(true);
+  assert(db.clients['Workspace Only'], 'workspace state used');
 });
 
 D.test('office files: docx and xlsx text', async () => {
