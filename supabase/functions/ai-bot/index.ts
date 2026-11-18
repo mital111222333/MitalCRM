@@ -125,12 +125,15 @@ async function sbWorkspace(): Promise<any> {
     const q = `${CFG.sbUrl()}/rest/v1/workspaces?select=owner_id,version,saved_at${own ? '&owner_id=eq.' + encodeURIComponent(own) : ''}&order=saved_at.desc&limit=1`;
     const r = await fetch(q, { headers: h }); if (!r.ok) return null;
     const w = (await r.json())?.[0]; if (!w?.owner_id || !w.version) return null;
-    const f = await fetch(`${CFG.sbUrl()}/storage/v1/object/workspaces/${w.owner_id}/v${w.version}.json.gz`, { headers: h });
-    if (!f.ok) { console.warn('workspace file', f.status); return null; }
-    const b = new Uint8Array(await f.arrayBuffer());
-    const text = b[0] === 0x1f && b[1] === 0x8b ? await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).text() : new TextDecoder().decode(b);
-    const data = JSON.parse(text);
-    return data?.state ? { ...data, savedAt: data.savedAt || w.saved_at, from: 'workspace' } : null;
+    const file = async (name: string) => {
+      const f = await fetch(`${CFG.sbUrl()}/storage/v1/object/workspaces/${w.owner_id}/${name}`, { headers: h });
+      if (!f.ok) { console.warn('workspace file', name, f.status); return null; }
+      const b = new Uint8Array(await f.arrayBuffer());
+      return JSON.parse(b[0] === 0x1f && b[1] === 0x8b ? await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).text() : new TextDecoder().decode(b));
+    };
+    // the CRM's own results for the bot (botsnap.js): salary, discipline, leaderboard, signals, payment calendar, tasks
+    const [data, snap] = await Promise.all([file(`v${w.version}.json.gz`), file('bot.json.gz').catch(() => null)]);
+    return data?.state ? { ...data, savedAt: data.savedAt || w.saved_at, from: 'workspace', snap } : snap ? { snap } : null;
   } catch (e) { console.warn('workspace', (e as Error).message); return null; }
 }
 const newerCrm = (a: any, b: any) => !a ? b : !b ? a : Date.parse(a.savedAt || 0) >= Date.parse(b.savedAt || 0) ? a : b;
@@ -150,7 +153,7 @@ async function loadDB(force = false) {
     main('crm-data.json.gz'), sbWorkspace(), main('linko-fast.json'), main('linko-extra.json'), main('inst-state.json'),
     gh('git/trees/HEAD?recursive=1').then(r => r.json()).catch(() => ({ tree: [] })),
   ]);
-  const crm = newerCrm(ws, ghCrm);
+  const crm = newerCrm(ws?.state ? ws : null, ghCrm);
   if (!ghCrm && !fast) { // GitHub unreachable: LINKO orders/payments come only from there, so the workspace alone is not enough
     const why = /GitHub (401|403)/.test(errs[0] || '') ? 'GitHub не принял токен (неверный или просрочен)' : /GitHub 404/.test(errs[0] || '') ? 'GitHub отвечает 404 — у токена нет доступа к репозиторию' : errs[0] || 'файлы не найдены';
     const db: any = build(null, null, null, null, [], []);
@@ -165,6 +168,7 @@ async function loadDB(force = false) {
     const j = await safeJson(p); if (j) arcCache.set(p, j); return j;
   }));
   const db = build(crm, fast, extra, inst, arcs.filter(Boolean), arcPaths);
+  (db as any).snap = ws?.snap || null;
   DBC = { at: Date.now(), db };
   return db;
 }
@@ -538,7 +542,15 @@ function balanceFor(db: any, from?: string, to?: string) {
   const asOf = grace ? to! : u.period_to;
   return { from, to: asOf, period: `${dm(from)} — ${dm(asOf)}`, byAgent };
 }
-const WRITES = new Set(['remember', 'forget', 'reminder_add', 'reminder_cancel', 'notebooklm_export', 'send_contract_files']);
+const WRITES = new Set(['remember', 'forget', 'reminder_add', 'reminder_cancel', 'notebooklm_export', 'send_contract_files', 'save_photo', 'send_saved_file']);
+// a part of the CRM's own summary (botsnap.js → workspaces/<owner>/bot.json.gz); without it the bot says so instead of guessing
+function snapPart(db: any, key: string): { error?: string; at?: string; data?: any } {
+  const s = db.snap;
+  if (!s) return { error: 'Сводки из MitalCRM пока нет: откройте CRM (войдите в аккаунт) — через минуту бот её получит.' };
+  if (s.errors?.[key]) return { error: `CRM не смогла посчитать этот раздел: ${s.errors[key]}` };
+  if (s[key] == null) return { error: 'В CRM нет данных для этого раздела.' };
+  return { at: nowTime(s.at), data: s[key] };
+}
 
 const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, ctx: any) => any }> = {
   find_client: {
@@ -797,6 +809,91 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
     params: {},
     run(db) { return promisesState(db); },
   },
+  crm_salary: {
+    desc: 'ЗАРПЛАТА из MitalCRM (Агенты → Зарплата): по каждому сотруднику фикс за отработанные дни, % от собранного, бонус, газ, авансы, штрафы за опоздания, итого к выплате в сумах. Текущий период и прошлый.',
+    params: { agent: { type: 'string', description: 'имя сотрудника, если спрашивают про одного' }, period: { type: 'string', enum: ['current', 'previous'], description: 'current — текущий период 16–15, previous — прошлый' } },
+    run(db, a) {
+      const s = snapPart(db, 'pay'); if (s.error) return s;
+      const P = a.period === 'previous' ? s.data[1] : s.data[0]; if (!P) return { error: 'Зарплаты за прошлый период в CRM нет' };
+      const g = a.agent ? best(a.agent, P.rows.map((r: any) => String(r.name)), (x: string) => x, 1, 0.45)[0]?.x : '';
+      if (a.agent && !g) return { error: 'Такого сотрудника в зарплате нет', candidates: P.rows.map((r: any) => r.name) };
+      return { crm_at: s.at, label: P.label, closed: !!P.closed, rate: P.rate, work_days: P.work_days, collected_source: P.collected_source, rows: P.rows.filter((r: any) => !g || r.name === g), total_uzs: P.rows.filter((r: any) => !g || r.name === g).reduce((t: number, r: any) => t + r.total_uzs, 0) };
+    },
+  },
+  crm_discipline: {
+    desc: 'ДИСЦИПЛИНА из MitalCRM: опоздания (дни, минуты, штраф), во сколько вышел на работу, ушёл раньше, невыходы, «отпросился», полдня, больничный, командировка, маршрут %, отказы без причины, заявки агентов и их статус. По всем или по одному агенту, можно за даты.',
+    params: { agent: { type: 'string' }, from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD' } },
+    run(db, a) {
+      const s = snapPart(db, 'discipline'); if (s.error) return s;
+      const D = s.data, g = a.agent ? best(a.agent, D.rows.map((r: any) => String(r.agent)), (x: string) => x, 1, 0.45)[0]?.x : '';
+      if (a.agent && !g) return { error: 'Такого агента в дисциплине нет', candidates: D.rows.map((r: any) => r.agent) };
+      const inR = (d: string) => inRange(d, a.from, a.to);
+      const rows = D.rows.filter((r: any) => !g || r.agent === g).map((r: any) => {
+        const days = r.days.filter((x: any) => inR(x.day));
+        const sub = a.from || a.to ? { late_days: days.filter((x: any) => x.late_min > 0).length, late_minutes: days.reduce((t: number, x: any) => t + x.late_min, 0), fine_uzs: days.reduce((t: number, x: any) => t + x.late_min, 0) * D.fine_per_min_uzs, left_early_days: days.filter((x: any) => x.early_min > 0).length } : {};
+        return { ...r, ...sub, days: g ? days : days.filter((x: any) => x.late_min > 0 || x.early_min > 0 || x.status) };
+      });
+      return { crm_at: s.at, period: `${a.from || D.from} — ${a.to || D.to}`, start: D.start, end: D.end, fine_per_min_uzs: D.fine_per_min_uzs, rows, requests: D.requests.filter((q: any) => !g || q.agent === g).filter((q: any) => !a.from || q.to >= a.from).slice(0, 20) };
+    },
+  },
+  crm_leaderboard: {
+    desc: 'ЛИДЕРБОРД из MitalCRM: места агентов по продажам и по сбору денег, % плана, «идёт по графику / отстаёт», сколько нужно в день, общий зачёт. past=true — итог прошлого периода.',
+    params: { past: { type: 'boolean' } },
+    run(db, a) { const s = snapPart(db, a.past ? 'leaderboard_past' : 'leaderboard'); return s.error ? s : { crm_at: s.at, past: !!a.past, ...s.data }; },
+  },
+  crm_signals: {
+    desc: 'СИГНАЛЫ из MitalCRM — что требует внимания сейчас: сорванные обещания, долг вырос без оплат, крупный должник не платит, агент 3 дня не собирал/не продавал, отстаёт от графика, просроченные задания, товар закончился.',
+    params: { agent: { type: 'string' } },
+    run(db, a) {
+      const s = snapPart(db, 'signals'); if (s.error) return s;
+      const g = a.agent ? resolveAgent(db, a.agent).name : '';
+      return { crm_at: s.at, count: s.data.filter((x: any) => !g || x.agent === g).length, signals: s.data.filter((x: any) => !g || x.agent === g) };
+    },
+  },
+  crm_payment_calendar: {
+    desc: 'КАЛЕНДАРЬ ОПЛАТ из MitalCRM: кто, когда и сколько должен заплатить и почему (часть заказа по спец-цене / разовый договор, месяц годового договора, обещание), статус оплачено/ждём/просрочено. За день или период, по агенту или клиенту.',
+    params: { from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD' }, agent: { type: 'string' }, client: { type: 'string' }, state: { type: 'string', enum: ['все', 'ждём', 'просрочено', 'оплачено'] } },
+    run(db, a) {
+      const s = snapPart(db, 'calendar'); if (s.error) return s;
+      const t = s.data.today, from = a.from || t, to = a.to || from;
+      const g = a.agent ? resolveAgent(db, a.agent).name : '', c = a.client ? resolveClient(db, a.client).name || a.client : '';
+      const list = s.data.items.filter((x: any) => x.date >= from && x.date <= to && (!g || x.agent === g) && (!c || norm(x.client) === norm(c) || norm(x.title || '') === norm(c)) && (!a.state || a.state === 'все' || x.state === a.state));
+      return { crm_at: s.at, period: `${from} — ${to}`, covered: `${s.data.from} — ${s.data.to}`, count: list.length, total: sum(list), unpaid: sum(list.filter((x: any) => x.state !== 'оплачено')), items: list.slice(0, 40) };
+    },
+  },
+  crm_tasks: {
+    desc: 'ЗАДАНИЯ АГЕНТАМ из MitalCRM (Задания агентам, Академия, задания по клиентам): что открыто, просрочено, выполнено агентом и ждёт проверки, возвращено.',
+    params: { agent: { type: 'string' }, only_open: { type: 'boolean', description: 'только невыполненные' } },
+    run(db, a) {
+      const s = snapPart(db, 'tasks'); if (s.error) return s;
+      const g = a.agent ? resolveAgent(db, a.agent).name : '';
+      const list = s.data.filter((x: any) => (!g || x.agent === g) && (!a.only_open || ['открыто', 'возвращено агенту'].includes(x.state)));
+      return { crm_at: s.at, count: list.length, overdue: list.filter((x: any) => x.overdue).length, tasks: list.slice(0, 40) };
+    },
+  },
+  save_photo: {
+    desc: 'Сохранить ФОТО или файл из ТЕКУЩЕГО сообщения в блокнот вместе с описанием (на «запомни это фото», «сохрани», «запиши цену с фото»). description — что на фото: товары, марки, объёмы, количество, цены, текст. Потом его можно найти (notebook_search) и прислать обратно (send_saved_file).',
+    params: { title: { type: 'string', description: 'короткое название' }, description: { type: 'string', description: 'подробно, что на фото' }, note: { type: 'string', description: 'что сказал пользователь: цена, задание, пометка' } },
+    async run(_db, a, ctx) {
+      if (!ctx.media) return { error: 'В этом сообщении нет фото или файла — пришлите его вместе с подписью' };
+      const title = String(a.title || '').trim().slice(0, 80) || 'Фото ' + nowTime(new Date().toISOString());
+      const content = [String(a.description || '').trim(), a.note ? 'Пометка: ' + String(a.note).trim() : ''].filter(Boolean).join('\n\n') || title;
+      const s = await nbAdd(ctx.chatId, { title, kind: 'file', content, tg_file_id: ctx.media.file_id, mime: ctx.media.mime });
+      return { saved: true, title, info: s };
+    },
+  },
+  send_saved_file: {
+    desc: 'Прислать ранее сохранённое фото/файл из блокнота («пришли то фото масла», «покажи фото, которое я сохранял»).',
+    params: { query: { type: 'string', description: 'что искать: название или о чём фото' } },
+    async run(_db, a, ctx) {
+      const rows = (await notebookOf(ctx.chatId)).filter((r: any) => r.tg_file_id);
+      if (!rows.length) return { error: 'Сохранённых фото и файлов нет' };
+      const hit = best(String(a.query || ''), rows, (r: any) => `${r.title} ${String(r.content || '').slice(0, 300)}`, 1, 0.2)[0]?.x || rows.at(-1);
+      const isImg = /^image\//.test(hit.mime || '');
+      await tg(isImg ? 'sendPhoto' : 'sendDocument', { chat_id: ctx.chatId, [isImg ? 'photo' : 'document']: hit.tg_file_id, caption: `📎 ${hit.title}`.slice(0, 1000) });
+      return { sent: hit.title };
+    },
+  },
   remember: {
     desc: 'Сохранить в ПОСТОЯННУЮ память. kind=fact — факт от пользователя («агент X в отпуске до 25.11», «клиент Y обещал отдать в пятницу», «у Z новый телефон»). kind=rule — правило, как тебе работать или считать («запомни: всегда показывай телефон», «бонус агента = 2% от сбора»). Вызывай на «запомни», «учти», «имей в виду», «знай, что» или когда пользователь сообщает важный факт.',
     params: { text: { type: 'string', description: 'что запомнить — коротко, с именами и датами (даты в формате ДД.ММ)' }, kind: { type: 'string', enum: ['fact', 'rule'] }, until: { type: 'string', description: 'YYYY-MM-DD — до какой даты факт актуален, если это следует из текста' } },
@@ -828,15 +925,16 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
     async run(_db, _a, ctx) { if (!sbOn()) return { error: NO_DB }; MEM.delete(ctx.chatId); const rows = await memoryOf(ctx.chatId); return { facts: rows.filter(r => r.kind === 'fact'), rules: rows.filter(r => r.kind === 'rule') }; },
   },
   reminder_add: {
-    desc: 'Поставить напоминание («напомни завтра в 10 позвонить X», «каждый день в 9 напоминай про сбор»). Время — местное (Ташкент).',
+    desc: 'Поставить напоминание («напомни завтра в 10 позвонить X», «каждый день в 9 напоминай про сбор»). Время — местное (Ташкент). Если к сообщению приложено фото/файл — оно придёт вместе с напоминанием.',
     params: { at: { type: 'string', description: 'YYYY-MM-DDTHH:MM, местное время. «утром» = 09:00, «днём» = 14:00, «вечером» = 18:00' }, text: { type: 'string', description: 'о чём напомнить' }, repeat: { type: 'string', enum: ['none', 'daily', 'weekly'] } },
     async run(_db, a, ctx) {
       const d = localToUtc(a.at); if (!d) return { error: 'Не понял дату и время напоминания' };
       if (d.getTime() < Date.now() - 60e3) return { error: `Это время уже прошло (${nowTime(d.toISOString())})` };
       const text = String(a.text || '').trim().slice(0, 1000); if (!text) return { error: 'О чём напомнить?' };
       const repeat = ['daily', 'weekly'].includes(a.repeat) ? a.repeat : null;
-      const [row] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, due_at: d.toISOString(), text, repeat } });
-      return { id: row.id, at: nowTime(row.due_at), text, repeat: repeat || undefined };
+      const file = ctx.media ? { file_id: ctx.media.file_id, file_kind: /^image\//.test(ctx.media.mime || '') ? 'photo' : 'document' } : {};
+      const [row] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, due_at: d.toISOString(), text, repeat, ...file } });
+      return { id: row.id, at: nowTime(row.due_at), text, repeat: repeat || undefined, with_file: !!ctx.media || undefined };
     },
   },
   reminder_list: {
@@ -890,6 +988,7 @@ const $ = (v: any) => '$' + Math.round(n(v)).toLocaleString('ru-RU').replace(/ 
 const dm = (d: any) => { const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}.${m[2]}` : String(d || '—'); };
 const per = (r: any) => String(r.period || '').replace(/(\d{4})-(\d{2})-(\d{2})/g, '$3.$2');
 const warn = (r: any) => r.warning ? `\n⚠️ ${r.warning}` : '';
+const uzs = (v: any) => Math.round(n(v)).toLocaleString('ru-RU').replace(/ /g, ' ') + ' сум';
 const lines = (rows: any[], f: (x: any, i: number) => string, max = 15) => rows.slice(0, max).map(f).join('\n');
 
 const TPL: Record<string, (r: any) => string> = {
@@ -951,6 +1050,26 @@ const TPL: Record<string, (r: any) => string> = {
     lines(r.rows, (x: any) => `${x.days_left <= 3 ? '🔴' : '🟠'} ${x.name} — на ${Math.round(x.days_left)} дн. (остаток ${Math.round(x.left_units)} шт., ${r2(x.per_day)}/день) · заказать на неделю ${Math.round(x.order_week)}`, 20)].join('\n'),
   promises: r => [r.today.length ? `🤝 Обещали оплатить сегодня (${r.today.length}):\n` + lines(r.today, (p: any) => `• ${p.client}${p.agent ? ' · ' + first(p.agent) : ''} — ${$(p.promised)}`) : '🤝 На сегодня обещаний нет',
     r.broken.length ? `❌ Сорвали обещание (${r.broken.length}):\n` + lines(r.broken, (p: any) => `• ${p.client}${p.agent ? ' · ' + first(p.agent) : ''} — обещал ${$(p.promised)} на ${dm(p.date)}, оплатил ${$(p.paid_since)}`) : ''].filter(Boolean).join('\n\n'),
+  crm_salary: r => [`💰 Зарплата ${r.label}${r.closed ? ' (месяц закрыт)' : ' (считается, ещё не закрыта)'}`,
+    ...r.rows.map((x: any) => [`👤 ${x.name} (${x.role}) — к выплате ${uzs(x.total_uzs)}${x.voucher ? ` 🎁 ваучер ${uzs(x.voucher)}` : ''}`, ...x.lines.map((l: string) => '   ' + l)].join('\n')),
+    r.rows.length > 1 ? `Итого: ${uzs(r.total_uzs)}` : '', !r.rate ? '⚠️ Курс доллара в CRM не задан — суммы в $ не переведены в сумы' : `Курс: ${r.rate}`,
+    `ℹ️ Собрано — ${r.collected_source}. Данные CRM на ${r.crm_at}`].filter(Boolean).join('\n'),
+  crm_discipline: r => [`⏰ Дисциплина ${per(r)} · начало дня ${r.start}`,
+    lines(r.rows, (x: any) => `• ${x.agent}${x.not_tracked ? ' (не отслеживается)' : ''}: опозданий ${x.late_days} (${x.late_minutes} мин, штраф ${uzs(x.fine_uzs)})${x.left_early_days ? ` · ушёл раньше ${x.left_early_days}` : ''}${x.absent ? ` · невыходов ${x.absent}` : ''}${Object.keys(x.excused || {}).length ? ' · ' + Object.entries(x.excused).map(([k, v]) => `${k} ${v}`).join(', ') : ''}${x.route_pct != null ? ` · маршрут ${x.route_pct}%` : ''}${x.avg_start ? ` · в среднем выходит ${x.avg_start}` : ''}`
+      + (r.rows.length === 1 ? '\n' + lines(x.days, (d: any) => `   ${dm(d.day)}: ${d.status || (d.first ? `вышел ${d.first}${d.late_min ? ` (опоздал на ${d.late_min} мин)` : ''}${d.last ? `, последний визит ${d.last}` : ''}${d.early_min ? `, ушёл раньше на ${d.early_min} мин` : ''}` : 'нет отчёта')}`, 31) : ''), 20),
+    r.requests?.length ? '📝 Заявки:\n' + lines(r.requests, (q: any) => `• ${q.agent}: ${q.type} ${dm(q.from)}${q.to && q.to !== q.from ? '–' + dm(q.to) : ''}${q.note ? ` «${q.note}»` : ''} — ${q.state}`, 8) : '',
+    `ℹ️ Данные CRM на ${r.crm_at}`].filter(Boolean).join('\n'),
+  crm_leaderboard: r => [`🏆 Лидерборд${r.past ? ' — итог прошлого периода' : ''} ${dm(r.period_from)}–${dm(r.period_end || r.period_to)}`,
+    '🛒 Продажи:', lines(r.sales, (x: any) => `${x.rank}. ${x.agent} — ${$(x.value)}${x.plan ? ` (${x.pct}% из ${$(x.plan)}, ${x.state})` : ''}${x.need_per_day ? ` · нужно ${$(x.need_per_day)}/день` : ''}`, 20),
+    '💰 Сбор:', lines(r.money, (x: any) => `${x.rank}. ${x.agent} — ${$(x.value)}${x.plan ? ` (${x.pct}% из ${$(x.plan)}, ${x.state})` : ''}${x.need_per_day ? ` · нужно ${$(x.need_per_day)}/день` : ''}`, 20),
+    r.judged ? `ℹ️ ${r.judged}` : '', `ℹ️ Данные CRM на ${r.crm_at}`].filter(Boolean).join('\n'),
+  crm_signals: r => !r.count ? `✅ Сигналов нет (CRM на ${r.crm_at})` : [`🚨 Сигналы: ${r.count}`, lines(r.signals, (s: any) => `• [${s.level}] ${s.title}${s.agent ? ' · ' + first(s.agent) : ''}${s.client ? ' · ' + s.client : ''}\n   ${s.text}`, 25), `ℹ️ Данные CRM на ${r.crm_at}`].join('\n'),
+  crm_payment_calendar: r => !r.count ? `📅 ${per(r)}: оплат по календарю нет (CRM на ${r.crm_at})` : [`📅 Календарь оплат ${per(r)}: ${r.count} на ${$(r.total)}, не оплачено ${$(r.unpaid)}`,
+    lines(r.items, (x: any) => `• ${dm(x.date)} ${x.client}${x.agent ? ' · ' + first(x.agent) : ''} — ${$(x.sum)} · ${x.state}\n   ${x.kind}: ${x.why}`, 30), r.count > 30 ? `…и ещё ${r.count - 30}` : '', `ℹ️ Данные CRM на ${r.crm_at}`].filter(Boolean).join('\n'),
+  crm_tasks: r => !r.count ? `✅ Заданий нет (CRM на ${r.crm_at})` : [`📋 Задания: ${r.count}${r.overdue ? `, просрочено ${r.overdue}` : ''}`,
+    lines(r.tasks, (t: any) => `• ${first(t.agent)}: ${t.title}${t.due ? ` (до ${dm(t.due)})` : ''} — ${t.state}${t.overdue ? ' ❗просрочено' : ''}${t.progress ? ` · ${t.progress}` : ''}${t.returned_comment ? ` · «${t.returned_comment}»` : ''}`, 30), `ℹ️ Данные CRM на ${r.crm_at}`].join('\n'),
+  save_photo: r => `📸 Сохранил в блокнот: «${r.title}». Найти: «пришли фото ${r.title}».`,
+  send_saved_file: r => `📎 Отправил: ${r.sent}`,
   remember: r => `🧠 Запомнил${r.kind === 'rule' ? ' правило' : ''} #${r.saved}: ${r.text}${r.until ? ` (до ${dm(r.until)})` : ''}`,
   forget: r => `🗑 Забыл #${r.deleted}: ${r.text}`,
   bot_help: () => HELP,
@@ -958,7 +1077,7 @@ const TPL: Record<string, (r: any) => string> = {
     r.rules.length ? '📐 Правила:\n' + r.rules.map((x: any) => `#${x.id} ${x.text}`).join('\n') : '',
     r.facts.length ? '🧠 Факты:\n' + r.facts.map((x: any) => `#${x.id} ${x.text}${x.until ? ` (до ${dm(x.until)})` : ''}`).join('\n') : '',
     'Удалить: /forget номер'].filter(Boolean).join('\n\n'),
-  reminder_add: r => `⏰ Напомню ${r.at}${r.repeat ? (r.repeat === 'daily' ? ', каждый день' : ', каждую неделю') : ''}: ${r.text} (#${r.id})`,
+  reminder_add: r => `⏰ Напомню ${r.at}${r.repeat ? (r.repeat === 'daily' ? ', каждый день' : ', каждую неделю') : ''}: ${r.text} (#${r.id})${r.with_file ? ' — фото придёт вместе с напоминанием' : ''}`,
   reminder_list: r => !r.count ? '⏰ Напоминаний нет.' : `⏰ Напоминания (${r.count}):\n` + r.rows.map((x: any) => `#${x.id} ${x.at}${x.repeat ? ' 🔁' : ''} — ${x.text}`).join('\n') + '\nОтменить: /cancel номер',
   reminder_cancel: r => `✅ Отменил напоминание #${r.cancelled}: ${r.text}`,
   notebooklm_export: r => `📤 Отправил файл ${r.file} (${r.size_kb} КБ) — загрузите его в NotebookLM.`,
@@ -1037,10 +1156,19 @@ function quotaReset() {
   const left = 86400 - ((+p.hour % 24) * 3600 + +p.minute * 60 + +p.second), at = new Date(Date.now() + left * 1000);
   return { at: localParts(at).time, in: `${Math.floor(left / 3600)} ч ${Math.floor(left % 3600 / 60)} мин` };
 }
+// the day's total after the latest request — every AI answer ends with a short «how much is left» line
+let LAST_USAGE: { day: string; model: string; total: number } | null = null;
+export function usageLine(spent: number) {
+  const u = LAST_USAGE;
+  if (!u || u.day !== quotaDay() || u.model !== CFG.model()) return '';
+  const lim = dailyLimit(), left = Math.max(0, lim - u.total), rs = quotaReset();
+  return `\n\n${left <= lim * 0.2 ? '🪫' : '🔋'} Лимит: осталось ~${left} из ${lim} · этот ответ −${spent} · обновится в ${rs.at}`;
+}
 async function trackUsage(model: string, limited: boolean, u: any) {
   if (!sbOn()) return;
   try {
     const total = await sb('rpc/ai_usage_add', { method: 'POST', body: { p_day: quotaDay(), p_model: model, p_req: limited ? 0 : 1, p_limited: limited ? 1 : 0, p_in: n(u?.promptTokenCount), p_out: n(u?.candidatesTokenCount) + n(u?.thoughtsTokenCount) } });
+    if (Number.isFinite(Number(total))) LAST_USAGE = { day: quotaDay(), model, total: n(total) };
     const lim = dailyLimit();
     // one warning a day when 80% of the daily limit is spent
     if (!limited && n(total) >= lim * 0.8 && await once(`limit80:${quotaDay()}:${model}`)) {
@@ -1084,7 +1212,7 @@ async function limitsText() {
     `Точный лимит вашего ключа: aistudio.google.com → Usage / Rate limits. Если там не ${lim} — поменяйте секрет GEMINI_RPD.`].filter(Boolean).join('\n\n');
 }
 
-export async function ask(db: any, chatId: number, userParts: any[], qText: string) {
+export async function ask(db: any, chatId: number, userParts: any[], qText: string, media?: { file_id: string; mime: string }) {
   const [hist, mem] = await Promise.all([getHistory(chatId), memoryOf(chatId)]);
   const contents: any[] = [...hist, { role: 'user', parts: userParts }];
   const used: string[] = [], sys = systemPrompt(db, mem);
@@ -1111,7 +1239,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
     for (const p of calls) {
       const { name } = p.functionCall, args = { ...(p.functionCall.args || {}) }; used.push(name);
       let result: any;
-      try { result = TOOLS[name] ? await TOOLS[name].run(db, args, { chatId }) : { error: 'нет такой функции' }; } catch (e) { result = { error: (e as Error).message }; }
+      try { result = TOOLS[name] ? await TOOLS[name].run(db, args, { chatId, media }) : { error: 'нет такой функции' }; } catch (e) { result = { error: (e as Error).message }; }
       done.push({ name, args, result });
       responses.push({ functionResponse: { name, response: { result } } });
     }
@@ -1282,6 +1410,7 @@ async function tick() {
     const claimed = await sb(`ai_reminders?id=eq.${r.id}&sent_at=is.null&due_at=eq.${q(r.due_at)}`, { method: 'PATCH', body: patch, prefer: 'return=representation' });
     if (!claimed?.length) continue;
     await say(r.chat_id, `⏰ Напоминание: ${r.text}${r.repeat ? `\n(следующее — ${nowTime(patch.due_at)}; отменить: /cancel ${r.id})` : ''}`);
+    if (r.file_id) await tg(r.file_kind === 'photo' ? 'sendPhoto' : 'sendDocument', { chat_id: r.chat_id, [r.file_kind === 'photo' ? 'photo' : 'document']: r.file_id }).catch(e => console.warn('reminder file', e));
     res.reminders++;
   }
   // 2) briefs and alerts: once a day, in their hour, not on quiet days
@@ -1390,7 +1519,11 @@ const HELP = `Я ${CFG.name} — AI-агент MITAL CRM. Спрашивайте
 • Пришли договор Pop Sarvarbek
 • Запомни: Adxamjon в отпуске до 25.11
 • Напомни завтра в 10 позвонить Fozilxon
+• Сколько выходит зарплата у Адхамжона? Кто опаздывал на этой неделе?
+• Лидерборд · сигналы · кто платит завтра по календарю · какие задания не выполнены
 • 📷 фото накладной — распознаю и сверю с заказами
+• 📷 фото товара + «запомни, цена $14» — сохраню фото с описанием; «пришли фото масла» — пришлю обратно
+• 📷 фото + «напомни завтра в 10 проверить» — напомню вместе с фото
 📚 Блокнот знаний (как NotebookLM): пришлите PDF / Word / Excel / фото без подписи — я его прочитаю и буду отвечать по нему со ссылкой на источник. /nb — список.
 📤 /notebooklm — файл-сводка CRM для Google NotebookLM (по понедельникам присылаю сам).
 Быстрые команды (мгновенно, без ИИ):
@@ -1445,10 +1578,11 @@ async function handle(u: any) {
     const parts = voice ? [media, { text: '(голосовое сообщение: передай в поле heard, что услышал)' }]
       : media ? [media, { text: text || 'Что здесь? Если это накладная или чек — распиши товары, количество и суммы.' }] : [{ text }];
     const qText = voice ? '[голосовое]' : media ? `[${photo ? 'фото' : 'документ ' + (doc.file_name || '')}] ${text}` : text;
-    const res = await ask(db, chatId, parts, qText);
+    const fileInfo = photo ? { file_id: photo.file_id, mime: 'image/jpeg' } : doc ? { file_id: doc.file_id, mime: doc.mime_type || '' } : undefined;
+    const res = await ask(db, chatId, parts, qText, fileInfo);
     console.log('ok', Date.now() - t0, 'ms', 'gemini requests:', res.requests, res.used.join(','));
     if (key && !res.used.some(x => WRITES.has(x))) { ANS.set(key, { at: Date.now(), text: res.text, mem: (await getHistory(chatId)).at(-1)?.parts?.[0]?.text }); if (ANS.size > 200) ANS.clear(); }
-    await say(chatId, res.text);
+    await say(chatId, res.text + usageLine(res.requests));
   } catch (e) {
     console.error(e);
     await say(chatId, '⚠️ ' + ((e as Error).message || 'Ошибка'));

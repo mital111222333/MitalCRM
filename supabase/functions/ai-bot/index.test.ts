@@ -220,6 +220,36 @@ D.test('CRM state comes from the Supabase workspace when it is newer than GitHub
   assert(db.clients['Workspace Only'], 'workspace state used');
 });
 
+D.test('CRM summary (botsnap.js): salary, discipline, calendar, tasks — exactly as the CRM gave them', async () => {
+  const snap = {
+    v: 1, at: '2026-11-18T12:00:00Z', today: '2026-11-18', errors: { signals: 'boom' },
+    pay: [{ label: '16.11–15.12.2026', closed: null, rate: 12000, work_days: 26, collected_source: 'баланс LINKO от 2026-11-18', rows: [
+      { name: 'Adxamjon Umarov', role: 'Агент', total_uzs: 6543210, voucher: 0, lines: ['Фикс: $400 / 26 дн. × 3 дн.: $46,15', 'Штраф за опоздания: 12 мин: −12 000 сум'] },
+      { name: 'Abdulmutallib Sobirov', role: 'Агент', total_uzs: 1000000, voucher: 0, lines: [] }] }],
+    discipline: { from: '2026-11-16', to: '2026-11-18', start: '09:00', end: '18:00', fine_per_min_uzs: 1000, rows: [
+      { agent: 'Adxamjon Umarov', late_days: 1, late_minutes: 12, fine_uzs: 12000, excused: {}, days: [{ day: '2026-11-17', first: '09:12', last: '17:40', status: '', late_min: 12, early_min: 20 }, { day: '2026-11-18', first: '', status: 'Полдня — отпросился', late_min: 0, early_min: 0 }] }],
+      requests: [{ agent: 'Adxamjon Umarov', type: 'Полдня — отпросился', from: '2026-11-18', to: '2026-11-18', note: 'к врачу', state: 'одобрено', at: '2026-11-17T20:00:00Z' }] },
+    calendar: { today: '2026-11-18', from: '2026-11-04', to: '2026-12-19', items: [{ date: '2026-11-18', sum: 500, client: 'Big Client', agent: 'Adxamjon Umarov', kind: 'Договор', state: 'ждём', why: 'месяц 2 из 12' }, { date: '2026-11-19', sum: 70, client: 'Small Shop', agent: 'Abdulmutallib Sobirov', kind: 'Обещание', state: 'ждём', why: '' }] },
+    tasks: [{ agent: 'Adxamjon Umarov', title: 'Урок 5', state: 'открыто', overdue: true, due: '2026-11-17' }],
+  };
+  const db = { snap, agents: ['Adxamjon Umarov', 'Abdulmutallib Sobirov'], clients: {}, debtors: new Map() };
+  const s = M.TOOLS.crm_salary.run(db, { agent: 'Адхамжон' }, {});
+  eq([s.rows.length, s.total_uzs], [1, 6543210], 'salary of one person, the CRM total as is');
+  assert(/6\s543\s210 сум/.test(M.TPL.crm_salary(s)) && /Штраф за опоздания/.test(M.TPL.crm_salary(s)), 'slip lines shown: ' + M.TPL.crm_salary(s));
+  const d = M.TOOLS.crm_discipline.run(db, { agent: 'Adxamjon' }, {});
+  const dt = M.TPL.crm_discipline(d);
+  assert(/опоздал на 12 мин/.test(dt) && /ушёл раньше на 20 мин/.test(dt) && /Полдня — отпросился/.test(dt) && /к врачу/.test(dt), 'discipline days and requests: ' + dt);
+  const c = M.TOOLS.crm_payment_calendar.run(db, {}, {});
+  eq([c.count, c.total], [1, 500], 'calendar: today by default');
+  eq(M.TOOLS.crm_tasks.run(db, { only_open: true }, {}).overdue, 1, 'overdue task');
+  assert(/не смогла посчитать/.test(M.TOOLS.crm_signals.run(db, {}, {}).error), 'a failed part is reported, not guessed');
+  assert(/Сводки из MitalCRM пока нет/.test(M.TOOLS.crm_leaderboard.run({ snap: null }, {}, {}).error), 'no summary → clear message');
+  assert(/нет фото/.test((await M.TOOLS.save_photo.run(db, { title: 'x' }, { chatId: 111 })).error), 'save_photo needs a photo');
+  const sp = await M.TOOLS.save_photo.run(db, { title: 'Mitanol 5W40', description: '3 канистры Mitanol 5W40 4L', note: 'цена $14' }, { chatId: 111, media: { file_id: 'PH1', mime: 'image/jpeg' } });
+  assert(sp.saved && DB.ai_notebook.some((r: any) => r.tg_file_id === 'PH1' && /цена \$14/.test(r.content)), 'photo saved with its description and note');
+  DB.ai_notebook.length = 0; // the telegram flow test below starts with an empty notebook
+});
+
 D.test('office files: docx and xlsx text', async () => {
   const d = await M.officeText(DOCX, 'docx');
   assert(d.includes('Условия акции «Осень»') && d.includes('скидка 7% & бесплатная'), 'docx: ' + d);
@@ -332,7 +362,9 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   await tgPost({ text: 'сколько осталось лимитов?' }); assert(lastText().startsWith('📊 Лимиты Gemini'), 'plain question about limits');
   eq(GEM_LOG.length, g0, '/limits spends no AI');
   D.env.set('GEMINI_RPD', String(used + 1));
-  GEM = () => say('ok'); await tgPost({ text: 'вопрос один' }); await tgPost({ text: 'вопрос два' });
+  GEM = () => say('ok'); await tgPost({ text: 'вопрос один' });
+  assert(lastText().startsWith('ok') && lastText().includes(`Лимит: осталось ~0 из ${used + 1} · этот ответ −1 · обновится в`), 'every AI answer shows what is left: ' + lastText());
+  await tgPost({ text: 'вопрос два' });
   eq(sentTexts().filter(t => t.includes('потрачено') && t.includes('запросов Gemini')).length, 1, '80% warning sent exactly once');
   D.env.delete('GEMINI_RPD');
   GEM = () => ({ __status: 429, body: { error: { code: 429, message: 'Quota exceeded for metric: generate_content_free_tier_requests, limit: 500', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } } });

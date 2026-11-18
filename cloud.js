@@ -163,6 +163,7 @@ window.CLOUD = (() => {
     }
     if (next > 5) sb.storage.from(WS.BUCKET).remove([fileOf(owner, next - 5)]).catch(() => {}); // keep the last 5 versions
     set(LS.sha, 'sb' + next); set(LS.dirty, null); set(LS.user, null); set(LS.at, savedAt);
+    window.BOTSNAP?.soon(); // the summary for the Mital AI bot (botsnap.js) follows every save
     return { ok: true, size: bytes.length };
   }
 
