@@ -1,4 +1,4 @@
-// Mital AI — local test with stubs, no network and no real data.
+// JUMAVOY — local test with stubs, no network and no real data.
 //   deno test -A index.test.ts
 // GitHub (mitalcrm-data) returns a small synthetic dataset, Telegram and Gemini are recorded / scripted,
 // Supabase REST is a tiny in-memory PostgREST (eq, is, gt/gte/lt/lte, or=(...), order, limit, on_conflict, Prefer).
@@ -273,7 +273,7 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   eq((await M.serve(new Request('https://x/', { method: 'POST', body: '{}' }))).status, 403, 'webhook without secret');
   eq((await M.serve(new Request('https://x/?cron=1', { method: 'POST' }))).status, 403, 'cron without secret');
 
-  await tgPost({ text: '/help' }); assert(lastText().includes('Mital AI'), 'help names the agent');
+  await tgPost({ text: '/help' }); assert(lastText().includes('JUMAVOY'), 'help names the agent');
 
   // quick commands (no AI)
   const before = GEM_LOG.length;
@@ -295,14 +295,14 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   GEM = () => say('Он в отпуске.');
   await tgPost({ text: 'где Абдулмутталиб?' });
   const sys = GEM_LOG.at(-1).systemInstruction.parts[0].text;
-  assert(sys.includes('Abdulmutallib в отпуске до 25.11') && sys.includes('Ты — Mital AI'), 'fact + persona in the system prompt');
+  assert(sys.includes('Abdulmutallib в отпуске до 25.11') && sys.includes('Ты — JUMAVOY'), 'fact + persona in the system prompt');
   assert(GEM_LOG.at(-1).contents.length >= 3, 'conversation history sent');
   assert(DB.ai_messages.length >= 4, 'messages logged in Supabase');
   await tgPost({ text: '/memory' }); assert(lastText().includes('Abdulmutallib в отпуске'), '/memory');
   GEM = () => call('bot_help', { heard: 'Скажи, что ты умеешь' });
   await tgPost({ voice: { file_id: 'docx1', mime_type: 'audio/ogg' } });
   assert(lastText().startsWith('🎤 «Скажи, что ты умеешь»') && lastText().includes('Быстрые команды'), 'voice «what can you do» → help: ' + lastText().slice(0, 120));
-  assert(GEM_LOG.at(-1).tools[0].functionDeclarations.some((f: any) => f.name === 'bot_help'), 'bot_help declared');
+  assert(GEM_LOG.findLast((b: any) => b.tools).tools[0].functionDeclarations.some((f: any) => f.name === 'bot_help'), 'bot_help declared');
   await tgPost({ text: `/forget ${DB.ai_memory[0].id}` }); assert(lastText().startsWith('🗑 Забыл'), '/forget'); eq(DB.ai_memory.length, 0, 'memory deleted');
 
   // reminders: one for this minute (due), one daily, one in the past (rejected)
@@ -355,8 +355,9 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   assert(!/undefined|NaN/.test(doc.body.document), 'no undefined / NaN in export');
 
   // Gemini usage: every request counted; /limits and a plain question about limits answer without AI; 80% warning once; 429 explained
-  const used = DB.ai_usage.reduce((s, r) => s + r.requests, 0);
-  eq(used, GEM_LOG.length, 'every Gemini request is counted');
+  eq(DB.ai_usage.reduce((s, r) => s + r.requests, 0), GEM_LOG.length, 'every Gemini request is counted (answers + voice)');
+  const used = DB.ai_usage.filter(r => !/tts/.test(r.model)).reduce((s, r) => s + r.requests, 0);
+  assert(DB.ai_usage.some(r => /tts/.test(r.model)), 'the voice reply to a voice message is counted on its own model');
   const g0 = GEM_LOG.length;
   await tgPost({ text: '/limits' }); assert(lastText().includes(`Сегодня: ${used} из ~500 запросов`) && lastText().includes('Обновится в') && lastText().includes('тыс. вход'), '/limits: ' + lastText());
   await tgPost({ text: 'сколько осталось лимитов?' }); assert(lastText().startsWith('📊 Лимиты Gemini'), 'plain question about limits');
@@ -455,7 +456,7 @@ D.test('personal debts and spheres: apart from CRM debts, balance per person and
   await tgPost({ text: 'сколько у меня долгов?' }); assert(lastText().startsWith('💸 Личные долги'), 'personal question → personal debts: ' + lastText());
   const sys = GEM_LOG.at(-1).systemInstruction.parts[0].text;
   assert(sys.includes('ЛИЧНЫЕ И РАБОЧИЕ НЕ СМЕШИВАЙ') && sys.includes('как Джарвис'), 'prompt: spheres and money rules');
-  assert(GEM_LOG.at(-1).tools[0].functionDeclarations.some((f: any) => f.name === 'personal_debt_add' && f.parameters.required.includes('amount')), 'personal_debt_add declared');
+  assert(GEM_LOG.findLast((b: any) => b.tools).tools[0].functionDeclarations.some((f: any) => f.name === 'personal_debt_add' && f.parameters.required.includes('amount')), 'personal_debt_add declared');
   GEM = () => say('ok');
   for (const t of [at, st, ml, P.personal_debts(h)]) assert(!/undefined|NaN|\[object/.test(t), 'no broken values: ' + t);
 });
@@ -506,4 +507,40 @@ D.test('notebook and photo spheres; personal debts in the morning brief', async 
   const sent = await T.send_saved_file.run(null, { query: 'паспорт', sphere: 'family' }, { chatId: 111 });
   eq([sent.sent, SENT.at(-1)!.body.photo], ['Паспорт сына', 'PH9'], 'photo found in its sphere');
   for (const t of sentTexts().slice(-8)) assert(!/undefined|NaN|\[object/.test(t), 'no broken values: ' + t.slice(0, 200));
+});
+
+const sine = () => { const p = new Uint8Array(24000 * 2); for (let i = 0; i < 24000; i++) { const v = Math.round(Math.sin(i / 10) * 8000); p[2 * i] = v & 255; p[2 * i + 1] = (v >> 8) & 255; } return p; };
+D.test('voice replies: auto on a voice message, /voice off and on, «ответь голосом», spoken text', async () => {
+  const pcm = sine();
+  let ttsText = '';
+  GEM = b => {
+    if (b.generationConfig?.responseModalities?.includes('AUDIO')) { ttsText = b.contents[0].parts[0].text; return { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: btoa(String.fromCharCode(...pcm.subarray(0, 4000))) } }] } }] }; }
+    return say('🎤 «как дела»\n\n✅ Всё хорошо, долгов на сегодня нет. 💵 Подробнее: https://x.test');
+  };
+  FILES.v1 = new Uint8Array([1, 2, 3]);
+  const voices = () => SENT.filter(s => s.method === 'sendVoice' || s.method === 'sendAudio').length;
+  let n0 = voices();
+  await tgPost({ voice: { file_id: 'v1', mime_type: 'audio/ogg' } });
+  eq(voices(), n0 + 1, 'a voice message is answered with voice too (auto)');
+  assert(ttsText.includes('Всё хорошо') && !ttsText.includes('как дела') && !ttsText.includes('https') && !/[✅💵]/u.test(ttsText), 'spoken text has no heard line, emojis or links: ' + ttsText);
+  n0 = voices(); await tgPost({ text: 'как дела у агентов?' }); eq(voices(), n0, 'a text question gets text only in auto mode');
+  await tgPost({ text: '/voice off' }); assert(lastText().includes('только текст'), '/voice off');
+  assert(DB.ai_events.some(e => e.key === 'voice_off:111'), 'mode stored in ai_events');
+  n0 = voices(); await tgPost({ voice: { file_id: 'v1', mime_type: 'audio/ogg' } }); eq(voices(), n0, 'off: no voice');
+  n0 = voices(); await tgPost({ text: 'ответь голосом: как дела?' }); eq(voices(), n0 + 1, '«ответь голосом» works even when off');
+  await tgPost({ text: '/voice on' }); assert(!DB.ai_events.some(e => e.key === 'voice_off:111') && DB.ai_events.some(e => e.key === 'voice_on:111'), 'on replaces off');
+  n0 = voices(); await tgPost({ text: 'как дела?' }); eq(voices(), n0 + 1, 'on: text answers get voice');
+  await tgPost({ text: '/voice auto' }); assert(!DB.ai_events.some(e => e.key.startsWith('voice_')), 'auto clears flags');
+  // the TTS limit: the text still goes, the note once a day
+  GEM = b => b.generationConfig?.responseModalities ? { __status: 429, body: { error: { message: 'quota per day' } } } : say('Ответ');
+  await tgPost({ text: 'скажи голосом привет' }); await tgPost({ text: 'скажи голосом ещё раз' });
+  eq(sentTexts().filter(t => t.includes('лимит озвучки')).length, 1, 'limit note only once');
+  const long = M.spokenText(Array.from({ length: 80 }, (_, i) => `• Клиент ${i} — долг $${i}00`).join('\n'));
+  assert(long.length < 1200 && long.endsWith('Остальное — в сообщении.') && !long.includes('•'), 'long answer cut on a line');
+  const wav = M.pcmToWav(new Uint8Array(10), 24000); eq(new TextDecoder().decode(wav.subarray(0, 4)), 'RIFF', 'wav header'); eq(wav.length, 54, 'wav size');
+});
+
+D.test('mp3 encoder (downloads the npm package once)', async () => {
+  const mp3 = await M.pcmToMp3(sine(), 24000);
+  assert(mp3.length > 1000 && mp3[0] === 0xff && (mp3[1] & 0xe0) === 0xe0, 'MP3 frame sync, size ' + mp3.length);
 });

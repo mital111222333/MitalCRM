@@ -1,4 +1,4 @@
-// Mital AI — AI-агент по продажам MITAL в Telegram (Supabase Edge Function «ai-bot»).
+// JUMAVOY — личный AI-ассистент Саидбонура в Telegram (работа MITAL + личное), Supabase Edge Function «ai-bot».
 //
 // Как работает: Telegram → эта функция → Google Gemini. Gemini только понимает вопрос (текст, голосовое, фото, документ
 // на русском / узбекском), выбирает нужную функцию и пишет ответ. Все цифры считает код ниже — из тех же файлов, что и CRM:
@@ -28,7 +28,7 @@
 // secrets are trimmed: a space, line break or quotes copied together with a token would make GitHub/Telegram reject it
 const env = (k: string, d = '') => String((globalThis as any).Deno?.env.get(k) || '').trim().replace(/^["'«]+|["'»]+$/g, '').trim() || d;
 const CFG = {
-  name: 'Mital AI',
+  name: 'JUMAVOY',
   tg: () => env('TG_TOKEN'),
   secret: () => env('TG_SECRET'),
   allowed: () => env('ALLOWED_USERS').split(/[,\s]+/).filter(Boolean),
@@ -1026,7 +1026,7 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
     },
   },
   bot_help: {
-    desc: 'Что умеет Mital AI: все возможности и команды. Вызывай на «что ты умеешь», «твои функции», «как тобой пользоваться», «помощь», «nima qila olasan», «imkoniyatlaring».',
+    desc: 'Что умеет JUMAVOY: все возможности и команды. Вызывай на «что ты умеешь», «твои функции», «как тобой пользоваться», «помощь», «nima qila olasan», «imkoniyatlaring».',
     params: {},
     run() { return {}; },
   },
@@ -1352,6 +1352,7 @@ async function limitsText() {
   return [`📊 Лимиты Gemini · ${model}`,
     `Сегодня: ${cur.requests} из ~${lim} запросов (${pct}%)\n${bar}  осталось ~${left}`,
     cur.limited ? `⛔ Отказов из-за лимита сегодня: ${cur.limited}` : '',
+    (() => { const t = rows.find(r => r.day === today && /tts/i.test(r.model)); return t ? `🔊 Голосовые ответы сегодня: ${t.requests}${t.limited ? ` · отказов из-за лимита: ${t.limited}` : ''} (${t.model}, у озвучки свой лимит)` : ''; })(),
     `Токены сегодня: ${k(n(cur.tokens_in))} вход / ${k(n(cur.tokens_out))} ответ`,
     `🔄 Обновится в ${rs.at} по Ташкенту (через ${rs.in})`,
     byDay.size > 1 ? 'За 7 дней:\n' + [...byDay.entries()].map(([d, v]) => `• ${dm(d)} — ${v}`).join('\n') : '',
@@ -1618,6 +1619,97 @@ async function say(chatId: number, text: string) {
     i = j;
   }
 }
+// ───────────────────────────── voice replies: Gemini TTS → MP3 → Telegram voice ─────────────────────────────
+// Mode per chat (stored as flags in ai_events): auto — answer a voice message with voice too (default),
+// on — every AI answer also as voice, off — never. «ответь голосом» in a message voices that one answer anyway.
+// The text always goes first (numbers and lists are easier to read), the voice follows it.
+const VOICE_ASK = /(ответь|скажи|расскажи|пришли|отправь|запиши|озвучь)\S*\s+(мне\s+)?голос|голосом|ovozli|ovoz\s*bilan|ovozda/i;
+const VMODE = new Map<number, string>();
+async function voiceMode(chatId: number): Promise<string> {
+  if (VMODE.has(chatId)) return VMODE.get(chatId)!;
+  let m = 'auto';
+  if (sbOn()) {
+    const r = await sb(`ai_events?or=(key.eq.voice_on:${chatId},key.eq.voice_off:${chatId})&select=key`).catch(() => []);
+    if (r.some((x: any) => x.key.startsWith('voice_on'))) m = 'on'; else if (r.some((x: any) => x.key.startsWith('voice_off'))) m = 'off';
+  }
+  VMODE.set(chatId, m); return m;
+}
+const VM_TXT: Record<string, string> = { auto: '🎙 авто: на голосовое отвечаю голосом, на текст — текстом', on: '🔊 всегда: каждый ответ ещё и голосом', off: '🔇 выключено: только текст' };
+async function voiceCommand(chatId: number, arg: string) {
+  const a = arg.toLowerCase();
+  const m = /^(on|вкл\S*|да|всегда|always|ha)$/.test(a) ? 'on' : /^(off|выкл\S*|нет|никогда|never|yo'?q)$/.test(a) ? 'off' : /^(auto|авто\S*)$/.test(a) ? 'auto' : '';
+  if (!m) return `Голосовые ответы: ${VM_TXT[await voiceMode(chatId)]}.\n/voice on — всегда голосом · /voice off — только текст · /voice auto — голосом на голосовое.\nВ любом режиме можно попросить: «ответь голосом».`;
+  if (!sbOn()) return 'Память (Supabase) не подключена — режим не сохранить.';
+  await unonce(`voice_on:${chatId}`); await unonce(`voice_off:${chatId}`);
+  if (m !== 'auto') await once(`voice_${m}:${chatId}`);
+  VMODE.set(chatId, m);
+  return `Готово. Голосовые ответы: ${VM_TXT[m]}.`;
+}
+export async function wantsVoice(chatId: number, isVoice: boolean, text: string) {
+  if (text && VOICE_ASK.test(text)) return true;
+  const m = await voiceMode(chatId);
+  return m === 'on' || (m === 'auto' && isVoice);
+}
+// what to say aloud: no «heard» line, emojis, links, bullets; a long answer is cut on a line break
+export function spokenText(t: string, max = 1100) {
+  let s = String(t || '').replace(/^🎤\s*«[^»]*»\s*/, '').replace(/\n\n[🔋🪫] Лимит:[\s\S]*$/u, '')
+    .replace(/https?:\/\/\S+/g, '').replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}️‍⃣]/gu, '')
+    .replace(/^[ \t]*[•\-–—*]+[ \t]*/gm, '').replace(/[ \t]·[ \t]/g, ', ').replace(/[*_`#]/g, '')
+    .split('\n').map(x => x.trim()).filter(Boolean).join('\n');
+  if (s.length > max) { const nl = s.lastIndexOf('\n', max); s = s.slice(0, nl > max * 0.5 ? nl : max).trim() + '\nОстальное — в сообщении.'; }
+  return s;
+}
+export function pcmToWav(pcm: Uint8Array, rate: number) {
+  const h = new DataView(new ArrayBuffer(44)), w = (o: number, s: string) => { for (let i = 0; i < 4; i++) h.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); h.setUint32(4, 36 + pcm.length, true); w(8, 'WAVE'); w(12, 'fmt '); h.setUint32(16, 16, true); h.setUint16(20, 1, true); h.setUint16(22, 1, true);
+  h.setUint32(24, rate, true); h.setUint32(28, rate * 2, true); h.setUint16(32, 2, true); h.setUint16(34, 16, true); w(36, 'data'); h.setUint32(40, pcm.length, true);
+  const out = new Uint8Array(44 + pcm.length); out.set(new Uint8Array(h.buffer)); out.set(pcm, 44); return out;
+}
+// MP3 — Telegram shows it as a voice message (WAV it would show only as a file)
+export async function pcmToMp3(pcm: Uint8Array, rate: number) {
+  const { Mp3Encoder } = await import('npm:@breezystack/lamejs@1.2.7');
+  const even = pcm.length & ~1, samples = new Int16Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + even));
+  const enc = new Mp3Encoder(1, rate, 64), chunks: Uint8Array[] = [];
+  for (let i = 0; i < samples.length; i += 1152) { const c = enc.encodeBuffer(samples.subarray(i, i + 1152)); if (c.length) chunks.push(new Uint8Array(c)); }
+  const end = enc.flush(); if (end.length) chunks.push(new Uint8Array(end));
+  const out = new Uint8Array(chunks.reduce((s, c) => s + c.length, 0)); let p = 0; for (const c of chunks) { out.set(c, p); p += c.length; }
+  return out;
+}
+const unb64 = (s: string) => { const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
+async function tts(text: string) {
+  const model = env('GEMINI_TTS_MODEL', 'gemini-2.5-flash-preview-tts');
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(CFG.gKey())}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: `Прочитай спокойно, дружелюбно и чётко, как личный ассистент; язык текста не меняй:\n${text}` }] }],
+      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: env('GEMINI_TTS_VOICE', 'Charon') } } } },
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  await trackUsage(model, r.status === 429, d.usageMetadata);
+  if (r.status === 429) throw Object.assign(new Error('дневной лимит озвучки Gemini исчерпан — до сброса отвечаю текстом'), { limit: true });
+  if (!r.ok) throw new Error(`Gemini TTS ${r.status}: ${d.error?.message || ''}`);
+  const part = d.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.data);
+  if (!part) throw new Error('Gemini не вернул аудио');
+  const rate = parseInt((String(part.inlineData.mimeType).match(/rate=(\d+)/) || [])[1] || '24000', 10);
+  return { pcm: unb64(part.inlineData.data), rate };
+}
+async function sayVoice(chatId: number, text: string) {
+  const s = spokenText(text); if (s.length < 2) return;
+  try {
+    await tg('sendChatAction', { chat_id: chatId, action: 'record_voice' });
+    const { pcm, rate } = await tts(s);
+    const fd = new FormData(); fd.append('chat_id', String(chatId));
+    try { fd.append('voice', new File([await pcmToMp3(pcm, rate)], 'jumavoy.mp3', { type: 'audio/mpeg' })); }
+    catch (e) { console.warn('mp3', (e as Error).message); fd.append('audio', new File([pcmToWav(pcm, rate)], 'jumavoy.wav', { type: 'audio/wav' })); fd.append('title', CFG.name); }
+    const r = await fetch(`https://api.telegram.org/bot${CFG.tg()}/${fd.has('voice') ? 'sendVoice' : 'sendAudio'}`, { method: 'POST', body: fd });
+    if (!r.ok) throw new Error('Telegram не принял голосовое: ' + (await r.text()).slice(0, 200));
+  } catch (e) {
+    console.warn('voice', (e as Error).message);
+    // a limit is told once a day, other errors only go to the log: the text answer is already there
+    if ((e as any).limit && sbOn() && await once(`tts429:${quotaDay()}`).catch(() => false)) await say(chatId, '🔇 ' + (e as Error).message);
+  }
+}
 async function tgDownload(fileId: string, max = 19.5e6) {
   const f = await tg('getFile', { file_id: fileId });
   if (!f.ok) throw new Error(/too big/i.test(f.description || '') ? 'Файл больше 20 МБ — Telegram не даёт ботам скачать такой. Сожмите или разделите его.' : 'Не удалось получить файл из Telegram');
@@ -1678,7 +1770,7 @@ async function nbFile(chatId: number, doc: any, photo: any, title?: string): Pro
   return `📚 Добавил в блокнот${sphere && sphere !== 'work' ? ` (${SPH[sphere]})` : ''} #${s.id}: ${s.title} (${s.chars.toLocaleString('ru-RU')} знаков)${s.cut ? ' — документ очень длинный, сохранил первые 400 000 знаков' : ''}.\nТеперь спрашивайте по нему — отвечу со ссылкой на источник. Список: /nb`;
 }
 
-const HELP = `Я ${CFG.name} — ваш личный AI-помощник: работа (MITAL CRM), личное, семья, друзья и бизнес-идеи. Спрашивайте текстом, голосом, фото или документом (русский / узбекский):
+const HELP = `Я ${CFG.name} — ваш личный AI-помощник: работа (MITAL CRM), личное, семья, друзья и бизнес-идеи. Спрашивайте текстом, голосом, фото или документом (русский / узбекский). На голосовое отвечаю и голосом:
 👤 Личное:
 • Я занял у Азиза $200 до 25.11 · Дал брату 500 тысяч сум · Азиз вернул $50
 • Сколько у меня долгов? Кто мне должен? История с Азизом (/my)
@@ -1712,13 +1804,14 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /reminders — напоминания · /cancel N — отменить
 /my — личные долги · /my имя — история с человеком
 /limits — сколько осталось запросов Gemini
+/voice — голосовые ответы (авто / всегда / выкл)
 /data — свежесть данных · /new — начать разговор заново
 Каждый день в ${CFG.hour('MORNING_HOUR', 8)}:00 присылаю план, в ${CFG.hour('EVENING_HOUR', 19)}:00 — итог дня.`;
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
   ['k', 'Карточка клиента: /k имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'],
   ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
-  ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
+  ['voice', 'Голосовые ответы: авто / on / off'], ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
 
 const seen = new Map<number, number>();
 async function handle(u: any) {
@@ -1733,6 +1826,8 @@ async function handle(u: any) {
   const text = (m.text || m.caption || '').trim();
   if (/^\/(start|help)\b/.test(text)) return say(chatId, HELP);
   if (/^\/new\b/.test(text)) { await resetHistory(chatId); return say(chatId, 'Начали заново. Спрашивайте 🙂'); }
+  const vc = text.match(/^\/voice(?:@\w+)?\s*(\S*)/i);
+  if (vc) return say(chatId, await voiceCommand(chatId, vc[1]));
   const voice = m.voice || m.audio, doc = m.document, photo = m.photo?.at(-1);
   if (!text && !voice && !doc && !photo) return say(chatId, 'Пришлите вопрос текстом, голосовым, фото или документом.');
   await tg('sendChatAction', { chat_id: chatId, action: doc || photo ? 'upload_document' : 'typing' });
@@ -1759,6 +1854,7 @@ async function handle(u: any) {
     console.log('ok', Date.now() - t0, 'ms', 'gemini requests:', res.requests, res.used.join(','));
     if (key && !res.used.some(x => WRITES.has(x))) { ANS.set(key, { at: Date.now(), text: res.text, mem: (await getHistory(chatId)).at(-1)?.parts?.[0]?.text }); if (ANS.size > 200) ANS.clear(); }
     await say(chatId, res.text + usageLine(res.requests));
+    if (await wantsVoice(chatId, !!voice, text)) await sayVoice(chatId, res.text);
   } catch (e) {
     console.error(e);
     await say(chatId, '⚠️ ' + ((e as Error).message || 'Ошибка'));
@@ -1782,8 +1878,9 @@ async function serve(req: Request) {
       const hook = env('SUPABASE_URL') ? `${env('SUPABASE_URL')}/functions/v1/ai-bot` : `https://${url.host}/functions/v1/ai-bot`;
       const r = await tg('setWebhook', { url: hook, secret_token: CFG.secret(), allowed_updates: ['message', 'edited_message'], drop_pending_updates: true });
       const c = await tg('setMyCommands', { commands: COMMANDS });
-      await tg('setMyDescription', { description: `${CFG.name} — AI-агент по продажам MITAL: долги, заказы, агенты, план, напоминания, блокнот знаний. Отвечает на голос и текст на русском и узбекском.` });
-      await tg('setMyShortDescription', { short_description: `${CFG.name} — AI-агент по продажам MITAL` });
+      await tg('setMyName', { name: CFG.name });
+      await tg('setMyDescription', { description: `${CFG.name} — личный AI-ассистент: работа MITAL (долги, заказы, агенты, план), личное, семья, друзья, идеи, напоминания, блокнот знаний. Понимает голос и текст на русском и узбекском.` });
+      await tg('setMyShortDescription', { short_description: `${CFG.name} — ваш личный AI-ассистент` });
       let memory = 'не подключена';
       if (sbOn()) memory = await sb('ai_memory?limit=1&select=id').then(() => 'подключена ✅').catch(e => e.message);
       return json({ webhook: hook, telegram: r, commands: c.ok ?? c, memory });
