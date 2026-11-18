@@ -226,6 +226,10 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   assert(GEM_LOG.at(-1).contents.length >= 3, 'conversation history sent');
   assert(DB.ai_messages.length >= 4, 'messages logged in Supabase');
   await tgPost({ text: '/memory' }); assert(lastText().includes('Abdulmutallib в отпуске'), '/memory');
+  GEM = () => call('bot_help', { heard: 'Скажи, что ты умеешь' });
+  await tgPost({ voice: { file_id: 'docx1', mime_type: 'audio/ogg' } });
+  assert(lastText().startsWith('🎤 «Скажи, что ты умеешь»') && lastText().includes('Быстрые команды'), 'voice «what can you do» → help: ' + lastText().slice(0, 120));
+  assert(GEM_LOG.at(-1).tools[0].functionDeclarations.some((f: any) => f.name === 'bot_help'), 'bot_help declared');
   await tgPost({ text: `/forget ${DB.ai_memory[0].id}` }); assert(lastText().startsWith('🗑 Забыл'), '/forget'); eq(DB.ai_memory.length, 0, 'memory deleted');
 
   // reminders: one for this minute (due), one daily, one in the past (rejected)

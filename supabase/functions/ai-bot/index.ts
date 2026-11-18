@@ -759,8 +759,13 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       return rows?.length ? { deleted: rows[0].id, text: rows[0].text } : { error: `Записи #${n(a.id)} в памяти нет` };
     },
   },
+  bot_help: {
+    desc: 'Что умеет Mital AI: все возможности и команды. Вызывай на «что ты умеешь», «твои функции», «как тобой пользоваться», «помощь», «nima qila olasan», «imkoniyatlaring».',
+    params: {},
+    run() { return {}; },
+  },
   memory_list: {
-    desc: 'Показать, что бот помнит и чему научился: факты и правила с номерами.',
+    desc: 'ТОЛЬКО когда спрашивают, что бот ЗАПОМНИЛ: сохранённые факты и правила с номерами («что ты помнишь», «чему научился», «покажи память»). НЕ для вопроса «что ты умеешь» — для него bot_help.',
     params: {},
     async run(_db, _a, ctx) { if (!sbOn()) return { error: NO_DB }; MEM.delete(ctx.chatId); const rows = await memoryOf(ctx.chatId); return { facts: rows.filter(r => r.kind === 'fact'), rules: rows.filter(r => r.kind === 'rule') }; },
   },
@@ -889,6 +894,7 @@ const TPL: Record<string, (r: any) => string> = {
     r.broken.length ? `❌ Сорвали обещание (${r.broken.length}):\n` + lines(r.broken, (p: any) => `• ${p.client}${p.agent ? ' · ' + first(p.agent) : ''} — обещал ${$(p.promised)} на ${dm(p.date)}, оплатил ${$(p.paid_since)}`) : ''].filter(Boolean).join('\n\n'),
   remember: r => `🧠 Запомнил${r.kind === 'rule' ? ' правило' : ''} #${r.saved}: ${r.text}${r.until ? ` (до ${dm(r.until)})` : ''}`,
   forget: r => `🗑 Забыл #${r.deleted}: ${r.text}`,
+  bot_help: () => HELP,
   memory_list: r => (!r.facts.length && !r.rules.length) ? '🧠 Пока ничего не запомнил. Скажите «запомни: …».' : [
     r.rules.length ? '📐 Правила:\n' + r.rules.map((x: any) => `#${x.id} ${x.text}`).join('\n') : '',
     r.facts.length ? '🧠 Факты:\n' + r.facts.map((x: any) => `#${x.id} ${x.text}${x.until ? ` (до ${dm(x.until)})` : ''}`).join('\n') : '',
