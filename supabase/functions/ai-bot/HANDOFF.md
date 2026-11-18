@@ -71,6 +71,7 @@ Telegram (новый отдельный бот) → Supabase Edge Function `ai-b
 
 ## 5а. Этап 2 сделан 18.11.2026 (Opus 5.5): бот называется **Mital AI**
 Код написан, проверен (`deno check`, `deno lint`, `deno test -A index.test.ts`: 4/4) и запушен.
+**18.11 ~11:50 (Ташкент): бот @MitalAI_bot запущен владельцем** — все секреты, `?setup=`, `ALLOWED_USERS`, `cron.sql` (tick каждую минуту). GH_TOKEN — fine-grained с доступом к mitalcrm-data (сначала был выдан без репозитория → 404; бот теперь сам диагностирует токен). Добавлены `/limits` (таблица `ai_usage`, миграция 000002, секрет `GEMINI_RPD`, по умолчанию 500) и исправлено сохранение переписки (PGRST102).
 **18.11: таблицы `ai_*` созданы, функция `ai-bot` задеплоена** (CLI, `--no-verify-jwt`, отвечает «Mital AI is running», без пароля 403). Осталось владельцу: бот в BotFather, секреты, `?setup=`, `ALLOWED_USERS`, `cron.sql` (шаги 1–3 и 6–9 README). С реальными Telegram и Gemini ещё не проверено.
 Деплой после правок: `npx.cmd -y supabase@2 functions deploy ai-bot --project-ref oxchgcfyzszemqlvdjjr --no-verify-jwt --use-api` (CLI залогинен на ПК владельца; в PowerShell `npx.ps1` запрещён, поэтому `npx.cmd`).
 - Таблицы: миграция `supabase/migrations/20261118000001_mital_ai.sql` (`ai_messages`, `ai_memory`, `ai_reminders`, `ai_notebook`, `ai_events`). RLS включён без политик, доступ только у service role.
