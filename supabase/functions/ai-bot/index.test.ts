@@ -68,7 +68,7 @@ const XLSX = await zip({
 const FILES: Record<string, Uint8Array> = { docx1: DOCX, xlsx1: XLSX };
 
 // ───── mini PostgREST ─────
-const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [] };
+const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [] };
 let seq = 1;
 const isTime = (k: string) => k.endsWith('_at');
 const cmp = (k: string, a: any, b: string) => isTime(k) ? Date.parse(a) - Date.parse(b) : typeof a === 'number' ? a - Number(b) : String(a ?? '').localeCompare(b);
@@ -95,6 +95,12 @@ function filterRows(rows: any[], sp: URLSearchParams) {
 }
 function postgrest(url: URL, method: string, body: any, prefer: string) {
   const table = url.pathname.replace('/rest/v1/', ''), sp = url.searchParams, rows = DB[table];
+  if (table === 'rpc/ai_usage_add') { // same logic as the SQL function: upsert + add, returns the day's requests
+    let u = DB.ai_usage.find(r => r.day === body.p_day && r.model === body.p_model);
+    if (!u) { u = { day: body.p_day, model: body.p_model, requests: 0, limited: 0, tokens_in: 0, tokens_out: 0 }; DB.ai_usage.push(u); }
+    u.requests += body.p_req; u.limited += body.p_limited; u.tokens_in += body.p_in; u.tokens_out += body.p_out;
+    return new Response(JSON.stringify(u.requests));
+  }
   if (!rows) return new Response(JSON.stringify({ code: 'PGRST205', message: `relation ${table} does not exist` }), { status: 404 });
   const rep = /return=representation/.test(prefer), ok = (data: any, st = 200) => new Response(rep || method === 'GET' ? JSON.stringify(data) : '', { status: st });
   if (method === 'GET') {
@@ -106,6 +112,8 @@ function postgrest(url: URL, method: string, body: any, prefer: string) {
   }
   if (method === 'POST') {
     const list = Array.isArray(body) ? body : [body], added: any[] = [];
+    // real PostgREST: a bulk insert must have the same keys in every row (PGRST102)
+    if (list.some(b => Object.keys(b).sort().join() !== Object.keys(list[0]).sort().join())) return new Response('{"code":"PGRST102","message":"All object keys must match"}', { status: 400 });
     for (const b of list) {
       if (table === 'ai_events' && rows.some(r => r.key === b.key)) { if (/ignore-duplicates/.test(prefer)) continue; return new Response('{"code":"23505"}', { status: 409 }); }
       const row = { id: seq++, created_at: new Date().toISOString(), ...b }; rows.push(row); added.push(row);
@@ -144,7 +152,11 @@ function say(text: string) { return { candidates: [{ content: { role: 'model', p
     if (methodName === 'getFile') return new Response(JSON.stringify({ ok: true, result: { file_path: 'docs/' + body.file_id, file_size: FILES[body.file_id]?.length || 10 } }));
     return new Response(JSON.stringify({ ok: true, result: true }));
   }
-  if (url.host === 'generativelanguage.googleapis.com') { const b = JSON.parse(init.body); GEM_LOG.push(b); return new Response(JSON.stringify(GEM(b))); }
+  if (url.host === 'generativelanguage.googleapis.com') {
+    const b = JSON.parse(init.body); GEM_LOG.push(b); const res = GEM(b);
+    if (res.__status) return new Response(JSON.stringify(res.body), { status: res.__status });
+    return new Response(JSON.stringify({ usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 50 }, ...res }));
+  }
   if (url.host === 'sb.test') {
     assert(init.headers?.apikey === 'service', 'Supabase apikey header');
     return postgrest(url, method, init.body ? JSON.parse(init.body) : undefined, init.headers?.Prefer || '');
@@ -264,6 +276,36 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   const doc = SENT.filter(s => s.method === 'sendDocument').at(-1)!;
   assert(doc && doc.body.document.startsWith('# MITAL — сводка продаж') && doc.body.document.includes('| Adxamjon Umarov |') && doc.body.caption.includes('NotebookLM'), 'export file');
   assert(!/undefined|NaN/.test(doc.body.document), 'no undefined / NaN in export');
+
+  // Gemini usage: every request counted; /limits and a plain question about limits answer without AI; 80% warning once; 429 explained
+  const used = DB.ai_usage.reduce((s, r) => s + r.requests, 0);
+  eq(used, GEM_LOG.length, 'every Gemini request is counted');
+  const g0 = GEM_LOG.length;
+  await tgPost({ text: '/limits' }); assert(lastText().includes(`Сегодня: ${used} из ~500 запросов`) && lastText().includes('Обновится в') && lastText().includes('тыс. вход'), '/limits: ' + lastText());
+  await tgPost({ text: 'сколько осталось лимитов?' }); assert(lastText().startsWith('📊 Лимиты Gemini'), 'plain question about limits');
+  eq(GEM_LOG.length, g0, '/limits spends no AI');
+  D.env.set('GEMINI_RPD', String(used + 1));
+  GEM = () => say('ok'); await tgPost({ text: 'вопрос один' }); await tgPost({ text: 'вопрос два' });
+  eq(sentTexts().filter(t => t.includes('потрачено') && t.includes('запросов Gemini')).length, 1, '80% warning sent exactly once');
+  D.env.delete('GEMINI_RPD');
+  GEM = () => ({ __status: 429, body: { error: { code: 429, message: 'Quota exceeded for metric: generate_content_free_tier_requests, limit: 500', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } } });
+  await tgPost({ text: 'вопрос три' }); assert(lastText().includes('Дневной лимит Gemini исчерпан') && lastText().includes('/limits'), '429 per day: ' + lastText());
+  GEM = () => ({ __status: 429, body: { error: { code: 429, message: 'Quota exceeded', details: [{ violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }] }] } } });
+  await tgPost({ text: 'вопрос четыре' }); assert(lastText().includes('лимит Gemini в минуту'), '429 per minute: ' + lastText());
+  eq(DB.ai_usage.reduce((s, r) => s + r.limited, 0), 2, 'refusals counted');
+
+  // the conversation really is stored: every question has its answer row
+  eq(DB.ai_messages.filter(r => r.role === 'user').length, DB.ai_messages.filter(r => r.role === 'model').length, 'question/answer pairs stored');
+  assert(DB.ai_messages.length >= 10, 'messages stored: ' + DB.ai_messages.length);
+
+  // no access to mitalcrm-data (GitHub 404) → a clear message, never answers with zeros
+  const saved = { ...GH }, savedGz = { ...GHGZ };
+  for (const k of Object.keys(GH)) delete GH[k]; for (const k of Object.keys(GHGZ)) delete GHGZ[k];
+  await tgPost({ text: '/fresh' }); assert(lastText().includes('Нет доступа к данным CRM') && lastText().includes('404') && lastText().includes('GH_TOKEN'), '/fresh with 404: ' + lastText());
+  await tgPost({ text: '/today' }); assert(lastText().includes('Нет доступа к данным CRM'), '/today with 404');
+  const g1 = GEM_LOG.length; await tgPost({ text: 'какой долг у Fozilxon?' }); assert(lastText().includes('Нет доступа к данным CRM') && GEM_LOG.length === g1, 'question with 404: no AI, clear error');
+  Object.assign(GH, saved); Object.assign(GHGZ, savedGz);
+  await tgPost({ text: '/fresh' }); eq(lastText(), '🔄 Данные обновлены.', 'data back');
 
   // /new puts a marker
   await tgPost({ text: '/new' }); eq(DB.ai_messages.at(-1).text, '/new', 'reset marker');

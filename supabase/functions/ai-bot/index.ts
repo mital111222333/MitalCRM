@@ -118,12 +118,25 @@ const safeJson = (p: string) => ghJson(p).catch(e => { console.warn(p, e.message
 const arcCache = new Map<string, any>(); // archived days never change except the last two
 let DBC: { at: number; db: any } | null = null;
 
+// no CRM data at all (wrong GH_TOKEN, no access to the repo) → say so plainly instead of answering with zeros
+const dataError = (why: string) => `Нет доступа к данным CRM (репозиторий ${CFG.owner()}/${CFG.repo()}): ${why}.\n`
+  + `Проверьте секрет GH_TOKEN: токен должен быть создан в аккаунте ${CFG.owner()} (Resource owner) с доступом к ${CFG.repo()} и правом Contents: Read-only. `
+  + `Если репозиторий в организации — владелец организации должен одобрить токен. После исправления напишите /fresh.`;
 async function loadDB(force = false) {
   if (!force && DBC && Date.now() - DBC.at < 120e3) return DBC.db;
+  const errs: string[] = [];
+  const main = (p: string) => ghJson(p).catch(e => { errs.push(e.message); console.warn(p, e.message); return null; });
   const [crm, fast, extra, inst, tree] = await Promise.all([
-    safeJson('crm-data.json.gz'), safeJson('linko-fast.json'), safeJson('linko-extra.json'), safeJson('inst-state.json'),
+    main('crm-data.json.gz'), main('linko-fast.json'), main('linko-extra.json'), main('inst-state.json'),
     gh('git/trees/HEAD?recursive=1').then(r => r.json()).catch(() => ({ tree: [] })),
   ]);
+  if (!crm && !fast) {
+    const why = /GitHub (401|403)/.test(errs[0] || '') ? 'GitHub не принял токен (неверный или просрочен)' : /GitHub 404/.test(errs[0] || '') ? 'GitHub отвечает 404 — у токена нет доступа к репозиторию' : errs[0] || 'файлы не найдены';
+    const db: any = build(null, null, null, null, [], []);
+    db.meta.data_error = dataError(why);
+    DBC = { at: Date.now() - 100e3, db }; // retry in ~20 s
+    return db;
+  }
   const arcPaths = (tree.tree || []).map((t: any) => t.path).filter((p: string) => /^archive\/\d{4}\/\d{2}\/\d{4}-\d{2}-\d{2}\/fast\.json\.gz$/.test(p)).sort();
   const recent = new Set(arcPaths.slice(-2));
   const arcs = await Promise.all(arcPaths.map(async (p: string) => {
@@ -132,6 +145,11 @@ async function loadDB(force = false) {
   }));
   const db = build(crm, fast, extra, inst, arcs.filter(Boolean), arcPaths);
   DBC = { at: Date.now(), db };
+  return db;
+}
+async function needData(force = false) {
+  const db = await loadDB(force);
+  if (db.meta.data_error) throw new Error(db.meta.data_error);
   return db;
 }
 
@@ -911,20 +929,71 @@ async function getHistory(chatId: number): Promise<any[]> {
 async function remember(chatId: number, qText: string, a: string, tools = '') {
   const items = [...await getHistory(chatId), { role: 'user', parts: [{ text: qText }] }, { role: 'model', parts: [{ text: a }] }].slice(-12);
   HIST.set(chatId, { at: Date.now(), items });
-  if (sbOn()) await sb('ai_messages', { method: 'POST', prefer: 'return=minimal', body: [{ chat_id: chatId, role: 'user', text: qText.slice(0, 8000) }, { chat_id: chatId, role: 'model', text: a.slice(0, 8000), tools: tools || null }] }).catch(e => console.warn('log', e.message));
+  // a bulk insert needs the same keys in every row (PostgREST PGRST102), so the question row has tools: null too
+  if (sbOn()) await sb('ai_messages', { method: 'POST', prefer: 'return=minimal', body: [{ chat_id: chatId, role: 'user', text: qText.slice(0, 8000), tools: null }, { chat_id: chatId, role: 'model', text: a.slice(0, 8000), tools: tools || null }] }).catch(e => console.warn('log', e.message));
 }
 async function resetHistory(chatId: number) {
   HIST.set(chatId, { at: Date.now(), items: [] });
   if (sbOn()) await sb('ai_messages', { method: 'POST', prefer: 'return=minimal', body: { chat_id: chatId, role: 'user', text: NEW_MARK } }).catch(() => {});
 }
 
+// ───── Gemini usage: every request is counted (ai_usage), /limits shows what is left ─────
+// Google resets the free daily quota at midnight Pacific time; the real limit of a key is shown only in AI Studio,
+// so the expected daily limit is a secret: GEMINI_RPD (500 by default — the free figure for Flash-Lite).
+const PT = 'America/Los_Angeles';
+const quotaDay = () => new Intl.DateTimeFormat('en-CA', { timeZone: PT, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+const dailyLimit = () => { const v = parseInt(env('GEMINI_RPD'), 10); return Number.isFinite(v) && v > 0 ? v : 500; };
+function quotaReset() {
+  const p: Record<string, string> = {};
+  for (const x of new Intl.DateTimeFormat('en-US', { timeZone: PT, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date())) p[x.type] = x.value;
+  const left = 86400 - ((+p.hour % 24) * 3600 + +p.minute * 60 + +p.second), at = new Date(Date.now() + left * 1000);
+  return { at: localParts(at).time, in: `${Math.floor(left / 3600)} ч ${Math.floor(left % 3600 / 60)} мин` };
+}
+async function trackUsage(model: string, limited: boolean, u: any) {
+  if (!sbOn()) return;
+  try {
+    const total = await sb('rpc/ai_usage_add', { method: 'POST', body: { p_day: quotaDay(), p_model: model, p_req: limited ? 0 : 1, p_limited: limited ? 1 : 0, p_in: n(u?.promptTokenCount), p_out: n(u?.candidatesTokenCount) + n(u?.thoughtsTokenCount) } });
+    const lim = dailyLimit();
+    // one warning a day when 80% of the daily limit is spent
+    if (!limited && n(total) >= lim * 0.8 && await once(`limit80:${quotaDay()}:${model}`)) {
+      const r = quotaReset();
+      for (const c of CFG.allowed().map(Number).filter(Boolean)) await say(c, `⚠️ ${CFG.name}: потрачено ${total} из ~${lim} запросов Gemini на сегодня (${Math.round(n(total) / lim * 100)}%). Лимит обновится в ${r.at} (через ${r.in}).\nКоманды /today, /dolg, /k, /plan, /brief и отчёты работают без ИИ и лимит не тратят. Подробнее: /limits`);
+    }
+  } catch (e) { console.warn('usage', (e as Error).message); }
+}
 async function gemini(body: any) {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${CFG.model()}:generateContent?key=${encodeURIComponent(CFG.gKey())}`, {
+  const model = CFG.model();
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(CFG.gKey())}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(r.status === 429 ? 'Лимит Gemini исчерпан, попробуйте через минуту' : `Gemini ${r.status}: ${d.error?.message || ''}`);
+  await trackUsage(model, r.status === 429, d.usageMetadata);
+  if (r.status === 429) {
+    const perDay = /per.?day|PerDay|daily/i.test(JSON.stringify(d.error || {})), rs = quotaReset();
+    throw new Error(perDay
+      ? `Дневной лимит Gemini исчерпан. Обновится в ${rs.at} (через ${rs.in}). Пока работают команды без ИИ: /today /dolg /k /plan /brief. Подробнее: /limits`
+      : 'Слишком много вопросов подряд (лимит Gemini в минуту). Подождите минуту и спросите снова.');
+  }
+  if (!r.ok) throw new Error(`Gemini ${r.status}: ${d.error?.message || ''}`);
   return d;
+}
+async function limitsText() {
+  if (!sbOn()) return NO_DB;
+  const rows: any[] = await sb(`ai_usage?day=gte.${addDays(quotaDay(), -6)}&order=day.desc,model`);
+  const model = CFG.model(), lim = dailyLimit(), today = quotaDay(), rs = quotaReset();
+  const cur = rows.find(r => r.day === today && r.model === model) || { requests: 0, limited: 0, tokens_in: 0, tokens_out: 0 };
+  const left = Math.max(0, lim - cur.requests), pct = Math.round(cur.requests / lim * 100);
+  const bar = '▓'.repeat(Math.min(10, Math.round(pct / 10))) + '░'.repeat(10 - Math.min(10, Math.round(pct / 10)));
+  const k = (v: number) => v >= 1e6 ? `${r2(v / 1e6)} млн` : v >= 1e3 ? `${Math.round(v / 1e3)} тыс.` : String(v);
+  const byDay = new Map<string, number>(); for (const r of rows) byDay.set(r.day, (byDay.get(r.day) || 0) + r.requests);
+  return [`📊 Лимиты Gemini · ${model}`,
+    `Сегодня: ${cur.requests} из ~${lim} запросов (${pct}%)\n${bar}  осталось ~${left}`,
+    cur.limited ? `⛔ Отказов из-за лимита сегодня: ${cur.limited}` : '',
+    `Токены сегодня: ${k(n(cur.tokens_in))} вход / ${k(n(cur.tokens_out))} ответ`,
+    `🔄 Обновится в ${rs.at} по Ташкенту (через ${rs.in})`,
+    byDay.size > 1 ? 'За 7 дней:\n' + [...byDay.entries()].map(([d, v]) => `• ${dm(d)} — ${v}`).join('\n') : '',
+    `ℹ️ Простой вопрос = 1 запрос, анализ или вопрос по блокноту = 2–3. Команды /today /dolg /k /plan /brief и утренний/вечерний отчёты лимит не тратят.`,
+    `Точный лимит вашего ключа: aistudio.google.com → Usage / Rate limits. Если там не ${lim} — поменяйте секрет GEMINI_RPD.`].filter(Boolean).join('\n\n');
 }
 
 export async function ask(db: any, chatId: number, userParts: any[], qText: string) {
@@ -973,9 +1042,12 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
 
 // ───────────────────────────── quick commands (no AI at all) ─────────────────────────────
 async function command(text: string, chatId: number): Promise<string | null> {
+  // «сколько осталось лимитов?» in plain words is answered without spending a request
+  if (/^\/limits?\b/i.test(text) || (text.length <= 60 && !text.startsWith('/') && /лимит|limit/i.test(text))) return limitsText();
   const m = text.match(/^\/(today|dolg|agents|k|sklad|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
+  const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
   const run = async (name: string, a: any, db: any = null) => { const r = await TOOLS[name].run(db, a, ctx); return ambiguity(r) || TPL[name](r); };
   // memory and reminders need no CRM data
   if (cmd === 'memory') return run('memory_list', {});
@@ -1131,7 +1203,14 @@ async function tick() {
     if (L.h !== hour) return;
     const key = `${name}:${L.date}`;
     if (!await once(key)) return;
-    try { db = db || await loadDB(true); for (const c of chats) await fn(db, c); res[name] = 'sent'; } catch (e) { await unonce(key); throw e; }
+    try {
+      db = db || await loadDB(true);
+      if (db.meta.data_error) { // no data: tell the owner once a day instead of sending an empty brief
+        if (await once(`dataerr:${L.date}`)) for (const c of chats) await say(c, '⚠️ ' + db.meta.data_error);
+        throw new Error(db.meta.data_error);
+      }
+      for (const c of chats) await fn(db, c); res[name] = 'sent';
+    } catch (e) { await unonce(key); throw e; }
   };
   await slot('morning', CFG.hour('MORNING_HOUR', 8), async (db, c) => {
     await say(c, await morningBrief(db, c));
@@ -1234,13 +1313,14 @@ const HELP = `Я ${CFG.name} — AI-агент MITAL CRM. Спрашивайте
 /sklad — что заканчивается · /sklad товар — остатки
 /memory — что я помню · /forget N — забыть
 /reminders — напоминания · /cancel N — отменить
+/limits — сколько осталось запросов Gemini
 /data — свежесть данных · /new — начать разговор заново
 Каждый день в ${CFG.hour('MORNING_HOUR', 8)}:00 присылаю план, в ${CFG.hour('EVENING_HOUR', 19)}:00 — итог дня.`;
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
   ['k', 'Карточка клиента: /k имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'],
   ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['reminders', 'Напоминания'],
-  ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
+  ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
 
 const seen = new Map<number, number>();
 async function handle(u: any) {
@@ -1266,13 +1346,13 @@ async function handle(u: any) {
     if (doc || photo) {
       if (!text || nb) return await say(chatId, await nbFile(chatId, doc, photo, nb?.[1]));
     } else if (nb) return await say(chatId, await nbCommand(chatId, (nb[1] || '').trim(), m.reply_to_message));
-    if (/^\/notebooklm\b/i.test(text)) { await sendExport(await loadDB(), chatId); return; }
-    if (/^\/fresh\b/.test(text)) { await loadDB(true); return await say(chatId, '🔄 Данные обновлены.'); }
+    if (/^\/notebooklm\b/i.test(text)) { await sendExport(await needData(), chatId); return; }
+    if (/^\/fresh\b/.test(text)) { await needData(true); return await say(chatId, '🔄 Данные обновлены.'); }
     const quick = text && !doc && !photo ? await command(text, chatId) : null;
     if (quick) { console.log('command', Date.now() - t0, 'ms'); return await say(chatId, quick); }
     const key = text && !doc && !photo ? `${chatId}|${norm(text)}` : '', hit = key && ANS.get(key);
     if (hit && Date.now() - hit.at < 300e3 && (await getHistory(chatId)).at(-1)?.parts?.[0]?.text === hit.mem) return await say(chatId, hit.text);
-    const [db, media] = await Promise.all([loadDB(), voice ? voicePart(voice) : doc || photo ? filePart(doc, photo) : null]);
+    const [db, media] = await Promise.all([needData(), voice ? voicePart(voice) : doc || photo ? filePart(doc, photo) : null]);
     const parts = voice ? [media, { text: '(голосовое сообщение: передай в поле heard, что услышал)' }]
       : media ? [media, { text: text || 'Что здесь? Если это накладная или чек — распиши товары, количество и суммы.' }] : [{ text }];
     const qText = voice ? '[голосовое]' : media ? `[${photo ? 'фото' : 'документ ' + (doc.file_name || '')}] ${text}` : text;
