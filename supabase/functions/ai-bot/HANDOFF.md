@@ -70,7 +70,9 @@ Telegram (новый отдельный бот) → Supabase Edge Function `ai-b
 - [ ] С реальным Gemini и Telegram пока не проверено. Риски: Gemini может не принять схему функций, не распознать голос, а реальные лимиты Flash-Lite неизвестны (смотреть в AI Studio).
 
 ## 5а. Этап 2 сделан 18.11.2026 (Opus 5.5): бот называется **Mital AI**
-Код написан, проверен (`deno check`, `deno lint`, `deno test -A index.test.ts`: 4/4) и запушен. На реальных Telegram, Gemini и Supabase **ещё не запускался**.
+Код написан, проверен (`deno check`, `deno lint`, `deno test -A index.test.ts`: 4/4) и запушен.
+**18.11: таблицы `ai_*` созданы, функция `ai-bot` задеплоена** (CLI, `--no-verify-jwt`, отвечает «Mital AI is running», без пароля 403). Осталось владельцу: бот в BotFather, секреты, `?setup=`, `ALLOWED_USERS`, `cron.sql` (шаги 1–3 и 6–9 README). С реальными Telegram и Gemini ещё не проверено.
+Деплой после правок: `npx.cmd -y supabase@2 functions deploy ai-bot --project-ref oxchgcfyzszemqlvdjjr --no-verify-jwt --use-api` (CLI залогинен на ПК владельца; в PowerShell `npx.ps1` запрещён, поэтому `npx.cmd`).
 - Таблицы: миграция `supabase/migrations/20261118000001_mital_ai.sql` (`ai_messages`, `ai_memory`, `ai_reminders`, `ai_notebook`, `ai_events`). RLS включён без политик, доступ только у service role.
 - Функция ходит в Supabase через REST (`fetch`, без SDK), ключ `SUPABASE_SERVICE_ROLE_KEY` подставляется сам. Без таблиц цифры работают, а память отвечает «выполните SQL».
 - Память: переписка пишется в `ai_messages` и после холодного старта подгружается за последние 3 часа (`/new` = маркер). Факты и правила (`remember`, `forget`, `memory_list`, `/memory`, `/forget N`) идут в системный промпт каждого ответа.

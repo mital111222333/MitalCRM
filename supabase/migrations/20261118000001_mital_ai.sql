@@ -63,3 +63,4 @@ alter table public.ai_reminders enable row level security;
 alter table public.ai_notebook enable row level security;
 alter table public.ai_events enable row level security;
 revoke all on public.ai_messages, public.ai_memory, public.ai_reminders, public.ai_notebook, public.ai_events from anon, authenticated;
+revoke all on sequence public.ai_messages_id_seq, public.ai_memory_id_seq, public.ai_reminders_id_seq, public.ai_notebook_id_seq from anon, authenticated;
