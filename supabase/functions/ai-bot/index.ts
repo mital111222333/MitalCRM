@@ -294,6 +294,40 @@ async function once(key: string) {
 }
 const unonce = (key: string) => sb(`ai_events?key=eq.${q(key)}`, { method: 'DELETE' }).catch(() => {});
 
+// ───────────────────────────── spheres of life and personal money ─────────────────────────────
+// The bot is the owner's personal assistant; MITAL work is one sphere of it. Memory and reminders carry a sphere,
+// personal debts (ai_ledger) live apart from the CRM debts of MITAL clients and never mix with them.
+const SPHERES = ['work', 'personal', 'family', 'friends', 'ideas'];
+const SPH: Record<string, string> = { work: '💼 Работа', personal: '👤 Личное', family: '👨‍👩‍👧 Семья', friends: '🤝 Друзья', ideas: '💡 Идеи' };
+const sphereOf = (v: any, def = 'work') => SPHERES.includes(v) ? v : def;
+const sphTag = (s: any) => s && s !== 'work' && SPH[s] ? ' ' + SPH[s].split(' ')[0] : '';
+const SPHERE_PARAM = { type: 'string', enum: SPHERES, description: 'сфера жизни: work — всё про MITAL (клиенты, агенты, товары, план, команда); personal — личное; family — семья, родные; friends — друзья; ideas — бизнес-идеи и планы на будущее' };
+const CURRENCIES = ['USD', 'UZS', 'RUB', 'EUR'];
+const money = (v: number, cur = 'USD') => {
+  const a = Math.abs(n(v)), s = (Math.abs(a - Math.round(a)) < 0.005 ? Math.round(a) : r2(a)).toLocaleString('ru-RU').replace(/\s/g, ' ');
+  return cur === 'UZS' ? `${s} сум` : cur === 'RUB' ? `${s} ₽` : cur === 'EUR' ? `€${s}` : `$${s}`;
+};
+// i_lent / i_returned → the person owes me more (+); i_borrowed / they_returned → I owe the person more (−)
+const LEDGER_SIGN: Record<string, number> = { i_lent: 1, i_returned: 1, i_borrowed: -1, they_returned: -1 };
+const ACT_RU: Record<string, string> = { i_lent: 'вы дали в долг', i_borrowed: 'вы заняли', they_returned: 'вам вернули', i_returned: 'вы вернули' };
+const ledgerOf = (chatId: number): Promise<any[]> => sb(`ai_ledger?chat_id=eq.${chatId}&order=id&limit=5000`);
+// balance per person and currency; a due date is forgotten once the balance comes back to zero
+function ledgerBalances(rows: any[]) {
+  const m = new Map<string, any>();
+  for (const r of rows) {
+    const k = norm(r.person) + '|' + r.currency;
+    const b = m.get(k) || { person: r.person, currency: r.currency, sum: 0, due: null, sphere: r.sphere || 'personal' };
+    b.sum = r2(b.sum + n(r.amount)); b.sphere = r.sphere || b.sphere;
+    if (r.due && (r.action === 'i_lent' || r.action === 'i_borrowed')) b.due = r.due;
+    if (Math.abs(b.sum) < 0.005) b.due = null;
+    m.set(k, b);
+  }
+  return [...m.values()].filter(b => Math.abs(b.sum) >= 0.005);
+}
+const ledgerPerson = (raw: string, names: string[], min = 0.8) =>
+  names.find(x => x.toLowerCase() === raw.toLowerCase()) || best(raw, names, (x: string) => x, 1, min)[0]?.x || '';
+const totalsBy = (list: any[]) => { const t: Record<string, number> = {}; for (const b of list) t[b.currency] = r2((t[b.currency] || 0) + Math.abs(b.sum)); return t; };
+
 // ───────────────────────────── Knowledge notebook (NotebookLM-style) ─────────────────────────────
 const xmlDecode = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
   .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c)).replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
@@ -542,7 +576,7 @@ function balanceFor(db: any, from?: string, to?: string) {
   const asOf = grace ? to! : u.period_to;
   return { from, to: asOf, period: `${dm(from)} — ${dm(asOf)}`, byAgent };
 }
-const WRITES = new Set(['remember', 'forget', 'reminder_add', 'reminder_cancel', 'notebooklm_export', 'send_contract_files', 'save_photo', 'send_saved_file']);
+const WRITES = new Set(['remember', 'forget', 'reminder_add', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'save_photo', 'send_saved_file']);
 // a part of the CRM's own summary (botsnap.js → workspaces/<owner>/bot.json.gz); without it the bot says so instead of guessing
 function snapPart(db: any, key: string): { error?: string; at?: string; data?: any } {
   const s = db.snap;
@@ -900,13 +934,73 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
   },
   remember: {
     desc: 'Сохранить в ПОСТОЯННУЮ память. kind=fact — факт от пользователя («агент X в отпуске до 25.11», «клиент Y обещал отдать в пятницу», «у Z новый телефон»). kind=rule — правило, как тебе работать или считать («запомни: всегда показывай телефон», «бонус агента = 2% от сбора»). Вызывай на «запомни», «учти», «имей в виду», «знай, что» или когда пользователь сообщает важный факт.',
-    params: { text: { type: 'string', description: 'что запомнить — коротко, с именами и датами (даты в формате ДД.ММ)' }, kind: { type: 'string', enum: ['fact', 'rule'] }, until: { type: 'string', description: 'YYYY-MM-DD — до какой даты факт актуален, если это следует из текста' } },
+    params: { text: { type: 'string', description: 'что запомнить — коротко, с именами и датами (даты в формате ДД.ММ)' }, kind: { type: 'string', enum: ['fact', 'rule'] }, until: { type: 'string', description: 'YYYY-MM-DD — до какой даты факт актуален, если это следует из текста' }, sphere: SPHERE_PARAM },
     async run(_db, a, ctx) {
       const text = String(a.text || '').trim().slice(0, 1000); if (!text) return { error: 'Что именно запомнить?' };
-      const kind = a.kind === 'rule' ? 'rule' : 'fact', until = /^\d{4}-\d{2}-\d{2}$/.test(a.until || '') ? a.until : null;
-      const [row] = await sb('ai_memory', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, kind, text, until } });
+      const kind = a.kind === 'rule' ? 'rule' : 'fact', until = /^\d{4}-\d{2}-\d{2}$/.test(a.until || '') ? a.until : null, sphere = sphereOf(a.sphere);
+      const [row] = await sb('ai_memory', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, kind, text, until, sphere } });
       MEM.delete(ctx.chatId);
-      return { saved: row.id, kind, text, until: until || undefined };
+      return { saved: row.id, kind, text, until: until || undefined, sphere };
+    },
+  },
+  personal_debt_add: {
+    desc: 'ЛИЧНЫЕ деньги пользователя (НЕ клиенты MITAL): записать, кто кому должен. action: i_lent — «я дал в долг / одолжил X»; i_borrowed — «я занял / взял в долг у X», «я должен X»; they_returned — «X вернул мне / отдал»; i_returned — «я вернул / отдал долг X». person — имя в именительном падеже («Азизу» → «Азиз», «у брата» → «Брат»).',
+    params: {
+      person: { type: 'string', description: 'кто (именительный падеж)' }, action: { type: 'string', enum: Object.keys(LEDGER_SIGN) },
+      amount: { type: 'number', description: 'сумма, положительное число. «500 тысяч» = 500000, «1,5 млн» = 1500000' },
+      currency: { type: 'string', enum: CURRENCIES, description: '«$», «долларов», «доллар» = USD; «сум», «сўм», «so‘m» = UZS; «рублей» = RUB; «евро» = EUR. Не сказано — USD' },
+      note: { type: 'string', description: 'за что / пометка, если сказано' }, due: { type: 'string', description: 'YYYY-MM-DD — срок возврата, если назван (бот сам поставит напоминание)' },
+      sphere: { ...SPHERE_PARAM, description: 'personal (по умолчанию), family — родные, friends — друзья' },
+    },
+    async run(_db, a, ctx) {
+      if (!sbOn()) return { error: NO_DB };
+      const action = String(a.action || ''), sign = LEDGER_SIGN[action];
+      if (!sign) return { error: 'Не понял: вы дали в долг, заняли, вам вернули или вы вернули?' };
+      const amount = r2(Math.abs(n(a.amount))); if (!amount) return { error: 'Какая сумма?' };
+      const raw = String(a.person || '').trim().slice(0, 100); if (!raw) return { error: 'С кем именно?' };
+      const currency = CURRENCIES.includes(String(a.currency || '').toUpperCase()) ? String(a.currency).toUpperCase() : 'USD';
+      const rows = await ledgerOf(ctx.chatId);
+      const person = ledgerPerson(raw, [...new Set(rows.map((r: any) => r.person as string))]) || raw;
+      const due = /^\d{4}-\d{2}-\d{2}$/.test(a.due || '') && (action === 'i_lent' || action === 'i_borrowed') ? a.due : null;
+      const sphere = sphereOf(a.sphere, 'personal'), note = String(a.note || '').trim().slice(0, 500) || null;
+      const [row] = await sb('ai_ledger', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, sphere, person, amount: sign * amount, currency, action, note, due } });
+      const bal = ledgerBalances([...rows, row]).find(b => norm(b.person) === norm(person) && b.currency === currency);
+      let reminder: any;
+      const at = due && localToUtc(`${due}T10:00`);
+      if (at && at.getTime() > Date.now()) {
+        const text = action === 'i_borrowed' ? `Вернуть долг: ${person} — ${money(amount, currency)}` : `${person} должен вернуть вам ${money(amount, currency)}`;
+        const [r] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, due_at: at.toISOString(), text, repeat: null, sphere } });
+        reminder = { id: r.id, at: nowTime(r.due_at) };
+      }
+      return { saved: row.id, person, action, amount, currency, note: note || undefined, due: due || undefined, sphere, balance: bal ? bal.sum : 0, reminder };
+    },
+  },
+  personal_debts: {
+    desc: 'ЛИЧНЫЕ долги пользователя (НЕ клиенты MITAL): кто должен ему и кому должен он. Вызывай на «сколько у меня долгов», «мои долги», «кто мне должен», «кому я должен», «сколько я должен Азизу», «история с братом», «menda qancha qarz bor». person — показать историю с одним человеком. Долги клиентов MITAL («должники», «долг клиента», «долги агента») — это debtors / client_card, не эта функция.',
+    params: { person: { type: 'string', description: 'с кем — показать историю (именительный падеж)' }, sphere: { ...SPHERE_PARAM, description: 'только одна сфера, если пользователь так просит («долги в семье»)' } },
+    async run(_db, a, ctx) {
+      if (!sbOn()) return { error: NO_DB };
+      let rows = await ledgerOf(ctx.chatId);
+      if (SPHERES.includes(a.sphere)) rows = rows.filter((r: any) => (r.sphere || 'personal') === a.sphere);
+      if (a.person) {
+        const names = [...new Set(rows.map((r: any) => r.person as string))], raw = String(a.person).trim();
+        const person = ledgerPerson(raw, names, 0.6);
+        if (!person) return { error: `С «${raw}» личных записей нет`, candidates: names.slice(0, 10) };
+        const mine = rows.filter((r: any) => norm(r.person) === norm(person));
+        return { person, balances: ledgerBalances(mine), history: mine.slice(-30).map((r: any) => ({ id: r.id, date: day(r.created_at), action: r.action, amount: Math.abs(n(r.amount)), currency: r.currency, note: r.note || undefined, due: r.due || undefined })) };
+      }
+      const bal = ledgerBalances(rows), today = todayStr();
+      const owe_me = bal.filter(b => b.sum > 0).sort((x, y) => y.sum - x.sum), i_owe = bal.filter(b => b.sum < 0).sort((x, y) => x.sum - y.sum);
+      const mark = (b: any) => ({ ...b, overdue: !!b.due && b.due < today });
+      return { sphere: SPHERES.includes(a.sphere) ? a.sphere : undefined, records: rows.length, i_owe: i_owe.map(mark), owe_me: owe_me.map(mark), total_i_owe: totalsBy(i_owe), total_owe_me: totalsBy(owe_me) };
+    },
+  },
+  personal_debt_delete: {
+    desc: 'Удалить ошибочную запись личного долга по номеру (#N из ответа или истории). Номер неизвестен — сначала personal_debts с person.',
+    params: { id: { type: 'number' } },
+    async run(_db, a, ctx) {
+      const rows = await sb(`ai_ledger?id=eq.${n(a.id)}&chat_id=eq.${ctx.chatId}`, { method: 'DELETE', prefer: 'return=representation' });
+      return rows?.length ? { deleted: rows[0].id, person: rows[0].person, action: rows[0].action, amount: Math.abs(n(rows[0].amount)), currency: rows[0].currency } : { error: `Записи #${n(a.id)} нет` };
     },
   },
   forget: {
@@ -924,27 +1018,31 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
     run() { return {}; },
   },
   memory_list: {
-    desc: 'ТОЛЬКО когда спрашивают, что бот ЗАПОМНИЛ: сохранённые факты и правила с номерами («что ты помнишь», «чему научился», «покажи память»). НЕ для вопроса «что ты умеешь» — для него bot_help.',
-    params: {},
-    async run(_db, _a, ctx) { if (!sbOn()) return { error: NO_DB }; MEM.delete(ctx.chatId); const rows = await memoryOf(ctx.chatId); return { facts: rows.filter(r => r.kind === 'fact'), rules: rows.filter(r => r.kind === 'rule') }; },
+    desc: 'ТОЛЬКО когда спрашивают, что бот ЗАПОМНИЛ: сохранённые факты и правила с номерами («что ты помнишь», «чему научился», «покажи память»), в том числе по одной сфере («мои бизнес-идеи» → sphere=ideas, «что ты помнишь про семью» → family). НЕ для вопроса «что ты умеешь» — для него bot_help.',
+    params: { sphere: { ...SPHERE_PARAM, description: 'только одна сфера, если спрашивают про неё' } },
+    async run(_db, a, ctx) {
+      if (!sbOn()) return { error: NO_DB }; MEM.delete(ctx.chatId);
+      const sph = SPHERES.includes(a.sphere) ? a.sphere : '', rows = (await memoryOf(ctx.chatId)).filter(r => !sph || (r.sphere || 'work') === sph);
+      return { sphere: sph || undefined, facts: rows.filter(r => r.kind === 'fact'), rules: rows.filter(r => r.kind === 'rule') };
+    },
   },
   reminder_add: {
     desc: 'Поставить напоминание («напомни завтра в 10 позвонить X», «каждый день в 9 напоминай про сбор»). Время — местное (Ташкент). Если к сообщению приложено фото/файл — оно придёт вместе с напоминанием.',
-    params: { at: { type: 'string', description: 'YYYY-MM-DDTHH:MM, местное время. «утром» = 09:00, «днём» = 14:00, «вечером» = 18:00' }, text: { type: 'string', description: 'о чём напомнить' }, repeat: { type: 'string', enum: ['none', 'daily', 'weekly'] } },
+    params: { at: { type: 'string', description: 'YYYY-MM-DDTHH:MM, местное время. «утром» = 09:00, «днём» = 14:00, «вечером» = 18:00' }, text: { type: 'string', description: 'о чём напомнить' }, repeat: { type: 'string', enum: ['none', 'daily', 'weekly'] }, sphere: SPHERE_PARAM },
     async run(_db, a, ctx) {
       const d = localToUtc(a.at); if (!d) return { error: 'Не понял дату и время напоминания' };
       if (d.getTime() < Date.now() - 60e3) return { error: `Это время уже прошло (${nowTime(d.toISOString())})` };
       const text = String(a.text || '').trim().slice(0, 1000); if (!text) return { error: 'О чём напомнить?' };
       const repeat = ['daily', 'weekly'].includes(a.repeat) ? a.repeat : null;
       const file = ctx.media ? { file_id: ctx.media.file_id, file_kind: /^image\//.test(ctx.media.mime || '') ? 'photo' : 'document' } : {};
-      const [row] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, due_at: d.toISOString(), text, repeat, ...file } });
-      return { id: row.id, at: nowTime(row.due_at), text, repeat: repeat || undefined, with_file: !!ctx.media || undefined };
+      const [row] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, due_at: d.toISOString(), text, repeat, sphere: sphereOf(a.sphere), ...file } });
+      return { id: row.id, at: nowTime(row.due_at), text, repeat: repeat || undefined, with_file: !!ctx.media || undefined, sphere: sphereOf(a.sphere) };
     },
   },
   reminder_list: {
     desc: 'Список будущих напоминаний с номерами.',
     params: {},
-    async run(_db, _a, ctx) { const rows = await sb(`ai_reminders?chat_id=eq.${ctx.chatId}&sent_at=is.null&order=due_at&limit=40`); return { count: rows.length, rows: rows.map((r: any) => ({ id: r.id, at: nowTime(r.due_at), text: r.text, repeat: r.repeat || undefined })) }; },
+    async run(_db, _a, ctx) { const rows = await sb(`ai_reminders?chat_id=eq.${ctx.chatId}&sent_at=is.null&order=due_at&limit=40`); return { count: rows.length, rows: rows.map((r: any) => ({ id: r.id, at: nowTime(r.due_at), text: r.text, repeat: r.repeat || undefined, sphere: r.sphere || 'work' })) }; },
   },
   reminder_cancel: {
     desc: 'Отменить напоминание по номеру.',
@@ -981,6 +1079,7 @@ const SERVICE = {
 const REQUIRED: Record<string, string[]> = {
   client_card: ['client'], send_contract_files: ['client'], agent_report: ['agent'], find_client: ['query'], notebook_search: ['query'],
   remember: ['text', 'kind'], forget: ['id'], reminder_add: ['at', 'text'], reminder_cancel: ['id'],
+  personal_debt_add: ['person', 'action', 'amount'], personal_debt_delete: ['id'],
 };
 const declarations = Object.entries(TOOLS).map(([name, t]) => ({
   name, description: t.desc,
@@ -1075,18 +1174,43 @@ const TPL: Record<string, (r: any) => string> = {
     lines(r.tasks, (t: any) => `• ${first(t.agent)}: ${t.title}${t.due ? ` (до ${dm(t.due)})` : ''} — ${t.state}${t.overdue ? ' ❗просрочено' : ''}${t.progress ? ` · ${t.progress}` : ''}${t.returned_comment ? ` · «${t.returned_comment}»` : ''}`, 30), `ℹ️ Данные CRM на ${r.crm_at}`].join('\n'),
   save_photo: r => `📸 Сохранил в блокнот: «${r.title}». Найти: «пришли фото ${r.title}».`,
   send_saved_file: r => `📎 Отправил: ${r.sent}`,
-  remember: r => `🧠 Запомнил${r.kind === 'rule' ? ' правило' : ''} #${r.saved}: ${r.text}${r.until ? ` (до ${dm(r.until)})` : ''}`,
+  remember: r => `🧠 Запомнил${r.kind === 'rule' ? ' правило' : ''} #${r.saved}${r.sphere && r.sphere !== 'work' ? ` (${SPH[r.sphere]})` : ''}: ${r.text}${r.until ? ` (до ${dm(r.until)})` : ''}`,
   forget: r => `🗑 Забыл #${r.deleted}: ${r.text}`,
   bot_help: () => HELP,
-  memory_list: r => (!r.facts.length && !r.rules.length) ? '🧠 Пока ничего не запомнил. Скажите «запомни: …».' : [
-    r.rules.length ? '📐 Правила:\n' + r.rules.map((x: any) => `#${x.id} ${x.text}`).join('\n') : '',
-    r.facts.length ? '🧠 Факты:\n' + r.facts.map((x: any) => `#${x.id} ${x.text}${x.until ? ` (до ${dm(x.until)})` : ''}`).join('\n') : '',
-    'Удалить: /forget номер'].filter(Boolean).join('\n\n'),
+  memory_list: r => {
+    if (!r.facts.length && !r.rules.length) return r.sphere ? `🧠 В сфере «${SPH[r.sphere]}» пока ничего нет.` : '🧠 Пока ничего не запомнил. Скажите «запомни: …».';
+    const fact = (x: any) => `#${x.id} ${x.text}${x.until ? ` (до ${dm(x.until)})` : ''}`;
+    // facts are grouped by sphere as soon as there is anything besides work
+    const groups = SPHERES.map(s => [s, r.facts.filter((x: any) => (x.sphere || 'work') === s)] as [string, any[]]).filter(([, l]) => l.length);
+    const facts = groups.length > 1 || (groups[0] && groups[0][0] !== 'work')
+      ? groups.map(([s, l]) => `${SPH[s]}:\n` + l.map(fact).join('\n')).join('\n\n')
+      : '🧠 Факты:\n' + r.facts.map(fact).join('\n');
+    return [r.rules.length ? '📐 Правила:\n' + r.rules.map((x: any) => `#${x.id}${sphTag(x.sphere)} ${x.text}`).join('\n') : '', r.facts.length ? facts : '', 'Удалить: /forget номер'].filter(Boolean).join('\n\n');
+  },
   reminder_add: r => `⏰ Напомню ${r.at}${r.repeat ? (r.repeat === 'daily' ? ', каждый день' : ', каждую неделю') : ''}: ${r.text} (#${r.id})${r.with_file ? ' — фото придёт вместе с напоминанием' : ''}`,
-  reminder_list: r => !r.count ? '⏰ Напоминаний нет.' : `⏰ Напоминания (${r.count}):\n` + r.rows.map((x: any) => `#${x.id} ${x.at}${x.repeat ? ' 🔁' : ''} — ${x.text}`).join('\n') + '\nОтменить: /cancel номер',
+  reminder_list: r => !r.count ? '⏰ Напоминаний нет.' : `⏰ Напоминания (${r.count}):\n` + r.rows.map((x: any) => `#${x.id} ${x.at}${x.repeat ? ' 🔁' : ''}${sphTag(x.sphere)} — ${x.text}`).join('\n') + '\nОтменить: /cancel номер',
+  personal_debt_add: r => [`✍️ Записал #${r.saved}${sphTag(r.sphere)}: ${r.person} — ${ACT_RU[r.action]} ${money(r.amount, r.currency)}${r.note ? ` («${r.note}»)` : ''}${r.due ? `, срок ${dm(r.due)}` : ''}`,
+    `💸 Итого: ${debtPhrase(r.person, r.balance, r.currency)}`, r.reminder ? `⏰ Напомню ${r.reminder.at} (#${r.reminder.id})` : '',
+    `Ошибся? Скажите «удали запись #${r.saved}».`].filter(Boolean).join('\n'),
+  personal_debts: r => {
+    if (r.person) return [`💸 ${r.person}`, r.balances.length ? r.balances.map((b: any) => '• ' + debtPhrase(b.person, b.sum, b.currency) + (b.due ? ` (срок ${dm(b.due)})` : '')).join('\n') : '✅ В расчёте',
+      'История:\n' + lines(r.history, (h: any) => `#${h.id} ${dm(h.date)} — ${ACT_RU[h.action]} ${money(h.amount, h.currency)}${h.note ? ` («${h.note}»)` : ''}${h.due ? `, срок ${dm(h.due)}` : ''}`, 30)].join('\n\n');
+    const row = (b: any) => `• ${b.person} — ${money(b.sum, b.currency)}${sphTag(b.sphere)}${b.due ? ` (срок ${dm(b.due)}${b.overdue ? ', ⚠️ просрочено' : ''})` : ''}`;
+    const tot = (t: Record<string, number>) => Object.entries(t).map(([c, v]) => money(v, c)).join(' · ');
+    const head = `💸 Личные долги${r.sphere ? ' · ' + SPH[r.sphere] : ''}`;
+    if (!r.i_owe.length && !r.owe_me.length) return `${head}\n✅ Долгов нет${r.records ? ' — со всеми в расчёте' : ''}.\nЗаписать: «я занял у Азиза $200 до 25.11» или «дал брату 500 тысяч сум».`;
+    return [head, r.i_owe.length ? `🔴 Вы должны (${r.i_owe.length}):\n${lines(r.i_owe, row, 30)}\nИтого: ${tot(r.total_i_owe)}` : '🔴 Вы никому не должны',
+      r.owe_me.length ? `🟢 Вам должны (${r.owe_me.length}):\n${lines(r.owe_me, row, 30)}\nИтого: ${tot(r.total_owe_me)}` : '🟢 Вам никто не должен',
+      'ℹ️ Это только личные деньги. Долги клиентов MITAL — /dolg. История с человеком: «история с Азизом».'].join('\n\n');
+  },
+  personal_debt_delete: r => `🗑 Удалил запись #${r.deleted}: ${r.person} — ${ACT_RU[r.action] || ''} ${money(r.amount, r.currency)}`,
   reminder_cancel: r => `✅ Отменил напоминание #${r.cancelled}: ${r.text}`,
   notebooklm_export: r => `📤 Отправил файл ${r.file} (${r.size_kb} КБ) — загрузите его в NotebookLM.`,
 };
+function debtPhrase(person: string, sum: number, cur: string) {
+  // names stay in the nominative case («Азиз»), so the phrase is built around them
+  return Math.abs(n(sum)) < 0.005 ? `${person}: в расчёте ✅` : sum > 0 ? `${person} должен вам ${money(sum, cur)}` : `${person}: вы должны ${money(sum, cur)}`;
+}
 function ambiguity(r: any) {
   return r?.error ? `${r.error}${r.candidates?.length ? ':\n' + r.candidates.map((c: string) => '• ' + c).join('\n') : ''}` : '';
 }
@@ -1094,9 +1218,10 @@ function ambiguity(r: any) {
 function systemPrompt(db: any, mem: any[] = []) {
   const L = localParts(), t = L.date, wd = WD_RU[L.wd] || L.wd;
   const rules = mem.filter(m => m.kind === 'rule'), facts = mem.filter(m => m.kind === 'fact');
-  const memText = (rules.length ? `\nПРАВИЛА, КОТОРЫМ ТЕБЯ НАУЧИЛ ПОЛЬЗОВАТЕЛЬ (выполняй всегда, кроме случаев, когда они противоречат правилу 1):\n${rules.map(r => `#${r.id} ${r.text}`).join('\n')}\n` : '')
-    + (facts.length ? `\nФАКТЫ ИЗ ПАМЯТИ (сообщил пользователь; учитывай в ответах, если относятся к вопросу):\n${facts.map(f => `#${f.id} ${f.text}${f.until ? ` (актуально до ${f.until})` : ''} [записано ${day(f.created_at)}]`).join('\n')}\n` : '');
-  return `Ты — ${CFG.name}, AI-агент по продажам компании MITAL (моторные масла Mitanol, Liman OIL, фильтры ECO FILTER) для супервайзера Саидбонура (регионы Фергана, Наманган, Андижан).
+  const tag = (m: any) => `[${SPH[m.sphere || 'work'].split(' ')[1]}]`;
+  const memText = (rules.length ? `\nПРАВИЛА, КОТОРЫМ ТЕБЯ НАУЧИЛ ПОЛЬЗОВАТЕЛЬ (выполняй всегда, кроме случаев, когда они противоречат правилу 1):\n${rules.map(r => `#${r.id} ${tag(r)} ${r.text}`).join('\n')}\n` : '')
+    + (facts.length ? `\nФАКТЫ ИЗ ПАМЯТИ (сообщил пользователь; в [скобках] сфера; учитывай, если относятся к вопросу и его сфере):\n${facts.map(f => `#${f.id} ${tag(f)} ${f.text}${f.until ? ` (актуально до ${f.until})` : ''} [записано ${day(f.created_at)}]`).join('\n')}\n` : '');
+  return `Ты — ${CFG.name}, личный AI-помощник Саидбонура (как Джарвис). Его сферы: работа — он супервайзер продаж компании MITAL (моторные масла Mitanol, Liman OIL, фильтры ECO FILTER; регионы Фергана, Наманган, Андижан), а также личное, семья, друзья и бизнес-идеи.
 Сегодня ${t} (${wd}), сейчас ${L.time}, часовой пояс Ташкент. Валюта — доллары ($).
 Агенты: ${db.agents.join(', ')}.
 Плановый период в компании — с 16-го числа по 15-е следующего месяца. «Этот месяц/период» = текущий плановый период, если не сказано «календарный».
@@ -1119,6 +1244,9 @@ function systemPrompt(db: any, mem: any[] = []) {
 14. Если правило пользователя требует посчитать (бонус, процент) — возьми числа только из функций и покажи расчёт по шагам: 1 200 × 2% = 24. Сам числа не придумывай.
 15. Прогноз плана → plan_forecast. Кто перестал брать → stopped_clients. Что заканчивается на складе → stock_running_out. Обещания оплат → promises. Файл для NotebookLM → notebooklm_export.
 16. Если прислали фото или документ (накладная, чек, прайс) — внимательно прочитай его. Для накладной перечисли товары, количество и суммы и, если указан клиент, сверь с его заказами в CRM (orders с with_products).
+17. СФЕРЫ: у remember и reminder_add всегда указывай sphere по смыслу: work — всё про MITAL (клиенты, агенты, товары, план, склад, команда); personal — личные дела, здоровье, покупки; family — жена, дети, родители, родные; friends — друзья; ideas — бизнес-идеи и планы на будущее. Если сфера совсем неясна — коротко спроси. Отвечай в той сфере, о которой спрашивают, и не смешивай личное с рабочим.
+18. ДЕНЬГИ — ЛИЧНЫЕ И РАБОЧИЕ НЕ СМЕШИВАЙ. «Я должен / мне должны / я занял / дал в долг / вернул / мои долги / сколько у меня долгов / кто мне должен» → ЛИЧНЫЕ: personal_debts или personal_debt_add. Долги клиентов MITAL («должники», «долг клиента X», «долги агента», «кого дожимать», «остаток клиента») → debtors / client_card / collect_today. Если человек есть среди клиентов CRM и речь о товаре или оплате за товар — это работа; если непонятно — коротко спроси «личный долг или клиент MITAL?».
+19. Личный долг со сроком («до 25-го», «через неделю») — передай due в personal_debt_add, напоминание бот поставит сам, отдельно reminder_add не вызывай. Ошибочную запись — personal_debt_delete по номеру.
 ${memText}`;
 }
 
@@ -1265,7 +1393,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
 async function command(text: string, chatId: number): Promise<string | null> {
   // «сколько осталось лимитов?» in plain words is answered without spending a request
   if (/^\/limits?\b/i.test(text) || (text.length <= 60 && !text.startsWith('/') && /лимит|limit/i.test(text))) return limitsText();
-  const m = text.match(/^\/(today|dolg|agents|k|sklad|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening|my)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
   const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
@@ -1273,6 +1401,7 @@ async function command(text: string, chatId: number): Promise<string | null> {
   // memory and reminders need no CRM data
   if (cmd === 'memory') return run('memory_list', {});
   if (cmd === 'reminders') return run('reminder_list', {});
+  if (cmd === 'my') return run('personal_debts', arg ? { person: arg } : {});
   if (cmd === 'forget') return /^\d+$/.test(arg) ? run('forget', { id: +arg }) : 'Напишите номер: /forget 12 (номера — в /memory)';
   if (cmd === 'cancel') return /^\d+$/.test(arg) ? run('reminder_cancel', { id: +arg }) : 'Напишите номер: /cancel 3 (номера — в /reminders)';
   const db = await loadDB();
@@ -1514,7 +1643,13 @@ async function nbFile(chatId: number, doc: any, photo: any, title?: string): Pro
   return `📚 Добавил в блокнот #${s.id}: ${s.title} (${s.chars.toLocaleString('ru-RU')} знаков)${s.cut ? ' — документ очень длинный, сохранил первые 400 000 знаков' : ''}.\nТеперь спрашивайте по нему — отвечу со ссылкой на источник. Список: /nb`;
 }
 
-const HELP = `Я ${CFG.name} — AI-агент MITAL CRM. Спрашивайте текстом, голосом, фото или документом (русский / узбекский):
+const HELP = `Я ${CFG.name} — ваш личный AI-помощник: работа (MITAL CRM), личное, семья, друзья и бизнес-идеи. Спрашивайте текстом, голосом, фото или документом (русский / узбекский):
+👤 Личное:
+• Я занял у Азиза $200 до 25.11 · Дал брату 500 тысяч сум · Азиз вернул $50
+• Сколько у меня долгов? Кто мне должен? История с Азизом (/my)
+• Запомни: у мамы день рождения 3 марта · Запиши идею: магазин фильтров в Коканде
+• Мои бизнес-идеи · Что ты помнишь про семью?
+💼 Работа:
 • Какой остаток у Fozilxon Fargona?
 • Сколько сделал Адхамжон за период? Выполнит ли план?
 • Кого сегодня дожимать по оплате? Кто сорвал обещание?
@@ -1540,13 +1675,14 @@ const HELP = `Я ${CFG.name} — AI-агент MITAL CRM. Спрашивайте
 /sklad — что заканчивается · /sklad товар — остатки
 /memory — что я помню · /forget N — забыть
 /reminders — напоминания · /cancel N — отменить
+/my — личные долги · /my имя — история с человеком
 /limits — сколько осталось запросов Gemini
 /data — свежесть данных · /new — начать разговор заново
 Каждый день в ${CFG.hour('MORNING_HOUR', 8)}:00 присылаю план, в ${CFG.hour('EVENING_HOUR', 19)}:00 — итог дня.`;
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
   ['k', 'Карточка клиента: /k имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'],
-  ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['reminders', 'Напоминания'],
+  ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
   ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
 
 const seen = new Map<number, number>();

@@ -68,7 +68,7 @@ const XLSX = await zip({
 const FILES: Record<string, Uint8Array> = { docx1: DOCX, xlsx1: XLSX };
 
 // ───── mini PostgREST ─────
-const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [], workspaces: [] };
+const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [], ai_ledger: [], workspaces: [] };
 // the CRM workspace in Supabase Storage (newer than the GitHub copy): the same state plus one client that only it has
 const WS_FILE = await gz({ app: 'mitalcrm', savedAt: new Date(Date.now() + 1000).toISOString(), state: { ...crm.state, ag: { ...crm.state.ag, clients: { ...crm.state.ag.clients, 'Workspace Only': { agent: AG2 } } } } });
 DB.workspaces.push({ owner_id: 'u1', version: 7, saved_at: new Date().toISOString() });
@@ -394,4 +394,68 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   eq(s.memory, 'подключена ✅', 'setup reports memory');
   assert(SENT.some(x => x.method === 'setMyCommands' && x.body.commands.some((c: any) => c.command === 'notebooklm')), 'commands registered');
   for (const t of sentTexts()) assert(!/undefined|NaN|\[object/.test(t), 'no broken values in: ' + t.slice(0, 300));
+});
+
+D.test('personal debts and spheres: apart from CRM debts, balance per person and currency, own chat only', async () => {
+  const ctx = { chatId: 222 }, T = M.TOOLS, P = M.TPL;
+  const L = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tashkent', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const due = L.format(new Date(Date.now() + 5 * 864e5));
+  const a = await T.personal_debt_add.run(null, { person: 'Азиз', action: 'i_borrowed', amount: 200, currency: 'USD', due, note: 'на ремонт' }, ctx);
+  eq([a.person, a.balance, a.sphere], ['Азиз', -200, 'personal'], 'I borrowed → I owe');
+  const rem = DB.ai_reminders.find((r: any) => r.chat_id === 222);
+  assert(a.reminder && rem && rem.text === 'Вернуть долг: Азиз — $200' && rem.sphere === 'personal', 'due date → reminder: ' + JSON.stringify(rem));
+  const at = P.personal_debt_add(a);
+  assert(at.includes('Азиз: вы должны $200') && at.includes('на ремонт') && at.includes('⏰ Напомню') && at.includes(`#${a.saved}`), 'add template: ' + at);
+  const b = await T.personal_debt_add.run(null, { person: 'азиз', action: 'i_returned', amount: 50 }, ctx);
+  eq([b.person, b.balance, b.reminder], ['Азиз', -150, undefined], 'same person by spelling, partial return, USD by default');
+  const c = await T.personal_debt_add.run(null, { person: 'Брат', action: 'i_lent', amount: 500000, currency: 'uzs', sphere: 'family' }, ctx);
+  assert(P.personal_debt_add(c).includes('Брат должен вам 500 000 сум'), 'sum currency: ' + P.personal_debt_add(c));
+  await T.personal_debt_add.run(null, { person: 'Шерзод', action: 'i_lent', amount: 100, sphere: 'friends' }, ctx);
+  const z = await T.personal_debt_add.run(null, { person: 'Шерзод', action: 'they_returned', amount: 100, sphere: 'friends' }, ctx);
+  assert(z.balance === 0 && P.personal_debt_add(z).includes('Шерзод: в расчёте'), 'settled');
+  assert(/Не понял/.test((await T.personal_debt_add.run(null, { person: 'X', action: 'gift', amount: 1 }, ctx)).error), 'bad action rejected');
+  assert(/сумма/.test((await T.personal_debt_add.run(null, { person: 'X', action: 'i_lent', amount: 0 }, ctx)).error), 'zero rejected');
+
+  const s = await T.personal_debts.run(null, {}, ctx);
+  eq(s.i_owe.map((x: any) => [x.person, x.sum, x.due]), [['Азиз', -150, due]], 'I owe: Aziz, due kept');
+  eq(s.owe_me.map((x: any) => [x.person, x.sum]), [['Брат', 500000]], 'owed to me: brother; settled Sherzod gone');
+  eq([s.total_i_owe, s.total_owe_me], [{ USD: 150 }, { UZS: 500000 }], 'totals per currency');
+  const st = P.personal_debts(s);
+  assert(st.includes('Вы должны (1)') && st.includes('• Азиз — $150') && st.includes('Брат — 500 000 сум 👨‍👩‍👧') && st.includes('/dolg') && !st.includes('Шерзод'), 'summary: ' + st);
+  const fam = await T.personal_debts.run(null, { sphere: 'family' }, ctx);
+  eq([fam.i_owe.length, fam.owe_me.length], [0, 1], 'one sphere only');
+  const h = await T.personal_debts.run(null, { person: 'Aziz' }, ctx);
+  eq([h.person, h.history.length], ['Азиз', 2], 'history found by latin spelling');
+  assert(P.personal_debts(h).includes('вы заняли $200') && P.personal_debts(h).includes('вы вернули $50'), 'history template: ' + P.personal_debts(h));
+  const u = await T.personal_debts.run(null, { person: 'Никто' }, ctx);
+  assert(u.error && u.candidates.includes('Азиз'), 'unknown person → candidates');
+  const empty = await T.personal_debts.run(null, {}, { chatId: 333 });
+  assert(P.personal_debts(empty).includes('Долгов нет'), 'another chat sees nothing');
+  const d = await T.personal_debt_delete.run(null, { id: a.saved }, ctx);
+  eq(d.deleted, a.saved, 'deleted');
+  eq((await T.personal_debts.run(null, {}, ctx)).owe_me.find((x: any) => x.person === 'Азиз').sum, 50, 'after deleting the loan only my return is left');
+  assert((await T.personal_debt_delete.run(null, { id: a.saved }, { chatId: 333 })).error, 'cannot delete from another chat');
+
+  // spheres in memory
+  const m = await T.remember.run(null, { text: 'у мамы день рождения 03.03', kind: 'fact', sphere: 'family' }, ctx);
+  await T.remember.run(null, { text: 'Adxamjon в отпуске', kind: 'fact' }, ctx);
+  await T.remember.run(null, { text: 'магазин фильтров в Коканде', kind: 'fact', sphere: 'ideas' }, ctx);
+  assert(P.remember(m).includes('👨‍👩‍👧 Семья'), 'remember shows the sphere: ' + P.remember(m));
+  eq(DB.ai_memory.filter((r: any) => r.chat_id === 222).map((r: any) => r.sphere), ['family', 'work', 'ideas'], 'sphere stored, work by default');
+  const ml = P.memory_list(await T.memory_list.run(null, {}, ctx));
+  assert(ml.includes('💼 Работа:') && ml.includes('👨‍👩‍👧 Семья:') && ml.includes('💡 Идеи:'), 'memory grouped by sphere: ' + ml);
+  const ideas = await T.memory_list.run(null, { sphere: 'ideas' }, ctx);
+  eq(ideas.facts.map((x: any) => x.text), ['магазин фильтров в Коканде'], 'only ideas');
+
+  // in the chat: /my without AI, «сколько у меня долгов» → personal_debts, the prompt separates personal money from CRM debts
+  const g0 = GEM_LOG.length;
+  await tgPost({ text: '/my' }); assert(lastText().startsWith('💸 Личные долги'), '/my: ' + lastText());
+  eq(GEM_LOG.length, g0, '/my spends no AI');
+  GEM = () => call('personal_debts', {});
+  await tgPost({ text: 'сколько у меня долгов?' }); assert(lastText().startsWith('💸 Личные долги'), 'personal question → personal debts: ' + lastText());
+  const sys = GEM_LOG.at(-1).systemInstruction.parts[0].text;
+  assert(sys.includes('ЛИЧНЫЕ И РАБОЧИЕ НЕ СМЕШИВАЙ') && sys.includes('как Джарвис'), 'prompt: spheres and money rules');
+  assert(GEM_LOG.at(-1).tools[0].functionDeclarations.some((f: any) => f.name === 'personal_debt_add' && f.parameters.required.includes('amount')), 'personal_debt_add declared');
+  GEM = () => say('ok');
+  for (const t of [at, st, ml, P.personal_debts(h)]) assert(!/undefined|NaN|\[object/.test(t), 'no broken values: ' + t);
 });
