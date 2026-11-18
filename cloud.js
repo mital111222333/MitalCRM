@@ -93,6 +93,7 @@ window.CLOUD = (() => {
   const fileOf = (owner, v) => `${owner}/v${v}.json.gz`;
   const sbErr = (e, what) => new Error(`База MITAL: ${what}: ${e?.message || e}`);
   let lastSecrets = null;
+  const verNow = async owner => { const { data } = await AUTH.sb.from('workspaces').select('version').eq('owner_id', owner).maybeSingle(); return data ? data.version : 0; };
 
   // {missing:true} | {sha:'sb<version>', unchanged:true} | {sha, savedAt, device, state}
   async function pullSb({ fresh = false, owner = me()?.id } = {}) {
@@ -102,8 +103,15 @@ window.CLOUD = (() => {
     if (!row) return { missing: true };
     const sha = 'sb' + row.version;
     if (!fresh && sha === get(LS.sha)) return { sha, unchanged: true };
-    const { data: blob, error: e2 } = await sb.storage.from(WS.BUCKET).download(fileOf(owner, row.version));
-    if (e2) throw sbErr(e2, 'не удалось скачать данные');
+    let { data: blob, error: e2 } = await sb.storage.from(WS.BUCKET).download(fileOf(owner, row.version));
+    if (e2) {
+      // the file of this version is missing (lost save): take the newest file that exists, so the CRM never gets stuck on it
+      const { data: list } = await sb.storage.from(WS.BUCKET).list(owner, { limit: 100 });
+      const prev = (list || []).map(f => Number((f.name.match(/^v(\d+)\.json\.gz$/) || [])[1])).filter(v => v && v < row.version).sort((a, b) => b - a)[0];
+      if (!prev) throw sbErr(e2, 'не удалось скачать данные');
+      ({ data: blob, error: e2 } = await sb.storage.from(WS.BUCKET).download(fileOf(owner, prev)));
+      if (e2) throw sbErr(e2, 'не удалось скачать данные');
+    }
     const data = JSON.parse(await gunzip(new Uint8Array(await blob.arrayBuffer())));
     let state = data.state;
     if (owner === me()?.id) {
@@ -125,16 +133,27 @@ window.CLOUD = (() => {
     const known = ver(get(LS.sha)), cur = row ? row.version : 0;
     if (!force && row && known !== cur) return { conflict: true }; // somebody saved a newer version meanwhile
     const next = cur + 1, path = fileOf(owner, next);
-    const up = await sb.storage.from(WS.BUCKET).upload(path, new Blob([bytes], { type: 'application/gzip' }), { upsert: true, contentType: 'application/gzip' });
-    if (up.error) throw sbErr(up.error, 'не удалось сохранить данные');
+    // never overwrite a version file: if another device already wrote v<next>, that is a conflict, not ours to replace
+    let up = await sb.storage.from(WS.BUCKET).upload(path, new Blob([bytes], { type: 'application/gzip' }), { upsert: false, contentType: 'application/gzip' });
+    if (up.error && /exist|duplicate|409/i.test(up.error.message || '') && (await verNow(owner)) === cur) {
+      // a file left over from an earlier failed try (the version row still says cur): nobody uses it, replace it
+      up = await sb.storage.from(WS.BUCKET).upload(path, new Blob([bytes], { type: 'application/gzip' }), { upsert: true, contentType: 'application/gzip' });
+    }
+    if (up.error) { if (/exist|duplicate|409/i.test(up.error.message || '')) return { conflict: true }; throw sbErr(up.error, 'не удалось сохранить данные'); }
     const s = CRMLocal.engine.summary(), meta = { version: next, saved_at: savedAt, saved_by: owner, device: device(), size: bytes.length, summary: s };
     const q = row ? sb.from('workspaces').update(meta).eq('owner_id', owner).eq('version', cur).select('version')
       : sb.from('workspaces').insert({ owner_id: owner, ...meta }).select('version');
     const { data: done, error: e3 } = await q;
     if (e3 || !done?.length) {
-      await sb.storage.from(WS.BUCKET).remove([path]);
-      if (e3 && !/duplicate/i.test(e3.message)) throw sbErr(e3, 'не удалось записать версию');
-      return { conflict: true };
+      // the answer may be lost on a weak mobile network while the server DID save it: ask again before deleting anything
+      let now; try { now = await sb.from('workspaces').select('version, saved_at').eq('owner_id', owner).maybeSingle(); } catch { now = { error: true }; }
+      if (now.error) throw sbErr(e3 || 'нет ответа', 'не удалось записать версию'); // unknown: keep the file, retry later
+      const mine = now.data?.version === next && new Date(now.data.saved_at).getTime() === new Date(savedAt).getTime();
+      if (!mine) {
+        if ((now.data?.version ?? 0) < next) await sb.storage.from(WS.BUCKET).remove([path]); // only a file no version points to
+        if (e3 && !/duplicate/i.test(e3.message)) throw sbErr(e3, 'не удалось записать версию');
+        return { conflict: true };
+      }
     }
     const sj = JSON.stringify(secrets);
     if (sj !== lastSecrets) {
