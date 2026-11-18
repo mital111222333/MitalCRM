@@ -134,7 +134,7 @@ async function loadDB(force = false) {
   if (!crm && !fast) {
     const why = /GitHub (401|403)/.test(errs[0] || '') ? 'GitHub не принял токен (неверный или просрочен)' : /GitHub 404/.test(errs[0] || '') ? 'GitHub отвечает 404 — у токена нет доступа к репозиторию' : errs[0] || 'файлы не найдены';
     const db: any = build(null, null, null, null, [], []);
-    db.meta.data_error = dataError(why);
+    db.meta.data_error = dataError(why) + await tokenDiagnosis();
     DBC = { at: Date.now() - 100e3, db }; // retry in ~20 s
     return db;
   }
@@ -147,6 +147,28 @@ async function loadDB(force = false) {
   const db = build(crm, fast, extra, inst, arcs.filter(Boolean), arcPaths);
   DBC = { at: Date.now(), db };
   return db;
+}
+// when the data cannot be read: ask GitHub whose token it is, whether the repo is visible and whether files can be read
+async function tokenDiagnosis() {
+  try {
+    const t = CFG.ghToken();
+    if (!t) return '\n\n🔎 Секрет GH_TOKEN пустой.';
+    const kind = t.startsWith('github_pat_') ? 'fine-grained (github_pat_…)' : t.startsWith('ghp_') ? 'classic (ghp_…)' : `неизвестного вида (начинается с «${t.slice(0, 4)}…», длина ${t.length})`;
+    const api = (p: string) => fetch('https://api.github.com/' + p, { headers: { Authorization: 'Bearer ' + t, 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'mital-ai-bot' } });
+    const [u, r] = await Promise.all([api('user'), api(`repos/${CFG.owner()}/${CFG.repo()}`)]);
+    const login = u.ok ? (await u.json()).login : null;
+    const out = [`🔎 Проверка токена: тип ${kind}, длина ${t.length}.`];
+    out.push(u.status === 401 ? '• GitHub не узнаёт токен (401): скопирован не полностью или с лишними символами, либо удалён/перегенерирован.'
+      : login ? `• Токен принадлежит аккаунту: ${login}${login.toLowerCase() !== CFG.owner().toLowerCase() ? ` — а репозиторий у ${CFG.owner()}. Создайте токен, войдя в GitHub как ${CFG.owner()}.` : ' ✅'}` : `• GitHub ответил ${u.status} на проверку владельца.`);
+    if (u.status !== 401) {
+      if (r.ok) {
+        const rr = await api(`repos/${CFG.owner()}/${CFG.repo()}/contents/linko-fast.json`);
+        out.push(rr.ok ? '• Репозиторий виден, файлы читаются ✅ (напишите /fresh ещё раз)' : `• Репозиторий виден ✅, но файлы не читаются (${rr.status}): в токене не включено право Contents: Read-only.`);
+      } else out.push(`• Репозиторий ${CFG.repo()} токену НЕ виден (${r.status}): при создании токена не выбран ${CFG.repo()} в «Only select repositories»${login && login.toLowerCase() === CFG.owner().toLowerCase() ? '' : ' или выбран не тот Resource owner'}.`);
+    }
+    out.push('Самый простой вариант: классический токен — github.com/settings/tokens/new → галочка «repo» → Generate → вставить в GH_TOKEN.');
+    return '\n\n' + out.join('\n');
+  } catch (e) { return `\n\n🔎 Проверить токен не удалось: ${(e as Error).message}`; }
 }
 async function needData(force = false) {
   const db = await loadDB(force);
