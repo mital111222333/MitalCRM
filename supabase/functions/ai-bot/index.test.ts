@@ -459,3 +459,51 @@ D.test('personal debts and spheres: apart from CRM debts, balance per person and
   GEM = () => say('ok');
   for (const t of [at, st, ml, P.personal_debts(h)]) assert(!/undefined|NaN|\[object/.test(t), 'no broken values: ' + t);
 });
+
+D.test('notebook and photo spheres; personal debts in the morning brief', async () => {
+  const T = M.TOOLS, P = M.TPL;
+  const F = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tashkent', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const dayAt = (k: number) => F.format(new Date(Date.now() + k * 864e5));
+  // morning brief: overdue, today and within 3 days — sorted by date; later ones and other chats are not shown
+  const c4 = { chatId: 444 };
+  await T.personal_debt_add.run(null, { person: 'Шерзод', action: 'i_lent', amount: 40, due: dayAt(2) }, c4);
+  await T.personal_debt_add.run(null, { person: 'Азиз', action: 'i_borrowed', amount: 150, due: dayAt(-1) }, c4);
+  await T.personal_debt_add.run(null, { person: 'Брат', action: 'i_lent', amount: 300000, currency: 'UZS', due: dayAt(0), sphere: 'family' }, c4);
+  await T.personal_debt_add.run(null, { person: 'Далёкий', action: 'i_lent', amount: 10, due: dayAt(20) }, c4);
+  const pb = await M.personalBrief(444);
+  const ia = pb.indexOf('Вернуть: Азиз — $150 (⚠️ просрочено с'), ib = pb.indexOf('Брат должен вернуть 300 000 сум (срок сегодня)'), ic = pb.indexOf('Шерзод должен вернуть $40 (срок');
+  assert(pb.startsWith('👤 Личное — долги:') && ia > 0 && ib > ia && ic > ib && pb.includes('через 2 дн.') && !pb.includes('Далёкий'), 'personal brief: ' + pb);
+  eq(await M.personalBrief(555), '', 'nothing due → no section');
+  const tmp = await T.personal_debt_add.run(null, { person: 'Азиз', action: 'i_borrowed', amount: 5, due: dayAt(0) }, { chatId: 111 });
+  await tgPost({ text: '/brief' });
+  assert(lastText().includes('👤 Личное — долги:') && lastText().includes('Вернуть: Азиз — $5 (срок сегодня)') && lastText().includes('Доброе утро'), '/brief has the personal part: ' + lastText());
+  await T.personal_debt_delete.run(null, { id: tmp.saved }, { chatId: 111 });
+  DB.ai_reminders = DB.ai_reminders.filter((r: any) => r.chat_id !== 111 || !/Азиз/.test(r.text));
+
+  // /nb with a sphere word; a plain «Цена: …» note stays in work
+  await tgPost({ text: '/nb идея: магазин фильтров в Коканде' }); assert(lastText().includes('(💡 Идеи)'), '/nb idea: ' + lastText());
+  await tgPost({ text: '/nb семья: размер обуви сына 32' });
+  await tgPost({ text: '/nb Цена: Mitanol $14 за канистру' });
+  const nb = (s: string) => DB.ai_notebook.find((r: any) => r.content.includes(s));
+  eq([nb('магазин фильтров').sphere, nb('размер обуви').sphere, nb('Mitanol $14').sphere, nb('Mitanol $14').title], ['ideas', 'family', 'work', 'Цена: Mitanol $14 за канистру'], 'notebook spheres');
+  await tgPost({ text: '/nb идеи' });
+  assert(lastText().includes('💡 Идеи (1)') && lastText().includes('магазин фильтров') && !lastText().includes('обуви'), '/nb ideas: ' + lastText());
+  await tgPost({ text: '/nb' });
+  assert(lastText().includes('💡 Идеи:') && lastText().includes('👨‍👩‍👧 Семья:') && lastText().includes('💼 Работа:'), '/nb grouped: ' + lastText());
+  // a file with the caption «/nb семья: справка»
+  await tgPost({ document: { file_id: 'docx1', file_name: 'Акция.docx', mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }, caption: '/nb семья: справка' });
+  const f = DB.ai_notebook.at(-1);
+  eq([f.title, f.sphere], ['справка', 'family'], 'file caption with a sphere');
+  assert(lastText().includes('(👨‍👩‍👧 Семья)'), 'file answer: ' + lastText());
+  // search and photos within one sphere
+  const r = await T.notebook_search.run(null, { query: 'обувь', sphere: 'ideas' }, { chatId: 111 });
+  eq([r.sphere, r.sources_total], ['ideas', 1], 'search within one sphere');
+  const fb = await T.notebook_search.run(null, { query: 'x', sphere: 'friends' }, { chatId: 111 });
+  assert(fb.sphere === undefined && fb.sources_total > 1, 'empty sphere → whole notebook');
+  const sp = await T.save_photo.run(null, { title: 'Паспорт сына', description: 'паспорт', sphere: 'family' }, { chatId: 111, media: { file_id: 'PH9', mime: 'image/jpeg' } });
+  assert(sp.sphere === 'family' && P.save_photo(sp).includes('(👨‍👩‍👧 Семья)'), 'photo sphere: ' + P.save_photo(sp));
+  await T.save_photo.run(null, { title: 'Паспорт товара Mitanol', description: 'паспорт качества', sphere: 'work' }, { chatId: 111, media: { file_id: 'PH10', mime: 'image/jpeg' } });
+  const sent = await T.send_saved_file.run(null, { query: 'паспорт', sphere: 'family' }, { chatId: 111 });
+  eq([sent.sent, SENT.at(-1)!.body.photo], ['Паспорт сына', 'PH9'], 'photo found in its sphere');
+  for (const t of sentTexts().slice(-8)) assert(!/undefined|NaN|\[object/.test(t), 'no broken values: ' + t.slice(0, 200));
+});
