@@ -25,7 +25,8 @@
 // «Verify JWT» у функции должен быть выключен (Telegram не присылает токен Supabase).
 
 // deno-lint-ignore-file no-explicit-any
-const env = (k: string, d = '') => (globalThis as any).Deno?.env.get(k) || d;
+// secrets are trimmed: a space, line break or quotes copied together with a token would make GitHub/Telegram reject it
+const env = (k: string, d = '') => String((globalThis as any).Deno?.env.get(k) || '').trim().replace(/^["'«]+|["'»]+$/g, '').trim() || d;
 const CFG = {
   name: 'Mital AI',
   tg: () => env('TG_TOKEN'),
