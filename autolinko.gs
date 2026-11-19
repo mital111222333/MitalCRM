@@ -824,16 +824,27 @@ function saveB64ToGithub_(path, b64, message) {
   const url = 'https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/contents/' + path;
   const h = { Authorization: 'Bearer ' + CFG.GH_TOKEN, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
   const shaNow = () => { const cur = fetch_(url + '?t=' + Date.now(), { headers: h, muteHttpExceptions: true }); return cur.getResponseCode() === 200 ? JSON.parse(cur.getContentText()).sha : undefined; };
+  // после конфликта (409 «does not match») «contents» GitHub ещё несколько секунд отдаёт старую версию файла из кеша —
+  // поэтому версия берётся из дерева git последнего коммита: там кеша нет
+  const shaGit = () => {
+    try {
+      const dir = path.indexOf('/') >= 0 ? path.slice(0, path.lastIndexOf('/')) : '', name = path.slice(path.lastIndexOf('/') + 1);
+      const t = fetch_('https://api.github.com/repos/' + CFG.GH_OWNER + '/' + CFG.GH_REPO + '/git/trees/' + encodeURIComponent('HEAD' + (dir ? ':' + dir : '')) + '?t=' + Date.now(), { headers: h, muteHttpExceptions: true });
+      if (t.getResponseCode() !== 200) return shaNow();
+      const e = (JSON.parse(t.getContentText()).tree || []).filter(x => x.path === name)[0];
+      return e ? e.sha : undefined;
+    } catch (err) { return shaNow(); }
+  };
   let sha = shaNow(), r = null;
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 6; i++) {
     const body = { message: message, content: b64 }; if (sha) body.sha = sha;
     r = fetch_(url, { method: 'put', headers: h, contentType: 'application/json', payload: JSON.stringify(body), muteHttpExceptions: true });
     const code = r.getResponseCode();
     if (code < 300) return;
     if (code !== 409 && code !== 422) break;
     const m = r.getContentText().match(/is at ([0-9a-f]{40})/);
-    Utilities.sleep(800 * (i + 1));
-    sha = m ? m[1] : shaNow();
+    Utilities.sleep(1000 * (i + 1));
+    sha = m ? m[1] : shaGit();
   }
   throw new Error('GitHub не принял файл ' + path + ': ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
 }
