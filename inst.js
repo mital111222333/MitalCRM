@@ -11,7 +11,7 @@
 window.EXT_PAGES = window.EXT_PAGES || {};
 
 const INST = {
-  view: 'due', agent: '', who: '', open: new Set(),
+  view: 'due', agent: '', who: '', q: '', open: new Set(),
   RULES: 'inst-rules.json', STATE: 'inst-state.json',
   cfg() { const x = CRMLocal.ext(); const c = (x.inst ||= { on: false, days: 30, parts: 4, hour: 9, agents: true, sunday: false, clients: {}, contracts: [] }); c.clients ||= {}; c.contracts ||= []; c.orders ||= {}; return c; },
   cloud() { const c = typeof CLOUD !== 'undefined' && CLOUD.cfg ? CLOUD.cfg() : null; return c && c.token ? c : null; },
@@ -95,7 +95,7 @@ const INST = {
         const state = t0 < k.start ? UI.pill('info', 'ещё не начался') : t0 > end ? UI.pill('muted', 'закончился') : UI.pill('good', 'действует');
         const pct = (v, of, ok) => `${f(v)} ${UI.pill(ok ? 'good' : 'warn', Math.round(v / Math.max(1, of) * 100) + '%')}`;
         return `<section style="border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0">
-          <div class="bar" style="margin:0 0 8px"><b style="font-size:16px">${esc(k.title || k.accounts.join(' + '))}</b> ${state}<span class="spacer"></span><button class="btn gray sm" data-kedit="${esc(k.id)}" type="button">Изменить условия</button></div>
+          <div class="bar" style="margin:0 0 8px"><b style="font-size:16px">${esc(k.title || k.accounts.join(' + '))}</b> ${state}<span class="spacer"></span><button class="btn gray sm" data-kpr="${esc(k.id)}" type="button">🖨 Договор</button><button class="btn gray sm" data-kedit="${esc(k.id)}" type="button">Изменить условия</button></div>
           <div class="kpis kpis-sm">
             ${UI.tile('Срок', `${UI.dm(k.start)} — ${UI.dm(end)}`, { sub: `${P.length} мес. · с ${UI.dateRu(k.start)}` })}
             ${UI.tile('План в месяц', P.every(v => v === P[0]) ? f(P[0]) : `${f(Math.min(...P))}–${f(Math.max(...P))}`, { sub: `всего по договору ${f(total)}` })}
@@ -110,6 +110,7 @@ const INST = {
           </div></section>`;
       }).join('');
       const byId = id => list.find(k => k.id === id), fileOf = v => { const [id, path] = v.split('|'), k = byId(id); return [k, (k?.files || []).find(x => x.path === path)]; };
+      m.el.querySelectorAll('[data-kpr]').forEach(b => b.onclick = () => INST.ctPreview(byId(b.dataset.kpr)));
       m.el.querySelectorAll('[data-kedit]').forEach(b => b.onclick = () => { m.close(); INST.contractDialog(byId(b.dataset.kedit)); });
       m.el.querySelectorAll('[data-kopen]').forEach(b => b.onclick = () => { const [, x] = fileOf(b.dataset.kopen); if (x) INST.openFile(x); });
       m.el.querySelectorAll('[data-kdel]').forEach(b => b.onclick = async () => { const [k, x] = fileOf(b.dataset.kdel); if (!x || !confirm(`Удалить файл «${x.name}»?`)) return; b.disabled = true; try { await INST.delFile(k, x); toast('Файл удалён'); } catch (e) { toast(e.message); } draw(); });
@@ -151,7 +152,7 @@ const INST = {
   },
   contractDialog(ct) {
     const c = INST.cfg(), isNew = !ct, x = ct ? { ...ct } : { id: 'c' + Date.now().toString(36), title: '', accounts: [], monthly: 1000, months: 6, start: UI.localDate(Date.now()), agent: '' };
-    const names = INST.clientNames();
+    const names = INST.clientNames(), D = INST.docOf(x);
     const m = modal(`<h3 style="margin:0 0 6px">${isNew ? 'Новый договор' : 'Договор'}</h3>
       <p class="mut" style="margin:0 0 10px">Клиент обязуется закупать товар на определённую сумму каждый месяц в течение срока договора — сумма может быть разной по месяцам. Укажите все его карточки в LINKO — договорную и «spets», если он работает по обеим: закупки сложатся.</p>
       <datalist id="icNames">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
@@ -171,7 +172,21 @@ const INST = {
         <label>Рассрочка по договору, дней<input id="icD" type="number" min="1" value="${x.days || ''}" placeholder="${c.days} (как у всех)"></label>
         <label>Частей<input id="icP" type="number" min="1" max="12" value="${x.parts || ''}" placeholder="${c.parts}"></label>
       </div>
-      <div class="bar">${isNew ? '' : '<button class="btn gray" id="icDel">Удалить</button>'}<span class="spacer"></span><button class="btn gray" id="icC">Отмена</button><button class="btn" id="icOk">Сохранить</button></div>`);
+      <details ${isNew || !x.doc ? 'open' : ''} style="margin:10px 0 0;border:1px solid var(--line);border-radius:12px;padding:8px 12px"><summary><b>📄 Шартнома — бумажный договор</b> <span class="mut">(что будет напечатано)</span></summary>
+      <div class="form" style="margin-top:8px">
+        <label>Шартнома №<input id="idNo" value="${esc(D.no)}"></label>
+        <label>Дата договора<input id="idDt" type="date" value="${esc(D.date)}"></label>
+        <label>Мижоз (магазин)<input id="idShop" value="${esc(D.shop)}" placeholder="как в шапке договора"></label>
+        <label>Ф.И.Ш. (полное имя)<input id="idFio" value="${esc(D.fio)}" placeholder="фамилия, имя"></label>
+        <label>Шахар / туман<input id="idCity" value="${esc(D.city)}" placeholder="в углу листа"></label>
+        <label>Скидка от прайса, %<input id="idDisc" type="number" min="0" max="100" step="0.5" value="${esc(D.disc)}"></label>
+        <label>Махсулот — по строке<textarea id="idGoods" rows="4" style="width:100%;box-sizing:border-box;font-family:inherit">${esc(D.goods)}</textarea></label>
+        <label>Изох<textarea id="idNote" rows="4" style="width:100%;box-sizing:border-box;font-family:inherit" placeholder="пусто — строка останется для руки">${esc(D.note)}</textarea></label>
+        <label style="grid-column:1/-1">Мукофот (что даём после полной оплаты)<input id="idRew" value="${esc(D.reward)}" placeholder="например: 3750$ берилганда 1500$ беради"></label>
+        <label>Гувох 1<input id="idW1" value="${esc(D.w1)}"></label>
+        <label>Гувох 2<input id="idW2" value="${esc(D.w2)}"></label>
+      </div><p class="mut" style="font-size:12px;margin:4px 0 0">График в договоре — из «План по месяцам»: дата сдачи каждого месяца = начало + 1, 2, 3… мес. Колонки «Сумма» и «Мижоз имзо» остаются пустыми — для руки.</p></details>
+      <div class="bar">${isNew ? '' : '<button class="btn gray" id="icDel">Удалить</button>'}<span class="spacer"></span><button class="btn gray" id="icC">Отмена</button><button class="btn gray" id="icOk">Сохранить</button><button class="btn" id="icOkPr">Сохранить и 🖨 договор</button></div>`);
     const acc = [...x.accounts];
     const draw = () => {
       $('#icAcc', m.el).innerHTML = acc.map((a, i) => `<span class="pill ${INST.spec(a) ? 'warn' : 'info'}">${esc(a)} <a href="#" data-rm="${i}" title="убрать">✕</a></span>`).join('') || '<span class="mut">пока нет</span>';
@@ -185,6 +200,8 @@ const INST = {
       if (twin && confirm(`У этого клиента есть ещё карточка «${twin}». Добавить её в договор?`)) acc.push(twin);
       if (!$('#icG', m.el).value) $('#icG', m.el).value = INST.agentOfClient(v);
       if (!$('#icT', m.el).value) $('#icT', m.el).value = v.replace(/\s*\b(spe?t?s|спец)\b\s*/gi, ' ').trim() + ' — договор';
+      if (!$('#idShop', m.el).value) $('#idShop', m.el).value = v.replace(/\s*\b(spe?t?s|спец)\b\s*/gi, ' ').trim();
+      if (!$('#idCity', m.el).value && window.INVO) $('#idCity', m.el).value = INVO.cityOf({ agent: $('#icG', m.el).value });
       draw();
     };
     // the plan of every month: starts from the usual sum, any month can be changed by hand (kept when the term or start changes)
@@ -225,29 +242,150 @@ const INST = {
     draw();
     $('#icC', m.el).onclick = m.close;
     if (!isNew) $('#icDel', m.el).onclick = () => { if (!confirm('Удалить договор «' + (x.title || '') + '»?')) return; c.contracts = c.contracts.filter(k => k.id !== x.id); m.close(); INST.changed('Договор удалён'); route(); };
-    $('#icOk', m.el).onclick = () => {
+    const save = andPrint => {
       if (inp.value.trim()) add(inp.value);
-      const d = Number($('#icD', m.el).value), p = Number($('#icP', m.el).value);
-      const y = { id: x.id, title: $('#icT', m.el).value.trim(), accounts: acc, monthly: Number($('#icM', m.el).value) || 0, months: plan.length, plan: plan.slice(), start: $('#icS', m.el).value, agent: $('#icG', m.el).value.trim(), ...(d ? { days: d } : {}), ...(p ? { parts: p } : {}), ...(x.files?.length ? { files: x.files } : {}) };
+      const d = Number($('#icD', m.el).value), p = Number($('#icP', m.el).value), v = id => $(id, m.el).value.trim();
+      const doc = { no: v('#idNo'), date: v('#idDt'), shop: v('#idShop'), fio: v('#idFio'), city: v('#idCity'), disc: v('#idDisc'), goods: v('#idGoods'), note: v('#idNote'), reward: v('#idRew'), w1: v('#idW1'), w2: v('#idW2') };
+      const y = { id: x.id, title: $('#icT', m.el).value.trim(), accounts: acc, monthly: Number($('#icM', m.el).value) || 0, months: plan.length, plan: plan.slice(), start: $('#icS', m.el).value, agent: $('#icG', m.el).value.trim(), ...(d ? { days: d } : {}), ...(p ? { parts: p } : {}), ...(x.files?.length ? { files: x.files } : {}), doc };
       if (!y.accounts.length || !y.plan.some(v => v > 0) || !y.start) { toast('Заполните карточки клиента, план по месяцам и дату начала'); return; }
       const i = c.contracts.findIndex(k => k.id === y.id); if (i >= 0) c.contracts[i] = y; else c.contracts.push(y);
       m.close(); INST.changed('Договор сохранён — автозагрузка посчитает закупки за 5 минут'); route();
+      if (andPrint) INST.ctPreview(y);
     };
+    $('#icOk', m.el).onclick = () => save(false);
+    $('#icOkPr', m.el).onclick = () => save(true);
   },
   // the plan of each month of a contract; contracts saved before the per-month plan have one sum for every month
   planOf: k => Array.from({ length: Math.max(1, Number(k.months) || 1) }, (_, i) => (Array.isArray(k.plan) && k.plan[i] != null ? Number(k.plan[i]) : Number(k.monthly) || 0)),
   monthName(start, i) { const d = new Date(Number(start.slice(0, 4)), Number(start.slice(5, 7)) - 1 + i, 1); return d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' }).replace(' г.', ''); },
+  // ---------- the paper contract (шартнома), exactly like the printed MITAL form: one A4 sheet ----------
+  ctKey: k => [k.title, k.agent, k.doc?.no, k.doc?.fio, k.doc?.shop, ...(k.accounts || [])].join(' ').toLowerCase(),
+  // what goes on the paper; a new contract takes the goods, discount and witnesses of the last one and the next number
+  docOf(x) {
+    const c = INST.cfg(), d = x.doc || {}, last = [...c.contracts].reverse().find(k => k.doc && k.id !== x.id)?.doc || {};
+    const nums = c.contracts.map(k => parseInt(k.doc?.no, 10)).filter(n => n > 0);
+    const shop = String(x.accounts?.[0] || '').replace(/\s*\b(spe?t?s|спец)\b\s*/gi, ' ').trim();
+    let city = ''; try { if (window.INVO && x.agent) city = INVO.cityOf({ agent: x.agent }); } catch { /* no regions yet */ }
+    return { no: d.no ?? (nums.length ? String(Math.max(...nums) + 1) : ''), date: d.date ?? UI.localDate(Date.now()), shop: d.shop ?? shop, fio: d.fio ?? '', city: d.city ?? city,
+      disc: d.disc ?? last.disc ?? '10', goods: d.goods ?? last.goods ?? 'ECO FILTER\nMATTEX\nMITANOL\nDELPIN', note: d.note ?? '', reward: d.reward ?? '', w1: d.w1 ?? last.w1 ?? '', w2: d.w2 ?? last.w2 ?? '' };
+  },
+  A4: 1047, // px: 277 mm — the sheet without its 10 mm margins
+  ctCss: () => `.kdoc{box-sizing:border-box;width:190mm;background:#fff!important;color:#111!important;font:13px/1.5 Arial,Helvetica,sans-serif;position:relative;overflow:hidden;text-align:left;border-radius:0;box-shadow:none}
+.kdoc *{box-sizing:border-box;color:#111;background:transparent;text-shadow:none}
+.kdoc .k-fit{padding:5mm 7mm 4mm}
+.kdoc .k-top{display:grid;grid-template-columns:1fr auto 1fr;align-items:start;gap:8px}
+.kdoc .k-city{font-size:14px;padding-top:4px}
+.kdoc .k-logo{font:700 50px/1 Georgia,'Times New Roman',serif;letter-spacing:5px;text-align:center;color:#2b2b2b}
+.kdoc .k-no{text-align:right;font-size:15px;padding-top:4px}
+.kdoc .k-ink,.kdoc .k-u,.kdoc .k-city,.kdoc .k-no{color:#1d3c8f!important}
+.kdoc .k-t{text-align:center;font-size:15px;letter-spacing:.6px;margin:8px 0 6px}
+.kdoc .k-u{display:inline-block;min-width:24mm;border-bottom:1px solid #111;padding:0 4px;text-align:center;font-weight:600;line-height:1.35;vertical-align:baseline}
+.kdoc .k-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:2px 0 6px}
+.kdoc .k-p{text-indent:14mm;margin:4px 0 6px;text-align:justify}
+.kdoc .k-ln{margin:4px 0 4px 14mm}
+.kdoc .k-p2{margin:10px 0 6px;line-height:1.9}
+.kdoc .k-sg{margin:10px 0 4px;line-height:1.9}
+.kdoc .k-sg small{font-size:12px;margin:0 8px 0 2px}
+.kdoc table{width:100%;border-collapse:collapse;border:0;border-radius:0;box-shadow:none;overflow:visible;background:#fff;margin:8px 0 0}
+.kdoc table tr>th,.kdoc table tr>td{border:1px solid #444;padding:2px 8px;vertical-align:top;text-align:left;font-weight:normal;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.4;color:#111;white-space:normal;position:static;background:#fff;height:auto}
+.kdoc table tr>th{font-size:12.5px;font-weight:600;background:#fff}
+.kdoc .k-gd tr>th{border:0;padding:2px 8px 1px}
+.kdoc .k-gd tr>td{height:22mm}
+.kdoc .k-gd tr>*:nth-child(1){width:26%}
+.kdoc .k-gd tr>*:nth-child(2){width:24%}
+.kdoc .k-gd .k-big{font-size:20px;vertical-align:middle;text-align:center}
+.kdoc .k-pl{margin-top:14px}
+.kdoc .k-pl tr>td{height:7mm;vertical-align:middle}
+.kdoc .k-pl tr>*:nth-child(1){width:10%}
+.kdoc .k-pl tr>*:nth-child(2){width:12%}
+.kdoc .k-pl tr>*:nth-child(3){width:21%}
+.kdoc .k-pl tr>*:nth-child(4){width:25%}
+.kdoc .k-pl tr.k-tot>td{font-weight:700}`,
+  ctDoc(k) {
+    const D = INST.docOf(k), P = INST.planOf(k), tot = P.reduce((a, v) => a + v, 0), parts = Number(k.parts || INST.cfg().parts) || 4;
+    const dt = s => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(2, 4)}` : ''), due = i => INVO.addMonths(k.start, i + 1), n = v => String(Math.round(v * 100) / 100);
+    const u = (v, w) => `<span class="k-u" style="min-width:${w}">${esc(v || '') || '&nbsp;'}</span>`;
+    const goods = String(D.goods || '').split('\n').map(s => s.trim()).filter(Boolean), disc = String(D.disc || '').trim().replace(/^-/, '').replace('.', ',');
+    const empty = Math.max(2, 16 - P.length), blank = '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>';
+    return `<section class="kdoc no-xg"><div class="k-fit">
+      <div class="k-top"><div class="k-city">${esc(D.city)}</div><div class="k-logo">MITAL</div><div class="k-no">${D.no ? '№' + esc(D.no) : ''}</div></div>
+      <div class="k-t">ШАРТНОМА №${u(D.no, '16mm')}</div>
+      <div class="k-row"><div>${u(dt(D.date), '30mm')} й.</div><div>Мижоз ${u(D.shop, '64mm')}</div></div>
+      <p class="k-p">Ушбу шартнома ООО “MITAL” ва мижоз орасидаги келишув асосида мижоз томонидан олинган махсулотни прайс нархидан арзон сотмасликка, хамда олинган махсулотни куйида белгиланганидака йопиб беришни, яни олган махсулотларни ${parts} га булиб хар хафтада карзни тулик копланишини тасдиклайди:</p>
+      <div class="k-ln">(Ф.И.Ш.) ${u(D.fio, '105mm')}</div>
+      <div class="k-ln">Шартнома муддати ${u(dt(k.start), '26mm')} дан ${u(dt(due(P.length - 1)), '26mm')} гача.</div>
+      <table class="noxg k-gd"><thead><tr><th>Махсулот</th><th>Амалдаги прайсдан чегирма %</th><th>Изох</th></tr></thead>
+        <tbody><tr><td class="k-ink">${goods.map(esc).join('<br>')}</td><td class="k-ink k-big">${disc ? '-' + esc(disc) + '%' : ''}</td><td class="k-ink">${esc(D.note).replace(/\n/g, '<br>')}</td></tr></tbody></table>
+      <table class="noxg k-pl"><thead><tr><th>Ой</th><th>План</th><th>Топширилган сана</th><th>Сумма</th><th>Мижоз имзо</th></tr></thead><tbody>
+        ${P.map((v, i) => `<tr><td class="k-ink">${i + 1}</td><td class="k-ink">${n(v)}</td><td class="k-ink">${dt(due(i))}</td><td></td><td></td></tr>`).join('')}
+        <tr class="k-tot"><td>Жами:</td><td class="k-ink">${n(tot)}$</td><td></td><td></td><td></td></tr>${blank.repeat(empty)}</tbody></table>
+      <p class="k-p2">Ушбу шартнома асосида мажбуриятлар тулик копланиб, карздорлик колмаганидан сунг, ООО “MITAL” томонидан мукофот сифатида ${u(D.reward, '80mm')} берилади.</p>
+      <div class="k-sg">Гувохлар ${u(D.w1, '52mm')}<small>(ИМЗО)</small> ${u(D.w2, '52mm')}<small>(ИМЗО)</small></div>
+      <p class="k-p2">Келишув шартлари тулик бажарилмаса, ушбу шартнома уз кучини йокотишига розиман.</p>
+      <div class="k-sg">${u('', '75mm')} &nbsp; ${u('', '30mm')}<small>(ИМЗО)</small></div>
+    </div></section>`;
+  },
+  // a long contract (many months) is shrunk to fit one sheet, like the special offer fits its half
+  ctFit(doc) {
+    const fit = doc.querySelector('.k-fit'); if (!fit) return;
+    fit.style.cssText = ''; doc.style.height = '';
+    if (fit.offsetHeight <= INST.A4) return;
+    const tall = s => { fit.style.cssText = `width:${100 / s}%;transform:scale(${s});transform-origin:0 0`; return fit.offsetHeight * s > INST.A4; };
+    let lo = 0.3, hi = 1; for (let i = 0; i < 14; i++) { const m = (lo + hi) / 2; if (tall(m)) hi = m; else lo = m; }
+    tall(lo); doc.style.height = Math.min(INST.A4, Math.ceil(fit.offsetHeight * lo)) + 'px';
+  },
+  ctPrint(html, copies) {
+    const fr = document.createElement('iframe'); fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'; document.body.appendChild(fr);
+    const d = fr.contentDocument; d.open();
+    d.write(`<!doctype html><html lang="uz"><head><meta charset="utf-8"><title>Шартнома</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}html,body{margin:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      .sheet{width:210mm;height:296mm;padding:10mm;overflow:hidden;page-break-after:always;break-after:page}.sheet:last-child{page-break-after:auto;break-after:auto}${INST.ctCss()}</style></head><body>${Array.from({ length: copies }, () => `<div class="sheet">${html}</div>`).join('')}</body></html>`);
+    d.close();
+    setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch { toast('Не удалось открыть печать — скачайте картинкой'); } }, 350);
+    setTimeout(() => fr.remove(), 120000);
+  },
+  ctFile(k) { const D = INST.docOf(k); return ('Шартнома-' + (D.no || k.id) + '-' + String(D.shop || k.title || '').replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 30) + '.png').replace(/_\.png$/, '.png'); },
+  // the preview with the same buttons as the special offer: print, picture, send, copy
+  async ctPreview(k) {
+    if (!k) return;
+    try { await INVO.loadRegions(); } catch { /* the city is only a hint */ }
+    const D = INST.docOf(k), canShare = !!(navigator.canShare && navigator.share);
+    const m = modal(`<h3 style="margin:0 0 8px">📄 Шартнома №${esc(D.no || '—')} · ${esc(D.shop || k.title || '')}</h3><style>${INST.ctCss()}</style>
+      <div class="bar" style="flex-wrap:wrap;gap:8px;margin-bottom:10px"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="kpTwo"> 2 экземпляра (клиенту и нам)</label><span class="spacer"></span>
+        <button class="btn" id="kpPr" type="button">🖨 Печать</button><button class="btn gray" id="kpPng" type="button">🖼 Скачать картинкой</button>${canShare ? '<button class="btn gray" id="kpSh" type="button">📤 Отправить (Telegram…)</button>' : ''}<button class="btn gray" id="kpCp" type="button">📋 Копировать картинку</button><button class="btn gray" id="kpEd" type="button">Изменить</button><button class="btn gray" id="kpX" type="button">Закрыть</button></div>
+      <div style="max-height:70vh;overflow:auto"><div style="display:inline-block;max-width:100%;overflow:auto;border:1px solid var(--line-2,#ccc)">${INST.ctDoc(k)}</div></div>
+      <p class="mut" style="font-size:12px;margin:6px 0 0">Договор на одном листе А4: распечатайте, подпишите и прикрепите скан в карточке клиента. Картинку можно сразу отправить в Telegram.</p>`);
+    m.el.classList.add('wide');
+    const doc = m.el.querySelector('.kdoc'); INST.ctFit(doc);
+    const blob = async () => { try { return await INVO.png(doc, INST.ctCss()); } catch (e) { toast('Не получилось сделать картинку: ' + (e.message || e) + '. Нажмите «Печать» → «Сохранить как PDF»'); return null; } };
+    $('#kpX', m.el).onclick = m.close;
+    $('#kpEd', m.el).onclick = () => { m.close(); INST.contractDialog(INST.cfg().contracts.find(x => x.id === k.id) || k); };
+    $('#kpPr', m.el).onclick = () => INST.ctPrint(doc.outerHTML, $('#kpTwo', m.el).checked ? 2 : 1);
+    $('#kpPng', m.el).onclick = async () => { const bl = await blob(); if (!bl) return; const a = document.createElement('a'); a.href = URL.createObjectURL(bl); a.download = INST.ctFile(k); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 20000); toast('Картинка сохранена'); };
+    const sh = $('#kpSh', m.el); if (sh) sh.onclick = async () => { const bl = await blob(); if (!bl) return; const file = new File([bl], INST.ctFile(k), { type: 'image/png' }); try { if (navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: 'Шартнома №' + (D.no || '') }); else toast('Это устройство не умеет отправлять файлы — скачайте картинкой'); } catch (e) { if (e.name !== 'AbortError') toast('Не получилось отправить: ' + (e.message || e)); } };
+    $('#kpCp', m.el).onclick = async () => { const bl = await blob(); if (!bl) return; try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': bl })]); toast('Картинка скопирована — вставьте в Telegram (Ctrl+V)'); } catch { toast('Браузер не дал скопировать — нажмите «Скачать картинкой»'); } };
+  },
+  // the buttons of the contracts list (on «Договоры» and on «Рассрочка → Договоры»)
+  ctWire(main) {
+    const c = INST.cfg(), byId = id => c.contracts.find(k => k.id === id);
+    const nb = $('#icNew', main); if (nb) nb.onclick = () => INST.contractDialog(null);
+    main.querySelectorAll('[data-ct]').forEach(b => b.onclick = () => INST.contractDialog(byId(b.dataset.ct)));
+    main.querySelectorAll('[data-ctpr]').forEach(b => b.onclick = () => INST.ctPreview(byId(b.dataset.ctpr)));
+    const q = $('#icQ', main), cnt = $('#icQn', main);
+    if (q) q.oninput = () => { INST.q = q.value; const v = q.value.trim().toLowerCase(); let k = 0; main.querySelectorAll('[data-kq]').forEach(tr => { const on = !v || tr.dataset.kq.includes(v); tr.hidden = !on; if (on) k++; }); cnt.textContent = v ? 'найдено: ' + k : ''; };
+  },
   // contracts as the CRM knows them, joined with what the auto-loader counted
-  ctView(st) {
+  ctView(st, q = '') {
     const c = INST.cfg(), got = new Map((st?.contracts || []).map(k => [k.id, k])), t0 = UI.localDate(Date.now());
     if (!c.contracts.length) return UI.empty('Договоров пока нет', 'Добавьте договор: клиент, его карточки в LINKO, сколько он должен закупать в месяц и на сколько месяцев.', '<button class="btn" id="icNew" type="button">＋ Договор</button>');
     const bar = (v, of, label) => { const p = of > 0 ? Math.min(100, Math.round(v / of * 100)) : v > 0 ? 100 : 0; return `<div style="font-size:13px">${label}</div><div style="height:6px;background:var(--line,#ddd);border-radius:3px;margin:3px 0 6px"><div style="width:${p}%;height:6px;border-radius:3px;background:${p >= 100 ? 'var(--good,#22c55e)' : 'var(--c4,#e9a23b)'}"></div></div>`; };
     const lbl = x => UI.dm(x.from || x.m + '-01');
-    return `<div class="bar" style="margin-bottom:10px"><button class="btn" id="icNew" type="button">＋ Договор</button></div><div class="scroll"><table><thead><tr><th>Договор</th><th>Карточки LINKO</th><th>Агент</th><th class="num">План в месяц</th><th>Срок</th><th>Этот месяц</th><th>По месяцам</th><th class="num">С начала договора</th><th></th></tr></thead><tbody>
-      ${c.contracts.map(k => {
+    const ql = q.trim().toLowerCase(), list = c.contracts;
+    return `<div class="bar" style="margin-bottom:10px;flex-wrap:wrap;gap:8px"><button class="btn" id="icNew" type="button">＋ Договор</button><input id="icQ" type="search" placeholder="🔎 клиент, № договора, агент" value="${esc(q)}" style="min-width:240px"><span class="mut" id="icQn"></span></div><div class="scroll"><table><thead><tr><th>Договор</th><th>Карточки LINKO</th><th>Агент</th><th class="num">План в месяц</th><th>Срок</th><th>Этот месяц</th><th>По месяцам</th><th class="num">С начала договора</th><th></th></tr></thead><tbody>
+      ${list.map(k => {
         const s = got.get(k.id), cur = s?.cur, run = x => x.from ? x.from <= t0 && t0 <= x.to : x.m === t0.slice(0, 7);
         const state = !s ? '<span class="mut">считается…</span>' : !s.active ? (t0 < k.start ? '<span class="pill info">ещё не начался</span>' : '<span class="pill">закончился</span>') : s.daysLeft <= 30 ? `<span class="pill warn">осталось ${s.daysLeft} дн.</span>` : '';
-        return `<tr><td><b>${esc(k.title || k.accounts.join(' + '))}</b> ${state}</td><td>${k.accounts.map(a => `<div>${esc(a)}${INST.spec(a) ? ' <span class="pill warn">спец</span>' : ''}</div>`).join('')}</td><td>${esc(k.agent || '—')}</td>
+        const kq = INST.ctKey(k);
+        return `<tr data-kq="${esc(kq)}"${ql && !kq.includes(ql) ? ' hidden' : ''}><td><b>${esc(k.title || k.accounts.join(' + '))}</b>${k.doc?.no ? ` <span class="mut">№${esc(k.doc.no)}</span>` : ''} ${state}</td><td>${k.accounts.map(a => `<div>${esc(a)}${INST.spec(a) ? ' <span class="pill warn">спец</span>' : ''}</div>`).join('')}</td><td>${esc(k.agent || '—')}</td>
           <td class="num">${(() => { const P = INST.planOf(k), same = P.every(v => v === P[0]); return same ? INST.money(P[0]) : `${INST.money(Math.min(...P))}–${INST.money(Math.max(...P))}<div class="mut" style="font-size:12px">по месяцам</div>`; })()}<div class="mut" style="font-size:12px">всего ${INST.money(INST.planOf(k).reduce((a, v) => a + v, 0))}</div></td>
           <td>${UI.dateRu(k.start)} — ${s ? UI.dateRu(s.end) : k.months + ' мес.'}<div class="mut" style="font-size:12px">${k.months} мес.</div></td>
           <td style="min-width:150px">${cur && cur.fact != null ? `${cur.from ? `<div class="mut" style="font-size:12px">${UI.dm(cur.from)}–${UI.dm(cur.to)}</div>` : ''}${bar(cur.fact, cur.plan, `Взял ${INST.money(cur.fact)} из ${INST.money(cur.plan)}`)}${bar(cur.paid || 0, cur.plan, `Оплатил <b>${INST.money(cur.paid || 0)}</b> из ${INST.money(cur.plan)}`)}` : '—'}</td>
@@ -255,7 +393,7 @@ const INST = {
             <span class="mut" style="font-size:12px">Взял</span><div>${(s?.list || []).map(x => `<span class="pill ${x.fact == null ? '' : x.fact >= x.plan ? 'good' : run(x) ? 'warn' : 'crit'}" title="${lbl(x)}${x.to ? '–' + UI.dm(x.to) : ''}: ${x.fact == null ? 'данные ещё загружаются' : 'взял ' + INST.money(x.fact) + ' из ' + INST.money(x.plan)}">${lbl(x)}${x.fact == null ? '' : ' ' + Math.round(x.fact / Math.max(1, x.plan) * 100) + '%'}</span>`).join(' ')}</div>
             <span class="mut" style="font-size:12px">Оплатил</span><div>${(s?.list || []).map(x => x.paid == null ? `<span class="pill">${lbl(x)}</span>` : `<span class="pill ${x.paid >= x.plan - 0.5 ? 'good' : run(x) ? 'warn' : 'crit'}" title="${lbl(x)}${x.to ? '–' + UI.dm(x.to) : ''}: оплатил ${INST.money(x.paid)} из ${INST.money(x.plan)} по договору">${lbl(x)} ${Math.round(x.paid / Math.max(1, x.plan) * 100)}%</span>`).join(' ')}</div></div></td>
           <td class="num" style="font-size:13px">${s && s.bought != null ? (() => { const due = (s.list || []).reduce((a, x) => a + x.plan, 0), left = due - s.paid; return `взял ${INST.money(s.bought)}<br>оплатил <b>${INST.money(s.paid)}</b> из ${INST.money(due)}<br><span class="${left > 0.5 ? 'neg' : 'pos'}">${left > 0.5 ? 'не доплатил ' + INST.money(left) : 'оплачено по плану ✓'}</span>`; })() : '—'}</td>
-          <td><button class="btn gray sm" data-ct="${esc(k.id)}" type="button">Изменить</button></td></tr>`;
+          <td style="white-space:nowrap"><button class="btn gray sm" data-ct="${esc(k.id)}" type="button">Изменить</button> <button class="btn gray sm" data-ctpr="${esc(k.id)}" type="button" title="Договор на печать / картинкой">🖨</button></td></tr>`;
       }).join('')}</tbody></table></div>`;
   },
   setView(st) {
@@ -317,7 +455,7 @@ EXT_PAGES.inst = async el => {
       ${(INST.view === 'due' || INST.view === 'all') && agents.length ? `<label class="mut">Агент <select id="instAg"><option value="">Все</option>${agents.map(a => `<option ${a === INST.agent ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></label>` : ''}</div>
     <div id="instMain"></div>`;
   const main = $('#instMain', body);
-  if (INST.view === 'ct') main.innerHTML = INST.ctView(st);
+  if (INST.view === 'ct') main.innerHTML = INST.ctView(st, INST.q);
   else if (INST.view === 'set') main.innerHTML = INST.setView(st);
   else if (st) main.innerHTML = list.length ? `<div class="scroll"><table><thead><tr><th>Клиент</th><th>Агент</th><th class="num">Долг</th><th class="num">Просрочено</th><th class="num">Сегодня</th><th>Следующая часть</th><th class="num">Заказов</th></tr></thead><tbody>${list.map(INST.rowHtml).join('')}</tbody></table></div>`
     : UI.empty(INST.view === 'due' ? 'Сегодня никто не должен платить, просрочек нет' : 'Клиентов с долгом нет', '');
@@ -326,8 +464,7 @@ EXT_PAGES.inst = async el => {
   const ag = $('#instAg', body); if (ag) ag.onchange = () => { INST.agent = ag.value; EXT_PAGES.inst(el); };
   main.querySelectorAll('[data-row]').forEach(tr => tr.onclick = () => { const n = tr.dataset.row; if (INST.open.has(n)) INST.open.delete(n); else INST.open.add(n); EXT_PAGES.inst(el); });
   main.querySelectorAll('[data-own]').forEach(b => b.onclick = e => { e.stopPropagation(); INST.ownDialog(b.dataset.own); });
-  const nb = $('#icNew', main); if (nb) nb.onclick = () => INST.contractDialog(null);
-  main.querySelectorAll('[data-ct]').forEach(b => b.onclick = () => INST.contractDialog(c.contracts.find(k => k.id === b.dataset.ct)));
+  INST.ctWire(main);
   const sv = $('#isSave', main);
   if (sv) sv.onclick = () => {
     Object.assign(c, { on: $('#isOn', main).checked, days: Number($('#isD', main).value) || 30, parts: Number($('#isP', main).value) || 4, hour: Number($('#isH', main).value), agents: $('#isA', main).checked, sunday: $('#isSun', main).checked, meXlsx: $('#isX', main).checked });
@@ -343,3 +480,14 @@ addEventListener('load', () => setTimeout(async () => {
   try { await CRMLocal.ready; const c = INST.cfg(); if (!c.on || !INST.cloud()) return; if (Date.now() - Date.parse(c.publishedAt || 0) > 864e5) { await LX.load(); await INST.publish(); } }
   catch (e) { console.warn('inst publish', e); }
 }, 15000));
+
+// quick access from the menu (Деньги → Договоры): only the contracts, with search, «＋ Договор» and the paper contract
+EXT_PAGES.contracts = async el => {
+  await CRMLocal.ready; await LX.load();
+  el.innerHTML = `<div class="page-head"><div><h2>📄 Договоры</h2><div class="sub">План закупок по месяцам, что взял и оплатил клиент; бумажный договор (шартнома) — на печать или картинкой</div></div></div><div id="ctBody"><p class="mut">Загружаю…</p></div>`;
+  const body = $('#ctBody', el), c = INST.cfg(), st = c.on && INST.cloud() ? await INST.state() : null;
+  if (!el.isConnected) return;
+  body.innerHTML = (!st && c.contracts.length ? '<p class="mut" style="margin:0 0 8px">«Взял» и «Оплатил» считает автозагрузка — включите её в <a href="#/inst">Рассрочка → ⚙ Настройки</a>.</p>' : '') + INST.ctView(st, INST.q);
+  INST.ctWire(body);
+  const q = $('#icQ', body); if (q && INST.q) q.oninput();
+};

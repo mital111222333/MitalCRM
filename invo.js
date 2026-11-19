@@ -378,10 +378,10 @@ const INVO = {
     setTimeout(() => fr.remove(), 120000);
   },
   // the contract as a picture (PNG): the document is drawn by the browser itself from its own HTML, so it looks exactly as printed
-  async png(docEl) {
+  async png(docEl, css = INVO.css()) {
     const w = Math.ceil(docEl.getBoundingClientRect().width), h = Math.ceil(docEl.getBoundingClientRect().height), S = 2.5;
     const xml = new XMLSerializer().serializeToString(docEl.cloneNode(true));
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(w * S)}" height="${Math.round(h * S)}"><foreignObject x="0" y="0" width="${w}" height="${h}" transform="scale(${S})"><div xmlns="http://www.w3.org/1999/xhtml"><style>${INVO.css()}</style>${xml}</div></foreignObject></svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(w * S)}" height="${Math.round(h * S)}"><foreignObject x="0" y="0" width="${w}" height="${h}" transform="scale(${S})"><div xmlns="http://www.w3.org/1999/xhtml"><style>${css}</style>${xml}</div></foreignObject></svg>`;
     const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
     await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('браузер не смог нарисовать картинку')); });
     const cv = document.createElement('canvas'); cv.width = Math.round(w * S); cv.height = Math.round(h * S);
@@ -511,3 +511,6 @@ EXT_PAGES.invo = async el => {
   const fs = $('#ifSave', body); if (fs) fs.onclick = () => { Object.assign(F, { company: $('#ifC', body).value.trim(), city: $('#ifT', body).value.trim(), cities: $('#ifA', body).value.trim(), std: Number($('#ifS', body).value) || 0, signers: $('#ifG', body).value.split('\n').map(s => s.trim()).filter(Boolean) }); CRMLocal.touch(); toast('Форма сохранена'); re(); };
   const dm = $('#ifDemo', body); if (dm) dm.onclick = () => { const d = UI.localDate(Date.now()); INVO.preview([{ id: '12345', d, client: 'Пример клиента', agent: 'Агент', s: 1500, disc: 15, bonusItems: ['Сервисная книжка × 10', 'Масло Mitanol 5W-30 4 л × 2'], x: { plan: [{ d: INVO.addMonths(d, 1), s: 750 }, { d: INVO.addMonths(d, 2), s: 750 }], cond: 'акция «2+1»' } }]); };
 };
+
+// quick access from the menu (Деньги → Спецпредложения): the «Накладные» page opened right on the special offers tab
+EXT_PAGES.specs = el => { INVO.tab = 'spec'; return EXT_PAGES.invo(el); };
