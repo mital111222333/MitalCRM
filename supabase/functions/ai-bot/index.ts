@@ -1891,9 +1891,12 @@ async function trackUsage(model: string, limited: boolean, u: any) {
 }
 async function gemini(body: any) {
   const model = CFG.model();
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(CFG.gKey())}`, {
+  const call = () => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(CFG.gKey())}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
+  // 500/503 «the model is experiencing high demand» is temporary: two more tries before giving up
+  let r = await call();
+  for (const wait of [1500, 4000]) { if (r.status !== 500 && r.status !== 503) break; await r.body?.cancel().catch(() => {}); await new Promise(res => setTimeout(res, wait)); r = await call(); }
   const d = await r.json().catch(() => ({}));
   await trackUsage(model, r.status === 429, d.usageMetadata);
   if (r.status === 429) {

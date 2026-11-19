@@ -16,6 +16,7 @@ const CFG = {
   LINKO_TOKEN: 'ВСТАВЬТЕ_КЛЮЧ_LINKO',      // 40 символов, из консоли LINKO (см. инструкцию в CRM)
   GH_TOKEN: 'ВСТАВЬТЕ_КЛЮЧ_GITHUB',        // тот же ключ github_pat_…, что вы вставляли в CRM для синхронизации
   PLAN_DAY: 16,                            // с какого числа начинается период плана
+  GRACE_DAYS: 2,                           // 16-е и 17-е: оплаты этих дней идут в прошлый период, сбор нового периода — с 18-го
   GH_OWNER: 'mital111222333',
   GH_REPO: 'mitalcrm-data',
   LINKO_API: 'https://mital.linko.uz/ru/api/v1/',
@@ -86,6 +87,7 @@ function collect_() {
   files.push(balanceFile_(from, today, 'balance - ' + today + 'T000000'));
   // 1b) the previous period through its extra day (16.10–16.11), exactly as LINKO shows it — for payroll and final reports
   try { const pv = prevBalance_(today); if (pv) files.push(pv); } catch (e) { if (/ключ/.test(e.message || '')) throw e; Logger.log('Итог прошлого периода: ' + mask_(e.message || e)); }
+  try { graceBalances_(today).forEach(f => files.push(f)); } catch (e) { if (/ключ/.test(e.message || '')) throw e; Logger.log('Баланс за 16–17: ' + mask_(e.message || e)); }
   // 2) stock of every warehouse (branch) that has goods; the list of branches is looked up once every 6 hours
   const P = PropertiesService.getScriptProperties();
   let known = null; try { known = JSON.parse(P.getProperty('branches') || 'null'); } catch (e) { known = null; }
@@ -631,6 +633,7 @@ function now_() {
     files.push({ name: 'balance - ' + today + 'T000000.csv', b64: Utilities.base64Encode(csv_(rows), Utilities.Charset.UTF_8) });
   }
   try { const pv = prevBalance_(today); if (pv) files.push(pv); } catch (e) { Logger.log('Итог прошлого периода: ' + mask_(e.message || e)); }
+  try { graceBalances_(today).forEach(f => files.push(f)); } catch (e) { Logger.log('Баланс за 16–17: ' + mask_(e.message || e)); }
   // 2) warehouses
   const found = [];
   lists.filter(l => l.br).forEach(l => {
@@ -712,6 +715,18 @@ function prevBalance_(today) {
   return balanceFile_(O, P, 'balance ' + O + '_' + P + ' - ' + today + 'T000000');
 }
 
+// In the first 10 days of a plan period: fresh LINKO balances of its extra days — 16.11–16.11 and 16.11–17.11 — in every run.
+// The team moves payments of the 16th–17th to the 15th in LINKO; the CRM takes out of the new period only what LINKO STILL shows
+// on those days, and only from files of the same run (a snapshot of the 16th taken on the 16th is stale once the money is moved).
+function graceBalances_(today) {
+  const P = planFrom_(today), age = Math.round((Date.parse(today + 'T12:00:00Z') - Date.parse(P + 'T12:00:00Z')) / 864e5);
+  if (age < 1 || age > 9) return [];
+  const out = [], add = n => Utilities.formatDate(new Date(Date.parse(P + 'T12:00:00Z') + n * 864e5), 'UTC', 'yyyy-MM-dd');
+  out.push(balanceFile_(P, P, 'balance ' + P + '_' + P + ' - ' + today + 'T000000'));
+  const last = add(Math.max(1, CFG.GRACE_DAYS || 1) - 1);
+  if (last > P && today > last) out.push(balanceFile_(P, last, 'balance ' + P + '_' + last + ' - ' + today + 'T000000'));
+  return out;
+}
 function planFrom_(d) {
   let y = Number(d.slice(0, 4)), m = Number(d.slice(5, 7));
   if (Number(d.slice(8, 10)) < CFG.PLAN_DAY) { m--; if (!m) { m = 12; y--; } }
@@ -1004,7 +1019,16 @@ function instCalc_(R, L, debtors, M, today, P) {
     // an order given for its own term (set in the CRM on the order): the parts stay weekly — 60 days of a 30-day / 4-part client → 8 parts
     // an order with its own schedule (dates and sums agreed with the client — «Накладные: сроки» in the CRM) or its own term
     const termOf = o => { const x = ordT[o.id] || {}, t = Number(x.days) || 0; if (Array.isArray(x.plan) && x.plan.length) return { days: days, parts: parts, plan: x.plan }; return t > 0 ? { days: t, parts: Math.max(1, Math.round(parts * t / days)) } : { days: days, parts: parts }; };
-    const os = (byC[k] || []).slice().reverse(), orders = []; let left = D; // newest first: the debt sits on the newest orders
+    // an invoice whose sum was corrected in the CRM («Накладные: сроки»), or made free as the bonus of another one by a promotion,
+    // counts with that sum; while LINKO still has the bigger sum, the difference is not owed and is taken off the debt
+    let cut = 0;
+    const os = (byC[k] || []).map(o => {
+      const x = ordT[o.id] || {}, s = x.free ? 0 : x.sum != null && x.sum !== '' ? Math.max(0, n_(x.sum)) : null;
+      if (s == null || Math.abs(s - o.s) < 0.005) return o;
+      if (s < o.s) cut += o.s - s;
+      return Object.assign({}, o, { s: s });
+    }).reverse(), orders = [];
+    let left = Math.max(0, D - cut); // newest first: the debt sits on the newest orders
     os.forEach(o => {
       const l = Math.min(o.s, Math.max(0, left)); left -= l; if (l <= 0.005) return;
       const t = termOf(o), x = ordT[o.id] || {}, p = instPlan_(o, l, t.days, t.parts, today, t.plan);

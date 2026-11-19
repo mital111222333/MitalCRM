@@ -32,13 +32,24 @@
   })();
 
 
-  // ---------- the first day of a plan period (the 16th) is an extra day for the PREVIOUS period's money ----------
-  // Everything clients pay on the 16th counts for the period that ended on the 15th (16.10 → 16.09–15.10); sales of the 16th stay in the new period.
+  // ---------- the first days of a plan period (the 16th and the 17th) are extra days for the PREVIOUS period's money ----------
+  // Everything clients pay on the 16th–17th counts for the period that ended on the 15th; collection of the new period starts on the 18th.
+  // Sales of the 16th–17th stay in the new period. The team moves those payments to the 15th in LINKO itself, so once that is done LINKO's
+  // numbers are already right and the CRM must show them as they are. The CRM only takes out what LINKO still shows on the 16th–17th.
   // The rows keep LINKO's own numbers in paid0 / sold0 / ret0, so the shift is recomputed from scratch every time and never applied twice.
-  //  • new period uploads (16.10–…): paid = LINKO paid − what the client paid on the 16th (from the one-day upload 16.10–16.10)
-  //  • the previous period «16.09–16.10» from LINKO (the auto-loader sends it in the first days): paid as LINKO shows it, sales/returns without the 16th
+  //  • new period uploads through the 17th: paid = 0 (all of it is money of the previous period)
+  //  • new period uploads from the 18th: paid = LINKO paid − what LINKO still shows paid on the 16th–17th, taken from the balance 16.11–17.11
+  //    that came in the SAME auto-loader run (a snapshot from an earlier day is stale: the money may have been moved to the 15th since —
+  //    that is exactly how «Сбор денег −16 000» appeared). The amount is frozen on the upload (u.grace), so history never shifts.
+  //    No fresh balance for those days — LINKO's number as it is.
+  //  • the previous period «16.10–16.11» from LINKO: sales/returns without the 16th, paid as LINKO shows it + payments still dated the 17th
   //  • no such file: a final upload of the previous period is built from its last upload (15.10) + payments of the 16th
   const GRACE = {
+    DAYS: 2, // the 16th and the 17th
+    SAME: 2 * 60000, // files of one auto-loader run are imported within seconds of each other (runs are 5 minutes apart)
+    same: (a, b) => !!(a && b) && Math.abs((Date.parse(a.uploaded_at || '') || 0) - (Date.parse(b.uploaded_at || '') || -1e15)) <= GRACE.SAME,
+    col: (u, k) => new Map(u ? u.rows.map(r => [r.client, GRACE.raw(r, k)]) : []),
+    nz: m => { const o = {}; for (const [c, v] of m) if (Math.abs(v) > 1e-9) o[c] = Math.round(v * 1e6) / 1e6; return o; },
     day: (d, n) => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); },
     end(pf) { const y = +pf.slice(0, 4), m = +pf.slice(5, 7), d = +pf.slice(8, 10), dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(), t = new Date(Date.UTC(y, m, Math.min(d, dim))); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10); },
     raw: (r, k) => (r[k + '0'] !== undefined ? r[k + '0'] : r[k] || 0),
@@ -58,15 +69,35 @@
       for (const P of periods) {
         const O = periods.filter(p => p < P).pop();
         const ok = O && GRACE.day(GRACE.end(O), 1) === P; // the previous period ends the day before P
-        const day1 = ok ? GRACE.latest(real.filter(u => u.period_from === P && u.period_to === P && u.taken_at === P)) : null;
-        const G = new Map(), S16 = new Map(), R16 = new Map(), B16 = new Map();
-        if (day1) for (const r of day1.rows) { G.set(r.client, GRACE.raw(r, 'paid')); S16.set(r.client, GRACE.raw(r, 'sold')); R16.set(r.client, GRACE.raw(r, 'ret')); B16.set(r.client, r.b1); }
-        // new period: without the 16th's money
-        for (const u of real.filter(x => x.period_from === P)) { let ch = false; for (const r of u.rows) ch = GRACE.set(r, 'paid', GRACE.raw(r, 'paid') - (G.get(r.client) || 0)) || ch; if (ch) { touched.add(u); changed = true; } }
+        const mine = real.filter(u => u.period_from === P), last = GRACE.day(P, GRACE.DAYS - 1);
+        const day1 = GRACE.latest(mine.filter(u => u.period_to === P && u.taken_at === P));
+        const win = last > P ? GRACE.latest(mine.filter(u => u.period_to === last && u.taken_at === last)) : day1; // LINKO balance 16.11–17.11
+        const G = GRACE.col(day1, 'paid'), S16 = GRACE.col(day1, 'sold'), R16 = GRACE.col(day1, 'ret'), B16 = new Map(day1 ? day1.rows.map(r => [r.client, r.b1]) : []);
+        // new period: no money through the 17th; later — without what LINKO still shows on the 16th–17th
+        for (const u of mine) {
+          let g = null;
+          if (u.period_to > last) {
+            if (u.grace?.v === 2) g = u.grace.g;
+            else if (win && GRACE.same(win, u)) { g = GRACE.nz(GRACE.col(win, 'paid')); u.grace = { v: 2, at: win.uploaded_at, g }; changed = true; }
+          }
+          let ch = false;
+          for (const r of u.rows) { const raw = GRACE.raw(r, 'paid'); ch = GRACE.set(r, 'paid', u.period_to <= last ? 0 : raw - (g?.[r.client] || 0)) || ch; }
+          if (ch) { touched.add(u); changed = true; }
+        }
         if (!ok) continue;
-        // the previous period through the 16th straight from LINKO: its sales and returns without the 16th
+        // the previous period through the 16th straight from LINKO: its sales and returns without the 16th; payments still dated the 17th are added
         const ext = real.filter(x => x.period_from === O && x.period_to === P);
-        for (const u of ext) { let ch = false; for (const r of u.rows) { ch = GRACE.set(r, 'sold', GRACE.raw(r, 'sold') - (S16.get(r.client) || 0)) || ch; ch = GRACE.set(r, 'ret', GRACE.raw(r, 'ret') - (R16.get(r.client) || 0)) || ch; } if (ch) { touched.add(u); changed = true; } }
+        for (const u of ext) {
+          let l = null;
+          if (u.grace?.v === 2) l = u.grace.g;
+          else if (last > P && win && day1 && GRACE.same(win, u) && GRACE.same(day1, u)) { const w = GRACE.col(win, 'paid'); for (const [c, v] of G) w.set(c, (w.get(c) || 0) - v); l = GRACE.nz(w); u.grace = { v: 2, at: win.uploaded_at, g: l }; changed = true; }
+          let ch = false;
+          for (const r of u.rows) {
+            ch = GRACE.set(r, 'sold', GRACE.raw(r, 'sold') - (S16.get(r.client) || 0)) || ch; ch = GRACE.set(r, 'ret', GRACE.raw(r, 'ret') - (R16.get(r.client) || 0)) || ch;
+            ch = GRACE.set(r, 'paid', GRACE.raw(r, 'paid') + (l?.[r.client] || 0)) || ch;
+          }
+          if (ch) { touched.add(u); changed = true; }
+        }
         if (ext.length || !day1) continue;
         // no such file: build the final of the previous period from its last upload + payments of the 16th
         const end = GRACE.end(O), base = GRACE.latest(real.filter(u => u.period_from === O && u.taken_at <= end));

@@ -67,7 +67,7 @@ const LB = {
     if (P) {
       text('🏆 ИТОГИ ПЕРИОДА MITAL', 56, 84, 52, '#ffffff', 700);
       text(`Период плана ${per}`, 58, 132, 24, '#cde8e6');
-      text(`Продажи — по ${UI.dateRu(P.end)} · деньги — по ${UI.dateRu(P.end)} + оплаты ${UI.dateRu(P.grace)}`, 58, 170, 21, '#9fd3cf');
+      text(`Продажи — по ${UI.dateRu(P.end)} · деньги — по ${UI.dateRu(P.end)} + оплаты ${lbGrace(P.grace)}`, 58, 170, 21, '#9fd3cf');
     } else {
     text('🏆 ЛИДЕРЫ MITAL', 56, 84, 52, '#ffffff', 700);
     text(`Данные на ${UI.dateRu(d.upload.taken_at)} · период плана ${per}${fc.projectable ? ` · осталось ${fc.days_left} дн.` : ''}`, 58, 132, 24, '#cde8e6');
@@ -105,7 +105,7 @@ const LB = {
   async blob(d) { const c = await LB.image(d); return new Promise(res => c.toBlob(res, 'image/png')); },
   caption(d) {
     const L = LB.build(d), s = L.sales[0], m = L.money[0];
-    if (d.lbPast) return `🏆 <b>Итоги периода ${UI.dm(d.upload.period_from)}–${UI.dm(d.lbPast.end)}</b> (деньги с оплатами ${UI.dm(d.lbPast.grace)})\n🛒 Продажи: <b>${esc(s?.a.agent || '—')}</b> — $${UI.fmt0(s?.v || 0)}${s?.p != null ? ` · ${Math.round(s.p * 100)}% плана` : ''}\n💰 Сбор денег: <b>${esc(m?.a.agent || '—')}</b> — $${UI.fmt0(m?.v || 0)}${m?.p != null ? ` · ${Math.round(m.p * 100)}% плана` : ''}`;
+    if (d.lbPast) return `🏆 <b>Итоги периода ${UI.dm(d.upload.period_from)}–${UI.dm(d.lbPast.end)}</b> (деньги с оплатами ${lbGrace(d.lbPast.grace)})\n🛒 Продажи: <b>${esc(s?.a.agent || '—')}</b> — $${UI.fmt0(s?.v || 0)}${s?.p != null ? ` · ${Math.round(s.p * 100)}% плана` : ''}\n💰 Сбор денег: <b>${esc(m?.a.agent || '—')}</b> — $${UI.fmt0(m?.v || 0)}${m?.p != null ? ` · ${Math.round(m.p * 100)}% плана` : ''}`;
     return `🏆 <b>Лидеры на ${UI.dateRu(d.upload.taken_at)}</b>\n🛒 Продажи: <b>${esc(s?.a.agent || '—')}</b> — $${UI.fmt0(s?.v || 0)}\n💰 Сбор денег: <b>${esc(m?.a.agent || '—')}</b> — $${UI.fmt0(m?.v || 0)}${d.forecast.projectable ? `\n⏳ До конца периода ${d.forecast.days_left} дн.` : ''}`;
   },
   async sendPhoto(chat, blob, caption) {
@@ -159,6 +159,8 @@ function lbPlansDialog(d) {
   };
 }
 
+// the extra days for money: the 16th and the 17th («16.11–17.11»), the same as GRACE.DAYS in static-api.js
+const lbGrace = g => `${UI.dm(g)}–${UI.dm(lbAddDay(g, (CRMLocal.grace?.DAYS || 1) - 1))}`;
 const lbAddDay = (iso, n) => { const t = new Date(iso + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
 const lbPeriodEnd = pf => { const y = +pf.slice(0, 4), m = +pf.slice(5, 7), dd = +pf.slice(8, 10), dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(), t = new Date(Date.UTC(y, m, Math.min(dd, dim))); t.setUTCDate(t.getUTCDate() - 1); return t.toISOString().slice(0, 10); };
 let lbPastOn = false; // Лидерборд → «Прошлый период»
@@ -197,20 +199,20 @@ EXT_PAGES.leaders = async el => {
   if (!info) lbPastOn = false;
   const L = LB.build(d), col = agColors(d), T = L.T, fc = d.forecast, pace = L.pace, P = d.lbPast;
   const top = (rows, title) => rows[0] ? `<div class="lbhero"><span class="lbmedal">🥇</span><div><div class="mut">${title}</div><b>${esc(rows[0].a.agent)}</b><div>$${UI.fmt0(rows[0].v)}${rows[0].p !== null ? ` · ${Math.round(rows[0].p * 100)}% плана` : ''}</div></div></div>` : '';
-  const perBtn = info ? `<button class="btn ${P ? '' : 'gray'}" id="lbPer" title="Итоги прошлого периода: деньги с учётом оплат ${UI.dm(info.grace)}">${P ? '↩ Текущий период' : `📅 Прошлый период ${UI.dm(info.prevPF)}–${UI.dm(info.end)}`}</button>` : '';
-  const perText = P ? `<span class="mut">Итоги ${UI.dm(info.prevPF)}–${UI.dm(info.end)} · продажи по ${UI.dm(info.end)} · деньги по ${UI.dm(info.end)}${P.src === 'none' ? '' : ` + ${UI.dm(info.grace)}`}</span>`
+  const perBtn = info ? `<button class="btn ${P ? '' : 'gray'}" id="lbPer" title="Итоги прошлого периода: деньги с учётом оплат ${lbGrace(info.grace)}">${P ? '↩ Текущий период' : `📅 Прошлый период ${UI.dm(info.prevPF)}–${UI.dm(info.end)}`}</button>` : '';
+  const perText = P ? `<span class="mut">Итоги ${UI.dm(info.prevPF)}–${UI.dm(info.end)} · продажи по ${UI.dm(info.end)} · деньги по ${UI.dm(info.end)}${P.src === 'none' ? '' : ` + оплаты ${lbGrace(info.grace)}`}</span>`
     : `<span class="mut">${fc.projectable ? `Период ${UI.dm(d.upload.period_from)}–${UI.dm(fc.period_end)} · прошло ${Math.round(pace * 100)}%, осталось ${fc.days_left} дн.` : ''}</span>`;
   const at = P?.at ? new Date(P.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
   const note = !P ? '' : P.src === 'none'
     ? `<div class="lbnote warn">⚠ Нет данных за ${UI.dateRu(info.grace)}, поэтому деньги показаны только по ${UI.dateRu(info.end)}. Автозагрузка сама пришлёт их в первые дни периода; вручную — скачайте в LINKO «Баланс клиентов» за ${UI.dm(info.prevPF)}–${UI.dm(info.grace)} и перетащите в «Загрузить данные». <a href="#/aup">Загрузки</a></div>`
-    : `<div class="lbnote">💰 К деньгам по ${UI.dateRu(info.end)} добавлено <b>$${UI.fmt0(P.total)}</b>: оплаты ${UI.dateRu(info.grace)}${P.src === 'linko' ? ' и оплаты, внесённые в LINKO задним числом (карты)' : ''}. ${P.src === 'linko' ? `Цифры — из LINKO за период ${UI.dm(info.prevPF)}–${UI.dm(info.grace)}` : `Посчитано из загрузок ${info.base ? UI.dm(info.base.taken_at) : ''} и ${UI.dm(info.grace)} — оплаты, внесённые в LINKO позже, сюда не попали`}${at ? `, данные LINKO на ${at}` : ''}.${info.base && info.base.taken_at < info.end ? ` ⚠ Последняя загрузка прошлого периода — на ${UI.dateRu(info.base.taken_at)}.` : ''}</div>`;
+    : `<div class="lbnote">💰 К деньгам по ${UI.dateRu(info.end)} добавлено <b>$${UI.fmt0(P.total)}</b>: оплаты ${lbGrace(info.grace)}${P.src === 'linko' ? ' и оплаты, внесённые в LINKO задним числом (карты)' : ''}. ${P.src === 'linko' ? `Цифры — из LINKO за период ${UI.dm(info.prevPF)}–${UI.dm(info.grace)}` : `Посчитано из загрузок ${info.base ? UI.dm(info.base.taken_at) : ''} и ${UI.dm(info.grace)} — оплаты, внесённые в LINKO позже, сюда не попали`}${at ? `, данные LINKO на ${at}` : ''}.${info.base && info.base.taken_at < info.end ? ` ⚠ Последняя загрузка прошлого периода — на ${UI.dateRu(info.base.taken_at)}.` : ''}</div>`;
   body.innerHTML = `<div class="bar"><button class="btn" id="lbSend">📤 Отправить в Telegram</button><button class="btn gray" id="lbDown">⬇ Скачать картинку</button><button class="btn gray" id="lbPlans">🎯 Планы агентов</button>${perBtn}
       ${perText}</div>${note}
     <div class="lbheros">${top(L.sales, 'Лидер продаж')}${top(L.money, 'Лидер по сбору денег')}${L.overall[0] ? `<div class="lbhero"><span class="lbmedal">⭐</span><div><div class="mut">Лучший в общем зачёте</div><b>${esc(L.overall[0].a.agent)}</b><div>${L.hasPlans ? `${Math.round(L.overall[0].score * 100)}% планов в среднем` : `места: продажи ${L.overall[0].s.rank}, сбор ${L.overall[0].m.rank}`}</div></div></div>` : ''}
       <div class="lbhero team"><span class="lbmedal">👥</span><div><div class="mut">Команда</div><b>$${UI.fmt0(T.sold)}</b> продано${T.plan ? ` · ${UI.pct(T.sold, T.plan)}%` : ''}<div><b>$${UI.fmt0(T.paid)}</b> собрано${T.pool ? ` · ${UI.pct(T.paid, T.pool)}%` : ''}</div></div></div></div>
     <div class="grid">
       ${UI.panel('🛒 Продажи', LB.rows(L.sales, pace, col, 'sales'), { cls: 'w6', sub: P ? `Сколько продал агент за период ${UI.dm(info.prevPF)}–${UI.dm(info.end)}` : 'Сколько продал агент за период и сколько это от его плана' })}
-      ${UI.panel('💰 Собранные деньги', LB.rows(L.money, pace, col, 'money'), { cls: 'w6', sub: P ? `Собрано по ${UI.dm(info.end)}${P.src === 'none' ? '' : ` + оплаты ${UI.dm(info.grace)}`}, от плана сбора прошлого периода` : 'Сколько денег собрал агент и сколько это от плана сбора' })}
+      ${UI.panel('💰 Собранные деньги', LB.rows(L.money, pace, col, 'money'), { cls: 'w6', sub: P ? `Собрано по ${UI.dm(info.end)}${P.src === 'none' ? '' : ` + оплаты ${lbGrace(info.grace)}`}, от плана сбора прошлого периода` : 'Сколько денег собрал агент и сколько это от плана сбора' })}
       ${UI.panel('⭐ Общий зачёт', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Место</th><th>Агент</th><th class="n">Продажи</th><th class="n">Сбор денег</th><th class="n">АКБ / ОКБ</th><th class="n">Долг клиентов</th><th class="n">${L.hasPlans ? 'Средний % планов' : 'Сумма мест'}</th></tr></thead><tbody>${L.overall.map((o, i) => `<tr><td>${i < 3 ? LB.MEDAL[i] : i + 1}</td><td><span class="lbava sm" style="background:${col(o.a.agent)}" aria-hidden="true">${esc(LB.initials(o.a.agent))}</span><a class="clink" data-agent="${esc(o.a.agent)}">${esc(o.a.agent)}</a></td><td class="n">$${UI.fmt0(o.s.v)}<br><small>${o.s.p === null ? 'план не задан' : Math.round(o.s.p * 100) + '% · ' + o.s.rank + ' место'}</small></td><td class="n">$${UI.fmt0(o.m.v)}<br><small>${o.m.p === null ? 'план не задан' : Math.round(o.m.p * 100) + '% · ' + o.m.rank + ' место'}</small></td><td class="n">${o.a.akb} / ${o.a.okb}<br><small>${UI.pct(o.a.akb, o.a.okb) ?? 0}%</small></td><td class="n">$${UI.fmt0(o.a.debt)}</td><td class="n"><b>${L.hasPlans ? Math.round(o.score * 100) + '%' : o.places}</b></td></tr>`).join('')}</tbody></table></div>
         <p class="mut" style="margin:10px 0 0">${L.hasPlans ? 'Общий зачёт — среднее выполнения плана продаж и плана сбора (каждый учитывается максимум до 150%).' : 'Планы заданы не у всех агентов, поэтому общий зачёт — по сумме мест в продажах и сборе (меньше — лучше). Задайте планы кнопкой «🎯 Планы агентов».'} ${P ? '' : `Стрелки ▲▼ — изменение места с прошлой загрузки${d.prev ? ` (${UI.dateRu(d.prev.taken_at)})` : ''}. Чёрная метка на полосе — где агент должен быть по графику.`}</p>`, { cls: 'w12' })}
     </div>`;
