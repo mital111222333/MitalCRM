@@ -1031,6 +1031,15 @@ function instPeriod_(start, i) {
   const at = k => { const last = new Date(Date.UTC(y, m0 + k + 1, 0)).getUTCDate(); return Utilities.formatDate(new Date(Date.UTC(y, m0 + k, Math.min(d, last))), 'UTC', 'yyyy-MM-dd'); };
   return { from: at(i), to: instDay_(at(i + 1), -1) };
 }
+// the payment date of contract month i: with c.payDay (chosen on the contract in the CRM) — that day of the month, the first one
+// after the month starts (30 → the last day of February); without it — the last day of the contract month. Same as INST.dueOf in inst.js
+function instDue_(c, i) {
+  const s = String(c.start || ''), y = Number(s.slice(0, 4)), m0 = Number(s.slice(5, 7)) - 1, d = Number(s.slice(8, 10));
+  const at = (mm, dd) => { const last = new Date(Date.UTC(y, mm + 1, 0)).getUTCDate(); return Utilities.formatDate(new Date(Date.UTC(y, mm, Math.min(dd, last))), 'UTC', 'yyyy-MM-dd'); };
+  const from = at(m0 + i, d), pd = Math.round(Number(c.payDay) || 0);
+  if (pd >= 1 && pd <= 31) { const a = at(m0 + i, pd); return a > from ? a : at(m0 + i + 1, pd); }
+  return instPeriod_(c.start, i).to;
+}
 // what every client bought (sold − returns) and paid in each contract month — from the LINKO client balance of exactly that period
 // («Оплачено» counts cash, card and bank alike): inst-bal.json = { "<from>|<to>": { "<клиент>": { s, p } }, at: { "<from>|<to>": ms } }.
 // The running period is asked again every hour, one that ended in the last 5 days every 6 hours, older ones once; up to 4 per run.
@@ -1148,13 +1157,13 @@ function instContracts_(R, M, today) {
       const p = instPeriod_(c.start, i); if (p.from > today) break;
       const got = M[p.from + '|' + p.to] || null; let fact = null, paid = null;
       if (got) { fact = 0; paid = 0; Object.keys(got).forEach(n => { if (acc.indexOf(instNorm_(n)) >= 0) { fact += got[n].s || 0; paid += got[n].p || 0; } }); fact = instR2_(fact); paid = instR2_(paid); }
-      list.push({ m: p.from.slice(0, 7), from: p.from, to: p.to, plan: instPlanOf_(c, i), fact: fact, paid: paid });
+      list.push({ m: p.from.slice(0, 7), from: p.from, to: p.to, due: instDue_(c, i), plan: instPlanOf_(c, i), fact: fact, paid: paid });
     }
     let total = 0; for (let i = 0; i < Number(c.months); i++) total += instPlanOf_(c, i);
     const sum = k => instR2_(list.reduce((a, x) => a + (x[k] || 0), 0));
     const cur = list.filter(x => x.from <= today && today <= x.to)[0] || null;
     return { id: c.id, title: c.title || (c.accounts || []).join(' + '), accounts: c.accounts || [], monthly: Number(c.monthly) || 0, total: instR2_(total), months: Number(c.months), start: c.start, end: end,
-      active: today >= c.start && today <= end, daysLeft: days(today, end), curLeft: cur ? days(today, cur.to) + 1 : null, cur: cur, list: list,
+      active: today >= c.start && today <= end, daysLeft: days(today, end), curLeft: cur ? days(today, cur.due) : null, cur: cur, list: list,
       bought: sum('fact'), paid: sum('paid'), agent: c.agent || '' };
   });
 }
@@ -1164,7 +1173,7 @@ function instTexts_(R, clients, contracts, today) {
   // (the client both buys and pays the contract sum every month), or the contract ends within 30 days
   const ctAlert = c => c.active && ((c.cur && c.cur.fact != null && (c.cur.fact < c.cur.plan || (c.cur.paid || 0) < c.cur.plan) && c.curLeft <= 10) || c.daysLeft <= 30);
   const ctLine = c => '📄 Договор «' + c.title + '»: ' + (c.cur && c.cur.fact != null ? 'с ' + dm(c.cur.from) + ' по ' + dm(c.cur.to) + ' взял ' + f(c.cur.fact) + ' из ' + f(c.cur.plan) + ', оплатил ' + f(c.cur.paid || 0) + ' из ' + f(c.cur.plan) +
-    ((c.cur.paid || 0) < c.cur.plan ? ' — осталось оплатить ' + f(c.cur.plan - (c.cur.paid || 0)) + ' за ' + c.curLeft + ' дн.' : ' ✓') : 'план в этом месяце ' + f(c.cur ? c.cur.plan : c.monthly)) + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
+    ((c.cur.paid || 0) < c.cur.plan ? ' — осталось оплатить ' + f(c.cur.plan - (c.cur.paid || 0)) + (c.curLeft < 0 ? ', срок был ' + dm(c.cur.due) + ' — просрочено' : c.curLeft === 0 ? ' сегодня (' + dm(c.cur.due) + ')' : ' до ' + dm(c.cur.due) + ' (' + c.curLeft + ' дн.)') : ' ✓') : 'план в этом месяце ' + f(c.cur ? c.cur.plan : c.monthly)) + (c.daysLeft <= 30 ? ' · договор заканчивается ' + dm(c.end) + ' (через ' + c.daysLeft + ' дн.)' : '');
   // the morning list of an agent: 🔴 61+ days first (return the goods or take the money), then 🟠 31–60 days (take the money this week),
   // then 🟢 — clients with a part due today or a weekly part late; for each: when the goods were taken, the last payment, the orders
   const red = c => c.r > 0.5, orange = c => !red(c) && c.o > 0.5, green = c => !red(c) && !orange(c) && (c.today > 0.5 || c.late > 0.5);
