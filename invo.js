@@ -52,20 +52,28 @@ const INVO = {
       const id = String(o.id), x = c.orders[id] || {}, dc = INVO.discount(o), bonus = items.get(id) || [];
       const special = bonus.length > 0 || (dc.pct > 0.05 && Math.abs(dc.pct - std) > 0.6 && Math.abs(dc.alt - std) > 0.6) || (!(dc.pct > 0.05) && std > 0);
       seen.add(id);
-      out.push({ id, d: INVO.day(o.created_date), client, agent: LX.clientAgent(client, LX.person(o, 'user')), s: Math.round(s * 100) / 100, disc: dc.pct, bonusItems: bonus, auto: special, x });
+      const s0 = Math.round(s * 100) / 100;
+      out.push({ id, d: INVO.day(o.created_date), client, agent: LX.clientAgent(client, LX.person(o, 'user')), s: INVO.sumOf(x, s0), s0, disc: dc.pct, bonusItems: bonus, auto: special, x });
     }
     // special offers of earlier periods stay in the list from what was saved with them
-    for (const [id, x] of Object.entries(c.orders)) if (!seen.has(id) && x.snap && (x.spec || x.ok)) out.push({ id, d: x.snap.d, client: x.snap.c, agent: x.snap.a, s: x.snap.s, disc: x.disc ?? 0, bonusItems: [], auto: !!x.spec, x, old: true });
+    for (const [id, x] of Object.entries(c.orders)) if (!seen.has(id) && x.snap && (x.spec || x.ok)) out.push({ id, d: x.snap.d, client: x.snap.c, agent: x.snap.a, s: x.snap.s, s0: x.snap.s0 ?? x.snap.s, disc: x.disc ?? 0, bonusItems: [], auto: !!x.spec, x, old: true });
     return out.sort((a, b) => (a.d < b.d ? 1 : a.d > b.d ? -1 : Number(b.id) - Number(a.id)));
   },
   isSpec: r => (r.x.spec !== undefined ? !!r.x.spec : r.auto),
   status: r => (r.x.stored ? 'stored' : r.x.ok ? 'ok' : 'new'),
+  // the sum to pay: a free (bonus) invoice is 0, a sum corrected by hand wins over the LINKO sum
+  sumOf: (x, s0) => (x.free ? 0 : x.sum != null && x.sum !== '' ? Number(x.sum) : s0),
+  find: id => INVO.list().find(o => o.id === String(id)),
+  // what is in the invoice (LINKO order product rows of the loaded period, or of an older order opened on «Заказы по дням»)
+  lines(id) { const same = l => String(l.order) === String(id), L = LX.model().lines.filter(same); return (L.length ? L : (LX.ordX?.lines || []).filter(same)).filter(l => l.qty - l.ret > 0.0001); },
+  qty: l => Math.round((l.qty - l.ret) * 100) / 100,
 
   // ---------- the schedule ----------
   stdPlan(d, s) { const c = INST.cfg(), days = Number(c.days) || 30, parts = Math.max(1, Number(c.parts) || 4), weekly = 7 * (parts - 1) < days; return Array.from({ length: parts }, (_, i) => ({ d: INVO.addDays(d, i + 1 === parts ? days : weekly ? 7 * (i + 1) : Math.round(days * (i + 1) / parts)), s: Math.round(s / parts * 100) / 100 })); },
   planOf(r) { const x = r.x; if (Array.isArray(x.plan) && x.plan.length) return x.plan; if (x.days) return [{ d: INVO.addDays(r.d, Number(x.days)), s: r.s }]; return INVO.stdPlan(r.d, r.s); },
   termText(r) {
     const x = r.x, pl = INVO.planOf(r);
+    if (x.free) return `<b>бесплатно</b><br><small class="mut">🎁 бонус к №${esc(x.free)}</small>`;
     if (!x.plan && !x.days) return `<span class="mut">стандарт: ${pl.length} ч. до ${UI.dm(pl.at(-1).d)}</span>`;
     if (pl.length === 1) return pl[0].d === r.d ? '<b>сразу</b>' : `<b>${UI.dm(pl[0].d)}</b> <span class="mut">(${INVO.days(r.d, pl[0].d)} дн.)</span>`;
     return pl.map(p => `${UI.dm(p.d)} · ${INVO.money(p.s)}`).join('<br>');
@@ -91,38 +99,111 @@ const INVO = {
   text: pl => pl.map(p => `${p.d.slice(8)}.${p.d.slice(5, 7)}.${p.d.slice(0, 4)} - ${p.s}`).join('\n'),
 
   save(r, v) {
-    const c = INVO.cfg(), x = { ...(c.orders[r.id] || {}) };
-    for (const k of ['plan', 'days']) delete x[k];
-    Object.assign(x, v, { snap: { c: r.client, a: r.agent, d: r.d, s: r.s } });
-    if (!x.ok) x.ok = UI.localDate(Date.now());
+    const c = INVO.cfg(), x = { ...(c.orders[r.id] || {}) }, prev = x.bonusInv, s0 = r.s0 ?? r.s, today = UI.localDate(Date.now());
+    for (const k of ['plan', 'days', 'sum', 'bonusInv']) delete x[k];
+    Object.assign(x, v);
+    x.snap = { c: r.client, a: r.agent, d: r.d, s: INVO.sumOf(x, s0), s0 };
+    if (!x.ok) x.ok = today;
     c.orders[r.id] = JSON.parse(JSON.stringify(x));
+    // the bonus invoice of the promotion: free while it is linked to this one
+    if (prev && prev !== x.bonusInv) INVO.unfree(prev, r.id);
+    if (x.bonusInv) {
+      const b = INVO.find(x.bonusInv), y = { ...(c.orders[x.bonusInv] || {}) };
+      for (const k of ['plan', 'days']) delete y[k];
+      Object.assign(y, { free: r.id, spec: false, ok: y.ok || today, snap: b ? { c: b.client, a: b.agent, d: b.d, s: 0, s0: b.s0 ?? b.s } : { ...(y.snap || {}), s: 0 } });
+      c.orders[x.bonusInv] = y;
+    }
     INVO.prune(); INST.changed('Накладная №' + r.id + ' сохранена — напоминания пересчитаются за 5 минут');
+  },
+  // a bonus invoice becomes a normal (paid) one again
+  unfree(id, mainId) {
+    const c = INVO.cfg(), y = c.orders[id]; if (!y || (mainId && y.free !== mainId)) return;
+    const main = y.free; delete y.free; if (y.snap) y.snap.s = INVO.sumOf(y, y.snap.s0 ?? y.snap.s);
+    if (!mainId && c.orders[main]?.bonusInv === id) delete c.orders[main].bonusInv;
   },
   // invoices older than half a year are not needed by the reminders any more (special offers are kept for the archive list)
   prune() { const c = INVO.cfg(), cut = INVO.addDays(UI.localDate(Date.now()), -200); for (const [id, x] of Object.entries(c.orders)) if (x.snap?.d && x.snap.d < cut && !x.spec) delete c.orders[id]; },
 
+  // the dialog styles: two columns on a computer (what was ordered | the schedule), one on a phone
+  dlgCss: `<style>.ivd{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px 18px}
+.ivd .ivh{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 5px;display:flex;gap:6px;align-items:center}
+.ivd .ivh .spacer{flex:1}.ivd .ivh .btn{text-transform:none;letter-spacing:0;font-weight:600}
+.ivd .ivtop{grid-column:1/-1;display:grid;grid-template-columns:150px 110px minmax(0,1fr);gap:10px}
+.ivd label.f{display:flex;flex-direction:column;gap:3px;font-size:12px;font-weight:600;color:var(--text-2);margin:0}
+.ivd label.f small{font-weight:400;color:var(--muted)}
+.ivd input,.ivd select,.ivd textarea{width:100%;box-sizing:border-box;font-family:inherit}
+.ivd .ivit{max-height:200px;overflow:auto;border-radius:12px;background:var(--card-2);box-shadow:inset 0 0 0 1px var(--line)}
+.ivd .ivit table{width:100%;border-collapse:collapse;font-size:12.5px}
+.ivd .ivit td{padding:3px 8px;border-bottom:1px solid var(--line);white-space:normal}
+.ivd .ivit tr:last-child td{border-bottom:0}.ivd .ivit td.num{white-space:nowrap;text-align:right}
+.ivd .ivit tr.t td{font-weight:700}.ivd .ivit tr.g td{background:color-mix(in srgb,var(--tint,#0a84ff) 10%,transparent)}
+.ivd .ivpre{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px}.ivd .ivpre .btn{padding:4px 10px;font-size:12px}
+.ivd #ivP{font-size:12px;margin-top:4px}.ivd #ivP .chip{font-size:11.5px;padding:2px 7px;margin:0 2px 3px 0;display:inline-block}
+.ivd .ivfull{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px 18px}
+@media (max-width:760px){.ivd,.ivd .ivfull{grid-template-columns:1fr}.ivd .ivtop{grid-template-columns:1fr 1fr}.ivd .ivtop>:last-child{grid-column:1/-1}}</style>`,
+  // the rows of an invoice as a small table; `free` — the bonus invoice (its sum is struck out)
+  itemsTable(ls, free) {
+    if (!ls.length) return '<p class="mut" style="margin:6px 8px;font-size:12px">Состав заказа в данных LINKO не найден.</p>';
+    const tot = ls.reduce((a, l) => a + (l.bonus ? 0 : l.sum), 0);
+    return `<table class="noxg"><tbody>${ls.map(l => `<tr class="${l.bonus || free ? 'g' : ''}"><td>${l.bonus || free ? '🎁 ' : ''}${esc(l.product)}</td><td class="num">× ${INVO.qty(l)}</td><td class="num">${l.bonus ? 'бонус' : free ? `<s class="mut">${INVO.money2(l.sum)}</s>` : INVO.money2(l.sum)}</td></tr>`).join('')}
+      <tr class="t"><td>${ls.length} поз.</td><td></td><td class="num">${free ? `<s class="mut">${INVO.money2(tot)}</s> $0` : INVO.money2(tot)}</td></tr></tbody></table>`;
+  },
+  // a free invoice (the bonus of another one): what is in it and the way back
+  freeDialog(r, el) {
+    const main = r.x.free, m = modal(`${INVO.dlgCss}<h3 style="margin:0 0 2px">Накладная №${esc(r.id)} от ${UI.dateRu(r.d)}</h3>
+      <p class="mut" style="margin:0 0 10px"><b>${esc(r.client)}</b> · ${esc(r.agent)}</p>
+      <div class="panel" style="margin:0 0 10px;padding:10px 12px">🎁 <b>Бесплатно</b> — бонус к накладной <b>№${esc(main)}</b> (по акции). В LINKO: ${INVO.money2(r.s0)}, к оплате: <b>$0</b>. Напоминаний об оплате нет.</div>
+      <div class="ivd"><div style="grid-column:1/-1"><div class="ivh">Что входит</div><div class="ivit">${INVO.itemsTable(INVO.lines(r.id), true)}</div></div></div>
+      <div class="bar" style="margin-top:12px"><button class="btn gray" id="fvUn" type="button">Сделать платной</button><span class="spacer"></span><button class="btn gray" id="fvM" type="button">Открыть №${esc(main)}</button><button class="btn" id="fvX" type="button">Закрыть</button></div>`);
+    m.el.classList.add('wide');
+    $('#fvX', m.el).onclick = m.close;
+    $('#fvM', m.el).onclick = () => { const o = INVO.find(main); if (!o) return toast('Накладной №' + main + ' нет в этом периоде'); m.close(); INVO.dialog(o, el); };
+    $('#fvUn', m.el).onclick = () => { if (!confirm(`Накладная №${r.id} станет обычной (платной), бонус у №${main} снимется. Продолжить?`)) return; INVO.unfree(r.id); INST.changed('Накладная №' + r.id + ' снова платная'); m.close(); EXT_PAGES.invo(el); };
+  },
+
   dialog(r, el) {
-    const x = r.x, pl0 = INVO.planOf(r), isStd = !x.plan && !x.days;
+    if (r.x.free) return INVO.freeDialog(r, el);
+    const x = r.x, pl0 = INVO.planOf(r), isStd = !x.plan && !x.days, s0 = r.s0 ?? r.s;
     const bonus0 = x.bonus ?? r.bonusItems.join('\n');
-    const m = modal(`<h3 style="margin:0 0 4px">Накладная №${esc(r.id)} от ${UI.dateRu(r.d)}</h3>
-      <p class="mut" style="margin:0 0 10px"><b>${esc(r.client)}</b> · ${esc(r.agent)} · сумма <b>${INVO.money2(r.s)}</b></p>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">${[['now', 'Сразу'], ['d7', '7 дней'], ['d14', '2 недели'], ['m1', '1 месяц'], ['m2', '2 месяца'], ['m3', '3 месяца'], ['std', `Стандарт (${INST.cfg().parts || 4} ч. за ${INST.cfg().days || 30} дн.)`]].map(([k, t]) => `<button class="btn gray sm" data-pre="${k}" type="button">${t}</button>`).join('')}</div>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><span class="mut">Разбить на</span><input id="ivN" type="number" min="2" max="12" value="2" style="width:60px"><span class="mut">частей, каждые</span><select id="ivE"><option value="m1">1 месяц</option><option value="w2">2 недели</option><option value="w1">1 неделю</option></select><button class="btn gray sm" id="ivSplit" type="button">Разбить</button></div>
-      <label class="mut" style="display:block">График оплаты: дата - сумма, по строке на часть (например <b>15.12 - 500</b>). Пусто — стандартный срок.<textarea id="ivT" rows="4" style="width:100%;box-sizing:border-box;font-family:inherit">${esc(isStd ? '' : INVO.text(pl0))}</textarea></label>
-      <div id="ivP" style="margin:6px 0 10px;min-height:22px"></div>
-      <div class="form">
-        <label>Скидка от прайса, %<input id="ivD" type="number" min="0" max="100" step="0.5" value="${Math.round((x.disc ?? r.disc) * 10) / 10}"></label>
-        <label style="display:flex;gap:8px;align-items:end"><span style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ivS" ${INVO.isSpec(r) ? 'checked' : ''}> Спецпредложение — печатать договор</span></label>
-        <label style="grid-column:1/-1">Бонусы <span class="mut">(бесплатный товар, сервисные книжки, деньги бонусом…)</span><textarea id="ivB" rows="2" style="width:100%;box-sizing:border-box;font-family:inherit">${esc(bonus0)}</textarea></label>
-        <label style="grid-column:1/-1">Акция / другие условия<input id="ivC" value="${esc(x.cond || '')}" placeholder="например: акция «2+1», доставка за наш счёт"></label>
+    // the other invoices of this client (two months around) that can be its free bonus
+    const cand = INVO.list().filter(o => o.id !== r.id && !o.old && LX.norm(o.client) === LX.norm(r.client) && (!o.x.free || o.x.free === r.id) && !o.x.bonusInv && Math.abs(INVO.days(r.d, o.d)) <= 62);
+    if (x.bonusInv && !cand.some(o => o.id === x.bonusInv)) { const b = INVO.find(x.bonusInv); cand.push(b || { id: x.bonusInv, d: r.d, s0: 0, s: 0 }); }
+    const preset = [['now', 'Сразу'], ['d7', '7 дн.'], ['d14', '2 нед.'], ['m1', '1 мес.'], ['m2', '2 мес.'], ['m3', '3 мес.'], ['std', `Стандарт ${INST.cfg().parts || 4}×${INST.cfg().days || 30} дн.`]];
+    const m = modal(`${INVO.dlgCss}<h3 style="margin:0 0 2px">Накладная №${esc(r.id)} от ${UI.dateRu(r.d)}</h3>
+      <p class="mut" style="margin:0 0 12px"><b>${esc(r.client)}</b> · ${esc(r.agent)}</p>
+      <div class="ivd">
+        <div class="ivtop">
+          <label class="f">Сумма к оплате, $<input id="ivSum" type="number" min="0" step="0.01" value="${r.s}"><small id="ivSum0">в LINKO ${INVO.money2(s0)}</small></label>
+          <label class="f">Скидка, %<input id="ivD" type="number" min="0" max="100" step="0.5" value="${Math.round((x.disc ?? r.disc) * 10) / 10}"></label>
+          <label class="f">🎁 Бонусная накладная — бесплатно<select id="ivBi"><option value="">— нет —</option>${cand.map(o => `<option value="${esc(o.id)}" ${o.id === x.bonusInv ? 'selected' : ''}>№${esc(o.id)} от ${UI.dm(o.d)} · ${INVO.money2(o.s0 ?? o.s)}</option>`).join('')}</select><small>${cand.length ? 'вторая накладная по акции станет $0' : 'других накладных этого клиента рядом нет'}</small></label>
+        </div>
+        <div><div class="ivh">Что заказал клиент</div><div class="ivit">${INVO.itemsTable(INVO.lines(r.id))}</div><div id="ivBiL"></div></div>
+        <div><div class="ivh">Срок оплаты</div>
+          <div class="ivpre">${preset.map(([k, t]) => `<button class="btn gray sm" data-pre="${k}" type="button">${t}</button>`).join('')}</div>
+          <div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;font-size:12px"><span class="mut">Разбить на</span><input id="ivN" type="number" min="2" max="12" value="2" style="width:52px"><span class="mut">ч. каждые</span><select id="ivE" style="width:auto"><option value="m1">1 месяц</option><option value="w2">2 недели</option><option value="w1">1 неделю</option></select><button class="btn gray sm" id="ivSplit" type="button">Разбить</button></div>
+          <textarea id="ivT" rows="3" placeholder="дата - сумма, по строке на часть: 15.12 - 500. Пусто — стандартный срок">${esc(isStd ? '' : INVO.text(pl0))}</textarea>
+          <div id="ivP"></div></div>
+        <div class="ivfull">
+          <label class="f"><span class="ivh" style="margin:0">Бонусы<span class="spacer"></span>${[['🎁 товар', 'Товар: '], ['💵 деньги', 'Деньги бонусом: $'], ['📘 книжки', 'Сервисные книжки × ']].map(([t, v]) => `<button class="btn gray sm" data-badd="${esc(v)}" type="button">+ ${t}</button>`).join('')}</span><textarea id="ivB" rows="3" placeholder="по строке: товар × кол-во, деньги, сервисные книжки…">${esc(bonus0)}</textarea></label>
+          <label class="f"><span class="ivh" style="margin:0">Акция / другие условия</span><textarea id="ivC" rows="3" placeholder="например: акция «2+1», доставка за наш счёт">${esc(x.cond || '')}</textarea></label>
+        </div>
       </div>
-      <div class="bar"><span class="spacer"></span><button class="btn gray" id="ivX" type="button">Отмена</button><button class="btn" id="ivOk" type="button">Сохранить</button><button class="btn" id="ivPr" type="button">Сохранить и 🖨 договор</button></div>`);
-    const T = $('#ivT', m.el);
+      <div class="bar" style="margin-top:12px;flex-wrap:wrap;gap:8px"><label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="ivS" ${INVO.isSpec(r) || x.bonusInv ? 'checked' : ''}> Спецпредложение — договор</label><span class="spacer"></span><button class="btn gray" id="ivX" type="button">Отмена</button><button class="btn" id="ivOk" type="button">Сохранить</button><button class="btn" id="ivPr" type="button">Сохранить и 🖨 договор</button></div>`);
+    m.el.classList.add('wide');
+    const T = $('#ivT', m.el), S = () => Math.max(0, Math.round((Number($('#ivSum', m.el).value) || 0) * 100) / 100);
+    const biView = () => {
+      const id = $('#ivBi', m.el).value, o = id && cand.find(c => c.id === id);
+      $('#ivBiL', m.el).innerHTML = id ? `<div class="ivh" style="margin-top:8px">🎁 Бонусом: накладная №${esc(id)}${o?.d ? ' от ' + UI.dm(o.d) : ''} — бесплатно</div><div class="ivit">${INVO.itemsTable(INVO.lines(id), true)}</div>` : '';
+      if (id) $('#ivS', m.el).checked = true;
+    };
+    $('#ivBi', m.el).onchange = biView; biView();
+    $('#ivSum', m.el).oninput = () => { $('#ivSum0', m.el).innerHTML = Math.abs(S() - s0) > 0.005 ? `в LINKO ${INVO.money2(s0)} · <a href="#" id="ivSumR">вернуть</a>` : `в LINKO ${INVO.money2(s0)}`; const a = $('#ivSumR', m.el); if (a) a.onclick = e => { e.preventDefault(); $('#ivSum', m.el).value = s0; $('#ivSum', m.el).oninput(); }; pv(); };
+    m.el.querySelectorAll('[data-badd]').forEach(b => b.onclick = e => { e.preventDefault(); const B = $('#ivB', m.el); B.value = (B.value.trim() ? B.value.replace(/\s+$/, '') + '\n' : '') + b.dataset.badd; B.focus(); B.setSelectionRange(B.value.length, B.value.length); });
     const pv = () => {
-      if (!T.value.trim()) { $('#ivP', m.el).innerHTML = `<span class="mut">Стандартный график: ${INVO.stdPlan(r.d, r.s).map(p => UI.dm(p.d) + ' · ' + INVO.money(p.s)).join(', ')}</span>`; $('#ivOk', m.el).disabled = $('#ivPr', m.el).disabled = false; return; }
-      const res = INVO.parse(T.value, r.d), tot = res.ok.reduce((a, p) => a + p.s, 0), diff = Math.round((r.s - tot) * 100) / 100;
-      $('#ivP', m.el).innerHTML = res.ok.map(p => `<span class="chip">${UI.dateRu(p.d)} · ${INVO.money2(p.s)}</span>`).join(' ') + (res.ok.length ? ` <b>Σ ${INVO.money2(tot)}</b>` : '') +
-        (Math.abs(diff) > 0.01 && res.ok.length ? `<div class="${diff > 0 ? 'neg' : 'mut'}" style="margin-top:4px">${diff > 0 ? `Не хватает ${INVO.money2(diff)} до суммы накладной — добавится к последней части` : `Больше суммы накладной на ${INVO.money2(-diff)} — последняя часть будет меньше`}</div>` : '') +
+      if (!T.value.trim()) { $('#ivP', m.el).innerHTML = `<span class="mut">Стандартный: ${INVO.stdPlan(r.d, S()).map(p => UI.dm(p.d) + ' · ' + INVO.money(p.s)).join(', ')}</span>`; $('#ivOk', m.el).disabled = $('#ivPr', m.el).disabled = false; return; }
+      const res = INVO.parse(T.value, r.d), tot = res.ok.reduce((a, p) => a + p.s, 0), diff = Math.round((S() - tot) * 100) / 100;
+      $('#ivP', m.el).innerHTML = res.ok.map(p => `<span class="chip">${UI.dm(p.d)} · ${INVO.money2(p.s)}</span>`).join('') + (res.ok.length ? ` <b>Σ ${INVO.money2(tot)}</b>` : '') +
+        (Math.abs(diff) > 0.01 && res.ok.length ? `<div class="${diff > 0 ? 'neg' : 'mut'}" style="margin-top:4px">${diff > 0 ? `Не хватает ${INVO.money2(diff)} до суммы — добавится к последней части` : `Больше суммы на ${INVO.money2(-diff)} — последняя часть будет меньше`}</div>` : '') +
         (res.bad.length ? `<div class="neg" style="margin-top:4px">Не понял: ${esc(res.bad.join('; '))}. Пример: 15.12 - 500</div>` : '');
       $('#ivOk', m.el).disabled = $('#ivPr', m.el).disabled = !!res.bad.length;
     };
@@ -132,21 +213,22 @@ const INVO = {
       const k = b.dataset.pre;
       if (k === 'std') return set(null);
       const d = k === 'now' ? r.d : k === 'd7' ? INVO.addDays(r.d, 7) : k === 'd14' ? INVO.addDays(r.d, 14) : INVO.addMonths(r.d, +k.slice(1));
-      set([{ d, s: r.s }]);
+      set([{ d, s: S() }]);
     });
     $('#ivSplit', m.el).onclick = () => {
-      const n = Math.max(2, Math.min(12, Number($('#ivN', m.el).value) || 2)), e = $('#ivE', m.el).value, each = Math.floor(r.s / n * 100) / 100;
-      set(Array.from({ length: n }, (_, i) => ({ d: e === 'm1' ? INVO.addMonths(r.d, i + 1) : INVO.addDays(r.d, (e === 'w2' ? 14 : 7) * (i + 1)), s: i === n - 1 ? Math.round((r.s - each * (n - 1)) * 100) / 100 : each })));
+      const n = Math.max(2, Math.min(12, Number($('#ivN', m.el).value) || 2)), e = $('#ivE', m.el).value, sum = S(), each = Math.floor(sum / n * 100) / 100;
+      set(Array.from({ length: n }, (_, i) => ({ d: e === 'm1' ? INVO.addMonths(r.d, i + 1) : INVO.addDays(r.d, (e === 'w2' ? 14 : 7) * (i + 1)), s: i === n - 1 ? Math.round((sum - each * (n - 1)) * 100) / 100 : each })));
     };
-    pv();
+    $('#ivSum', m.el).oninput();
     $('#ivX', m.el).onclick = m.close;
     const collect = () => {
       const res = T.value.trim() ? INVO.parse(T.value, r.d) : { ok: [], bad: [] };
       if (res.bad.length) return null;
-      return { ...(res.ok.length ? { plan: res.ok } : {}), disc: Number($('#ivD', m.el).value) || 0, bonus: $('#ivB', m.el).value.trim(), cond: $('#ivC', m.el).value.trim(), spec: $('#ivS', m.el).checked, ok: UI.localDate(Date.now()), ...(x.stored ? { stored: x.stored } : {}) };
+      const sum = S(), bi = $('#ivBi', m.el).value;
+      return { ...(res.ok.length ? { plan: res.ok } : {}), ...(Math.abs(sum - s0) > 0.005 ? { sum } : {}), ...(bi ? { bonusInv: bi } : {}), disc: Number($('#ivD', m.el).value) || 0, bonus: $('#ivB', m.el).value.trim(), cond: $('#ivC', m.el).value.trim(), spec: $('#ivS', m.el).checked || !!bi, ok: UI.localDate(Date.now()), ...(x.stored ? { stored: x.stored } : {}) };
     };
     $('#ivOk', m.el).onclick = () => { const v = collect(); if (!v) return; INVO.save(r, v); m.close(); EXT_PAGES.invo(el); };
-    $('#ivPr', m.el).onclick = () => { const v = collect(); if (!v) return; v.spec = true; INVO.save(r, v); m.close(); EXT_PAGES.invo(el); INVO.preview([{ ...r, x: INVO.cfg().orders[r.id] }]); };
+    $('#ivPr', m.el).onclick = () => { const v = collect(); if (!v) return; v.spec = true; INVO.save(r, v); m.close(); EXT_PAGES.invo(el); const nx = INVO.cfg().orders[r.id]; INVO.preview([{ ...r, s: INVO.sumOf(nx, s0), s0, x: nx }]); };
   },
 
   // ---------- the one-time contract (special offer): half of an A4 sheet, filled in from the invoice ----------
@@ -176,6 +258,9 @@ const INVO = {
 .cdoc .d-bl{font-size:10.5px;line-height:1.38;white-space:pre-line;overflow-wrap:anywhere}
 .cdoc .d-bl.c2{column-count:2;column-gap:14px;column-rule:1px solid #ddd}
 .cdoc .d-bl.c3{column-count:3;column-gap:12px;column-rule:1px solid #ddd}
+.cdoc .d-it{font-size:9.5px;line-height:1.3}
+.cdoc .d-bh{font-size:10px;font-weight:700;margin:1px 0}
+.cdoc .d-v small{display:block;font-size:8.5px;font-weight:400;color:#666}
 .cdoc table{width:100%;border-collapse:collapse;border:0;border-radius:0;box-shadow:none;overflow:visible;background:#fff;margin:0}
 .cdoc table tr>th,.cdoc table tr>td{border:0;border-bottom:1px solid #ccc;padding:2px 7px;vertical-align:middle;text-align:left;font-weight:normal;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.35;color:#111;white-space:nowrap;position:static;background:#fff;height:auto}
 .cdoc table tr>th{font-size:8.5px;text-transform:uppercase;letter-spacing:.4px;color:#555;font-weight:700;background:#f2f2f2;border-bottom:1px solid #999}
@@ -198,6 +283,10 @@ const INVO = {
     const city = F.city ? String(F.city).trim().replace(/^./, c => c.toUpperCase()) : '';
     const term = pl.length === 1 ? `${UI.dateRu(pl[0].d)}${pl[0].d === r.d ? ' (сразу)' : ` (${INVO.days(r.d, pl[0].d)} дн.)`}` : `${pl.length} платежей, до ${UI.dateRu(pl.at(-1).d)}`;
     const bLines = bonus ? bonus.split('\n').map(t => t.trim()).filter(Boolean) : [];
+    // the goods of the invoice and of its free bonus invoice: short lines in 1–3 columns, so the contract stays on half a sheet
+    const s0 = r.s0 ?? r.s, its = l => `${l.product} × ${INVO.qty(l)}`, cols = n => (n > 10 ? ' c3' : n > 4 ? ' c2' : '');
+    const goods = INVO.lines(r.id).filter(l => !l.bonus).map(its);
+    const bi = x.bonusInv ? INVO.find(x.bonusInv) || { id: x.bonusInv } : null, bGoods = bi ? INVO.lines(bi.id).map(its) : [];
     // the schedule: one table, or two side by side when there are many parts
     const head = '<thead><tr><th>№</th><th>Дата оплаты</th><th>Сумма</th><th>Отметка об оплате</th></tr></thead>';
     const trs = (list, from) => list.map((p, i) => `<tr><td>${from + i + 1}</td><td>${UI.dateRu(p.d)}</td><td>${INVO.money2(p.s)}</td><td></td></tr>`).join('');
@@ -214,15 +303,16 @@ const INVO = {
         <div class="d-c"><span class="d-l">Покупатель (LINKO)</span><div class="d-v">${esc(r.client)}</div></div>
         <div class="d-c"><span class="d-l">Агент</span><div class="d-v n">${esc(r.agent || '—')}</div></div>
         <div class="d-c"><span class="d-l">Накладная</span><div class="d-v n">№ ${esc(r.id)} от ${UI.dateRu(r.d)}</div></div>
-        <div class="d-c"><span class="d-l">Сумма накладной</span><div class="d-v big">${INVO.money2(r.s)}</div></div>
+        <div class="d-c"><span class="d-l">Сумма к оплате</span><div class="d-v big">${INVO.money2(r.s)}${Math.abs(s0 - r.s) > 0.005 ? `<small>в накладной ${INVO.money2(s0)}</small>` : ''}</div></div>
       </div>
+      ${goods.length ? `<div class="d-bon"><span class="d-l">Товары по накладной (${goods.length} поз.)</span><div class="d-bl d-it${cols(goods.length)}">${goods.map(esc).join('\n')}</div></div>` : ''}
       <div class="d-h2">2. Условия</div>
       <div class="d-grid">
         <div class="d-c"><span class="d-l">Скидка</span><div class="d-v">${disc > 0 ? `${String(disc).replace('.', ',')}% от прайса` : 'без скидки'}</div></div>
         <div class="d-c"><span class="d-l">Срок оплаты</span><div class="d-v">${term}</div></div>
         <div class="d-c w2"><span class="d-l">Акция / другие условия</span><div class="d-v n">${x.cond ? esc(x.cond) : '—'}</div></div>
       </div>
-      <div class="d-bon"><span class="d-l">Бонусы</span><div class="d-bl${bLines.length > 12 ? ' c3' : bLines.length > 5 ? ' c2' : ''}">${bLines.length ? bLines.map(esc).join('\n') : '—'}</div></div>
+      <div class="d-bon"><span class="d-l">Бонусы</span>${bi ? `<div class="d-bh">Накладная № ${esc(bi.id)}${bi.d ? ' от ' + UI.dateRu(bi.d) : ''} — бесплатно${bi.s0 ? ` (по накладной ${INVO.money2(bi.s0)})` : ''}:</div>${bGoods.length ? `<div class="d-bl d-it${cols(bGoods.length)}">${bGoods.map(esc).join('\n')}</div>` : ''}` : ''}${bLines.length ? `${bi ? '<div class="d-bh">Другие бонусы:</div>' : ''}<div class="d-bl${cols(bLines.length)}">${bLines.map(esc).join('\n')}</div>` : bi ? '' : '<div class="d-bl">—</div>'}</div>
       <div class="d-h2">3. График оплаты</div>
       ${sched}
       <div class="d-ft">Покупатель обязуется оплатить сумму накладной в указанные сроки. Условия договора действуют только для накладной № ${esc(r.id)}.</div>
@@ -289,7 +379,9 @@ const INVO = {
   // the row of an invoice as the «Накладные» page has it (from the LINKO order); an order of a client with a contract is built by hand
   rowOf(o, map) {
     const id = String(o.id), r = map ? map.get(id) : INVO.list().find(x => x.id === id);
-    return r || { id, d: o.date || o.d, client: o.client, agent: o.agent || '', s: Math.round(((o.sum ?? o.s) - (o.ret || 0)) * 100) / 100, disc: 0, bonusItems: [], auto: false, x: INVO.cfg().orders[id] || {} };
+    if (r) return r;
+    const s0 = Math.round(((o.sum ?? o.s) - (o.ret || 0)) * 100) / 100, x = INVO.cfg().orders[id] || {};
+    return { id, d: o.date || o.d, client: o.client, agent: o.agent || '', s: INVO.sumOf(x, s0), s0, disc: 0, bonusItems: [], auto: false, x };
   },
   // a hidden element for the dialog of an invoice: when it saves, the page behind it asks to draw itself again into this element
   sink(after) {
@@ -298,13 +390,14 @@ const INVO = {
   },
   orderCard(r, after) {
     const M = LX.model(), f = INVO.money2, x = r.x || {}, pl = INVO.planOf(r), today = UI.localDate(Date.now()), c = INVO.cfg();
-    const same = l => String(l.order) === String(r.id), lines = M.lines.filter(same).concat(M.lines.some(same) ? [] : (LX.ordX?.lines || []).filter(same)); // an older order taken from LINKO on «Заказы по дням»
+    const lines = INVO.lines(r.id);
     const disc = Math.round((x.disc ?? r.disc) * 10) / 10, std = c.form.std ?? 10, tg = CRMLocal.ext().tg || {}, on = !!INST.cfg().on;
     const meOk = !!tg.me?.id, agOk = !!tg.chats?.[r.agent]?.id, hour = String(INST.cfg().hour ?? 9).padStart(2, '0') + ':00';
     const ok = (v, yes, no) => v ? `<div>✅ ${yes}</div>` : `<div class="neg">⚠ ${no}</div>`;
     const dm = d => UI.dm(d), rem = p => (p.d < today ? '<span class="mut">срок прошёл</span>' : `${p.d > INVO.addDays(today, 1) ? dm(INVO.addDays(p.d, -1)) + ' (за день) и ' : p.d === INVO.addDays(today, 1) ? 'завтра (за день) и ' : ''}${p.d === today ? 'сегодня' : dm(p.d)} (в день срока)`);
     const m = modal(`<h3 style="margin:0 0 2px">Накладная №${esc(r.id)} · ${UI.dateRu(r.d)}</h3>
       <p class="mut" style="margin:0 0 10px"><b>${esc(r.client)}</b> · агент ${esc(r.agent || '—')} · сумма <b>${f(r.s)}</b> · скидка <b class="${Math.abs(disc - std) > 0.6 ? 'neg' : ''}">${disc > 0.05 ? disc + '%' : 'нет'}</b>${Math.abs(disc - std) > 0.6 ? ` (стандарт ${std}%)` : ` (стандарт)`}${x.cond ? ` · <i>${esc(x.cond)}</i>` : ''}</p>
+      ${x.free ? `<div class="panel" style="margin:0 0 8px;padding:8px 12px">🎁 <b>Бесплатно</b> — бонус к накладной №${esc(x.free)} (в LINKO ${f(r.s0 ?? 0)})</div>` : x.bonusInv ? `<div class="panel" style="margin:0 0 8px;padding:8px 12px">🎁 Бонусом к этой накладной — №${esc(x.bonusInv)} бесплатно</div>` : ''}
       <div class="scroll" style="max-height:220px">${lines.length ? `<table><thead><tr><th>Товар</th><th class="num">Кол-во</th><th class="num">Цена</th><th class="num">Сумма</th></tr></thead><tbody>${lines.map(l => { const q = l.qty - l.ret; return `<tr><td>${esc(l.product)}${l.bonus ? ' <span class="pill warn">бонус</span>' : ''}</td><td class="num">${UI.fmt0(q)}</td><td class="num">${l.bonus ? '—' : q ? f(l.sum / q) : '—'}</td><td class="num">${l.bonus ? '—' : f(l.sum)}</td></tr>`; }).join('')}</tbody></table>` : '<p class="mut">Состав заказа в загруженных данных LINKO не найден.</p>'}</div>
       ${String(x.bonus ?? r.bonusItems.join(', ')).trim() ? `<p style="margin:8px 0 0"><b>Бонусы:</b> ${esc(String(x.bonus ?? r.bonusItems.join(', '))).replace(/\n/g, '<br>')}</p>` : ''}
       <h4 style="margin:12px 0 4px">Когда клиент должен оплатить <span class="mut" style="font-weight:normal">— ${x.plan || x.days ? '🤝 как договорились' : 'стандартный график'}</span></h4>
@@ -337,9 +430,9 @@ EXT_PAGES.invo = async el => {
   const stTag = r => ({ new: '<span class="pill warn">проверить</span>', ok: '<span class="pill good">✓ срок задан</span>', stored: '<span class="pill info">📁 сдан</span>' }[INVO.status(r)]);
   const dval = r => r.x.disc ?? r.disc;
   const table = () => rows.length ? `<div class="scroll"><table><thead><tr><th><input type="checkbox" id="ivAll" title="выбрать все для печати"></th><th>Дата</th><th>№</th><th>Клиент</th><th>Агент</th><th class="num">Сумма</th><th class="num">Скидка</th><th>Бонусы / условия</th><th>Срок оплаты</th><th>Оплата</th><th>Статус</th><th></th></tr></thead><tbody>
-      ${rows.map(r => { const sp = INVO.isSpec(r), b = String(r.x.bonus ?? r.bonusItems.join(', ')).trim(); return `<tr data-id="${esc(r.id)}">
+      ${rows.map(r => { const sp = INVO.isSpec(r), b = [r.x.bonusInv ? `🎁 №${r.x.bonusInv} бесплатно` : '', String(r.x.bonus ?? r.bonusItems.join(', ')).trim()].filter(Boolean).join('\n'), s0 = r.s0 ?? r.s; return `<tr data-id="${esc(r.id)}">
         <td><input type="checkbox" data-sel="${esc(r.id)}" ${INVO.sel.has(r.id) ? 'checked' : ''}></td><td>${UI.dm(r.d)}</td><td>${esc(r.id)}</td>
-        <td>${esc(r.client)}${sp ? ' <span class="pill warn">спец</span>' : ''}</td><td>${esc(r.agent)}</td><td class="num"><b>${f(r.s)}</b></td>
+        <td>${esc(r.client)}${sp ? ' <span class="pill warn">спец</span>' : ''}${r.x.free ? ' <span class="pill info">🎁 бонус</span>' : ''}</td><td>${esc(r.agent)}</td><td class="num"><b>${f(r.s)}</b>${Math.abs(s0 - r.s) > 0.005 ? `<br><small class="mut"><s>${f(s0)}</s></small>` : ''}</td>
         <td class="num ${Math.abs(dval(r) - (F.std ?? 10)) > 0.6 ? 'neg' : ''}">${dval(r) > 0.05 ? (Math.round(dval(r) * 10) / 10) + '%' : '—'}</td>
         <td style="max-width:220px;white-space:normal"><small>${esc(b).replace(/\n/g, '<br>')}${r.x.cond ? `${b ? '<br>' : ''}<i>${esc(r.x.cond)}</i>` : ''}</small></td>
         <td>${INVO.termText(r)}</td><td>${pay(r)}</td><td>${stTag(r)}</td>

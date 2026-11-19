@@ -453,8 +453,10 @@ html .scroll, html .tabs, html .toast, html #toast, html .newbox, html .dp-seg, 
 html table, html .xgx-wrap, html .xgx thead th, html .scroll thead th, html .gauge2, html #tt, html .xgx-pop, html #cpPanel {
   -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
 }
-html .modal { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--glass-strong); }
-html .modal-bg { -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* dialogs: almost solid, so the page behind does not show through the text */
+html .modal { -webkit-backdrop-filter: none; backdrop-filter: none; background: color-mix(in srgb, var(--card) 97%, transparent); }
+html[data-theme="dark"] .modal { background: rgba(26, 26, 31, .97); }
+html .modal-bg { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgba(10, 12, 24, .55); }
 html body.drawer .scrim { -webkit-backdrop-filter: none; backdrop-filter: none; }
 html .xgx-pop, html #cpPanel { background: var(--glass-strong); }
 html .xgx-wrap, html .scroll { background: var(--glass-strong); }
