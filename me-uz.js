@@ -90,6 +90,7 @@ window.ME_UZ = [
   ['📄 Договоры', '📄 Shartnomalar'], ['Договоры появятся после следующего обновления кабинета руководителем.', 'Shartnomalar rahbar kabinetni keyingi yangilaganda paydo boʻladi.'],
   ['🧾 Разовые договоры и спецпредложения', '🧾 Bir martalik shartnomalar va maxsus takliflar'], ['спецпредложение', 'maxsus taklif'], ['скидка', 'chegirma'], ['оплачено полностью', 'toʻliq toʻlangan'],
   ['Разовых договоров нет.', 'Bir martalik shartnomalar yoʻq.'], ['Каждый заказ на спеццене платится по своему графику — по частям. Красным — просроченные части.', 'Maxsus narxdagi har bir buyurtma oʻz jadvali boʻyicha — qismlarga boʻlib toʻlanadi. Qizil — muddati oʻtgan qismlar.'],
+  ['🧾 Разовые и спец', '🧾 Bir martalik va maxsus'], ['⏰ Ближайшие оплаты', '⏰ Yaqin toʻlovlar'], ['Всего ждём', 'Jami kutilmoqda'], ['просрочено с', 'muddati oʻtgan:'], ['через', 'yana'], ['завтра', 'ertaga'],
   ['📑 Большие договоры', '📑 Katta shartnomalar'], ['Больших договоров нет.', 'Katta shartnomalar yoʻq.'], ['просрочено месяцев:', 'muddati oʻtgan oylar:'], ['опл.', 'toʻl.'],
   ['Сумма месяца должна прийти до последнего дня этого месяца договора.', 'Oylik summa shartnomaning shu oyi oxirgi kunigacha kelishi kerak.'],
 

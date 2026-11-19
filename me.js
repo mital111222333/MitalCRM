@@ -34,7 +34,7 @@
   const SB = !link && sbUid && window.supabase?.createClient ? window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'crm_auth' } }) : null;
   const DATA_KEY = SB ? 'mital_me_data:' + sbUid : 'mital_me_data'; // a shared phone never shows the previous agent's cabinet
   const NO_ACT = 'Это отмечается в кабинете Telegram: кнопка «📱 Мой кабинет» в боте вашего руководителя.';
-  let tab = 'main', q = '', cf = 'all', calDay = '', routeDay = '', S = store.get(DATA_KEY), loading = false, doing = null;
+  let tab = 'main', q = '', cf = 'all', calDay = '', routeDay = '', ctab = store.get('mital_ctab') || 'once', S = store.get(DATA_KEY), loading = false, doing = null;
 
   // ---------- the cabinet as an app on the phone: install button (Android / Chrome — one tap; iPhone — Safari → «На экран Домой») ----------
   let installEv = null;
@@ -659,15 +659,35 @@
       const K = S.contracts, ST = { paid: ['✓', 'pos', 'оплачено'], late: ['!', 'neg', 'просрочено'], wait: ['·', 'mut', 'ждём'] };
       if (!K) { body.innerHTML = panel('📄 Договоры', '<p class="mut">Договоры появятся после следующего обновления кабинета руководителем.</p>'); return; }
       const part = p => `<span class="${ST[p.st][1]}" style="white-space:nowrap">${ST[p.st][0]} ${dm(p.d || p.to)} ${$$(p.s ?? p.plan)}${p.paid != null && p.st !== 'paid' ? ` (опл. ${$$(p.paid)})` : ''}</span>`;
-      const once = K.once || [], long = K.long || [];
-      body.innerHTML = `${panel(`🧾 Разовые договоры и спецпредложения (${once.length})`, once.length ? `<div class="cards">${once.map(o => { const left = o.parts.filter(p => p.st !== 'paid').reduce((t, p) => t + p.s, 0);
+      const once = K.once || [], long = K.long || [], t0 = tashToday();
+      // two separate sections (one-time orders can be 100+, so the long contracts used to sink to the very bottom)
+      if (ctab !== 'once' && ctab !== 'long') ctab = 'once';
+      const leftOf = o => o.parts.filter(p => p.st !== 'paid').reduce((t, p) => t + p.s, 0);
+      // «⏰ Ближайшие оплаты» — the auto-reminder of the section: everything overdue plus what is due in the next 14 days
+      // (if nothing is, the next 3 payments), nearest first
+      const dues = ctab === 'once'
+        ? once.flatMap(o => o.parts.filter(p => p.st !== 'paid').map(p => ({ client: o.client, d: p.d, s: p.s, late: p.st === 'late', what: `№${o.id}` })))
+        : long.flatMap(k => k.months.filter(m => m.st !== 'paid').map(m => ({ client: k.client, d: m.to, s: Math.max(0, m.plan - (m.paid || 0)), late: m.st === 'late', what: k.title })));
+      dues.sort((a, b) => (b.late - a.late) || String(a.d).localeCompare(String(b.d)));
+      const lim = new Date(Date.parse(t0 + 'T12:00:00Z') + 14 * 864e5).toISOString().slice(0, 10);
+      let near = dues.filter(x => x.late || x.d <= lim); if (!near.length) near = dues.slice(0, 3);
+      const when = d => { const n = Math.round((Date.parse(d + 'T12:00:00Z') - Date.parse(t0 + 'T12:00:00Z')) / 864e5); return n < 0 ? `просрочено с ${dm(d)}` : n === 0 ? 'сегодня' : n === 1 ? 'завтра' : `${dm(d)} · через ${n} дн.`; };
+      const phone = n => S.clients.find(c => c.name === n)?.phone;
+      const nearP = dues.length ? panel(`⏰ Ближайшие оплаты (${near.length})`, `<div class="cards">${near.slice(0, 15).map(x => `<div class="ccard"><div class="top"><b>${esc(x.client)}</b><span class="amt ${x.late ? 'neg' : ''}">${$$(x.s)}</span></div>
+          <div class="meta"><span class="${x.late ? 'neg' : x.d === t0 ? 'warn' : ''}">${x.late ? '🔴 ' : x.d === t0 ? '🟠 ' : '📅 '}${when(x.d)}</span><span class="mut">${esc(x.what)}</span></div>
+          ${phone(x.client) ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(phone(x.client))}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`, `Всего ждём ${$$(dues.reduce((t, x) => t + x.s, 0))} · просрочено ${$$(dues.filter(x => x.late).reduce((t, x) => t + x.s, 0))}`) : '';
+      const lateN = L => L.length ? ` <b class="neg">· ${L.length}!</b>` : '';
+      const chips = `<div class="chips"><button type="button" data-ct="once" class="${ctab === 'once' ? 'on' : ''}">🧾 Разовые и спец (${once.length})${lateN(once.filter(o => o.parts.some(p => p.st === 'late')))}</button><button type="button" data-ct="long" class="${ctab === 'long' ? 'on' : ''}">📑 Договоры (${long.length})${lateN(long.filter(k => k.months.some(m => m.st === 'late')))}</button></div>`;
+      const onceS = [...once.filter(leftOf), ...once.filter(o => !leftOf(o))];
+      body.innerHTML = chips + nearP + (ctab === 'once' ? `${panel(`🧾 Разовые договоры и спецпредложения (${once.length})`, once.length ? `<div class="cards">${onceS.map(o => { const left = leftOf(o);
           return `<div class="ccard"><div class="top"><b>${esc(o.client)}</b><span class="amt">${$$(o.s)}</span></div>
             <div class="meta"><span>№${esc(o.id)} от ${dm(o.d)}</span>${o.spec ? '<span class="pill warn">спецпредложение</span>' : ''}${o.disc != null ? `<span>скидка ${esc(o.disc)}%</span>` : ''}${left ? `<span class="${o.parts.some(p => p.st === 'late') ? 'neg' : ''}">осталось ${$$(left)}</span>` : '<span class="pos">оплачено полностью</span>'}</div>
-            ${o.cond ? `<div class="mut" style="font-size:13px;margin-top:4px">${esc(o.cond)}</div>` : ''}<div class="meta" style="margin-top:6px">${o.parts.map(part).join('')}</div></div>`; }).join('')}</div>` : '<p class="mut">Разовых договоров нет.</p>', 'Каждый заказ на спеццене платится по своему графику — по частям. Красным — просроченные части.')}
-        ${panel(`📑 Большие договоры (${long.length})`, long.length ? `<div class="cards">${long.map(k => { const late = k.months.filter(m => m.st === 'late'), tot = k.months.reduce((t, m) => t + m.plan, 0), paid = k.months.reduce((t, m) => t + (m.paid || 0), 0);
+            ${o.cond ? `<div class="mut" style="font-size:13px;margin-top:4px">${esc(o.cond)}</div>` : ''}<div class="meta" style="margin-top:6px">${o.parts.map(part).join('')}</div></div>`; }).join('')}</div>` : '<p class="mut">Разовых договоров нет.</p>', 'Каждый заказ на спеццене платится по своему графику — по частям. Красным — просроченные части.')}` : '')
+        + (ctab === 'long' ? `${panel(`📑 Большие договоры (${long.length})`, long.length ? `<div class="cards">${long.map(k => { const late = k.months.filter(m => m.st === 'late'), tot = k.months.reduce((t, m) => t + m.plan, 0), paid = k.months.reduce((t, m) => t + (m.paid || 0), 0);
           return `<div class="ccard"><div class="top"><b>${esc(k.title)}</b><span class="amt">${$$(tot)}</span></div>
             <div class="meta"><span>${esc(k.client)}</span><span>с ${dm(k.start)} · ${k.months.length} мес.</span><span>оплачено ${$$(paid)}</span>${late.length ? `<span class="neg">просрочено месяцев: ${late.length}</span>` : ''}</div>
-            <div class="meta" style="margin-top:6px">${k.months.map(m => part({ ...m, d: m.to })).join('')}</div></div>`; }).join('')}</div>` : '<p class="mut">Больших договоров нет.</p>', 'Сумма месяца должна прийти до последнего дня этого месяца договора.')}`;
+            <div class="meta" style="margin-top:6px">${k.months.map(m => part({ ...m, d: m.to })).join('')}</div></div>`; }).join('')}</div>` : '<p class="mut">Больших договоров нет.</p>', 'Сумма месяца должна прийти до последнего дня этого месяца договора.')}` : '');
+      body.querySelectorAll('[data-ct]').forEach(b => b.onclick = () => { ctab = b.dataset.ct; store.set('mital_ctab', ctab); draw(); window.scrollTo(0, 0); });
       return;
     }
     if (tab === 'tasks') {
