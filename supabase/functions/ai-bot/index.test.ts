@@ -7,6 +7,7 @@ const D = (globalThis as any).Deno;
 const ENV: Record<string, string> = {
   AI_BOT_TEST: '1', TG_TOKEN: 'T', TG_SECRET: 'sec', ALLOWED_USERS: '111', GEMINI_KEY: 'g', GH_TOKEN: 'gh',
   SUPABASE_URL: 'https://sb.test', SUPABASE_SERVICE_ROLE_KEY: 'service', TZ_NAME: 'Asia/Tashkent', QUIET_DAYS: 'none',
+  CRM_STALE_HOURS: '1000000', // the fixture CRM summary has a fixed date; the stale warning has its own test
 };
 for (const [k, v] of Object.entries(ENV)) D.env.set(k, v);
 
@@ -133,7 +134,7 @@ function postgrest(url: URL, method: string, body: any, prefer: string) {
 // ───── Telegram + Gemini recorders ─────
 const SENT: { method: string; body: any; bot?: string }[] = [];
 const sentTexts = () => SENT.filter(s => s.method === 'sendMessage').map(s => s.body.text);
-let GEM: (body: any) => any = () => say('ok');
+let GEM: (body: any, url?: any) => any = () => say('ok');
 const GEM_LOG: any[] = [];
 function call(name: string, args: any) { return { candidates: [{ content: { role: 'model', parts: [{ functionCall: { name, args } }] } }] }; }
 function say(text: string) { return { candidates: [{ content: { role: 'model', parts: [{ text }] } }] }; }
@@ -157,7 +158,7 @@ function say(text: string) { return { candidates: [{ content: { role: 'model', p
     return new Response(JSON.stringify({ ok: true, result: true }));
   }
   if (url.host === 'generativelanguage.googleapis.com') {
-    const b = JSON.parse(init.body); GEM_LOG.push(b); const res = GEM(b);
+    const b = JSON.parse(init.body); GEM_LOG.push(b); const res = GEM(b, String(url));
     if (res.__status) return new Response(JSON.stringify(res.body), { status: res.__status });
     return new Response(JSON.stringify({ usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 50 }, ...res }));
   }
@@ -598,6 +599,7 @@ D.test('actions: draft → «Отправить» → the CRM bot writes the age
 // ───── the outside world (ideas from OpenJarvis): weather, CBU rates, RSS news, Google APIs ─────
 const OUT: { url: string; method: string; body: any; auth?: string }[] = [];
 const b64u = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+let DDG_DOWN = false;
 function world(url: URL, method: string, init: any): Response | null {
   const J = (o: any, status = 200) => new Response(JSON.stringify(o), { status });
   const auth = init.headers?.Authorization;
@@ -610,6 +612,16 @@ function world(url: URL, method: string, init: any): Response | null {
   if (url.host === 'cbu.uz') return J([{ Ccy: 'USD', CcyNm_RU: 'Доллар США', Nominal: '1', Rate: '11980.36', Diff: '-30.09', Date: '19.11.2026' }, { Ccy: 'EUR', CcyNm_RU: 'Евро', Nominal: '1', Rate: '13900.10', Diff: '12.5', Date: '19.11.2026' }, { Ccy: 'RUB', CcyNm_RU: 'Рубль', Nominal: '1', Rate: '151.22', Diff: '0', Date: '19.11.2026' }]);
   if (url.host === 'www.spot.uz') return new Response(`<rss><channel><title>Spot</title><item><title><![CDATA[Цены на моторные масла выросли на 5%]]></title><link>https://www.spot.uz/ru/1</link><pubDate>${new Date().toUTCString()}</pubDate><description>Рынок &laquo;масел&raquo;</description></item></channel></rss>`);
   if (url.host === 'www.gazeta.uz') return new Response(`<rss><channel><item><title>Узбекистан и Туркменистан &mdash; безвиз</title><link>https://www.gazeta.uz/ru/2</link><pubDate>${new Date(Date.now() - 3600e3).toUTCString()}</pubDate></item></channel></rss>`);
+  if (url.host === 'api.tavily.com') {
+    if (init.headers?.Authorization !== 'Bearer tv') return J({ detail: { error: 'Unauthorized' } }, 401);
+    return J({ results: [{ title: 'Shell на OLX', url: 'https://www.olx.uz/s1', content: 'Shell 5W30 — 120 000 сум' }] });
+  }
+  if (url.host === 'html.duckduckgo.com' && DDG_DOWN) return new Response('<html>bot check</html>', { status: 202 });
+  if (url.host === 'html.duckduckgo.com') return new Response('<a rel="nofollow" class="result__a" href="https://duckduckgo.com/y.js?ad_x=1">реклама</a><a class="result__snippet">реклама</a>'
+    + '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=' + encodeURIComponent('https://www.olx.uz/m1') + '&amp;rut=x">Масло 5W30 &mdash; OLX</a><a class="result__snippet" href="x">Объявления</a>'
+    + '<a rel="nofollow" class="result__a" href="https://shop.example/2">Магазин</a><a class="result__snippet" href="x">масла</a>');
+  if (url.host === 'www.olx.uz') return new Response('<html><script>var x=1</script><body>Mobil 5W30 — 95 000 сум</body></html>', { headers: { 'content-type': 'text/html' } });
+  if (url.host === 'shop.example') return new Response('nope', { status: 403 });
   if (url.host === 'kun.uz') return new Response('down', { status: 503 });
   if (url.host === 'oauth2.googleapis.com') {
     const b = new URLSearchParams(String(init.body || '')); OUT.push({ url: url.toString(), method, body: Object.fromEntries(b) });
@@ -668,6 +680,25 @@ D.test('web research: quick answer with sources from one request, deep = sub-que
   assert(plan === 1 && /🔎 Исследование \(3 направления\)/.test(d) && /Итог: рынок растёт/.test(d), 'deep research: ' + d);
   eq((d.match(/v\.example/g) || []).length, 1, 'sources de-duplicated');
   assert(/этот ответ −6/.test(d), '1 + plan + 3 searches + synthesis = 6: ' + d);
+  // no grounding quota on the key → the bot searches DuckDuckGo itself, reads the pages and answers only from them
+  let grounds = 0; const q429 = { __status: 429, body: { error: { code: 429, message: 'You exceeded your current quota, please check your plan and billing details.' } } };
+  GEM = (b: any) => ground(b) ? (grounds++, q429) : b.tools?.[0]?.functionDeclarations ? call('web_research', { question: 'цены 5W30 в Фергане' })
+    : say(/Mobil 5W30 — 95 000 сум/.test(JSON.stringify(b)) ? 'Mobil 5W30 стоит 95 000 сум [1]' : 'нет данных');
+  await tgPost({ text: 'цены конкурентов' }); const w = lastText();
+  assert(/Mobil 5W30 стоит 95 000 сум/.test(w) && w.includes('🔗 Источники:\n1. Масло 5W30 — OLX — https://www.olx.uz/m1') && !/реклама/.test(w), 'DuckDuckGo answer: ' + w);
+  await tgPost({ text: 'цены 10W40 в Андижане' });
+  eq(grounds, 1, 'grounding is not retried the same day');
+  // Tavily key set → Tavily first; nothing answers → a clear message how to fix it
+  D.env.set('TAVILY_API_KEY', 'tv');
+  GEM = (b: any) => b.tools?.[0]?.functionDeclarations ? call('web_research', { question: 'цены Shell 5W30' })
+    : say(/Shell 5W30 — 120 000 сум/.test(JSON.stringify(b)) ? 'Shell 5W30 стоит 120 000 сум [1]' : 'нет данных');
+  await tgPost({ text: 'цены Shell' }); const tv = lastText();
+  assert(/Shell 5W30 стоит 120 000 сум/.test(tv) && tv.includes('1. Shell на OLX — https://www.olx.uz/s1'), 'Tavily answer: ' + tv);
+  D.env.delete('TAVILY_API_KEY'); DDG_DOWN = true;
+  GEM = (b: any) => b.tools?.[0]?.functionDeclarations ? call('web_research', { question: 'цены Total 5W30' }) : say('нет данных');
+  await tgPost({ text: 'цены Total' });
+  assert(/Подключите бесплатный ключ Tavily/.test(lastText()), 'no search at all explained: ' + lastText());
+  DDG_DOWN = false;
   GEM = () => say('ok');
 });
 
@@ -794,4 +825,32 @@ D.test('any CRM data: explore the sections, query with filter / search / totals 
   assert(/800 000 сум/.test(lastText()), 'answer: ' + lastText());
   assert(GEM_LOG.at(-1).tools[0].functionDeclarations.find((d: any) => d.name === 'crm_query').parameters.required.includes('path'), 'path required');
   GEM = () => say('ok');
+});
+
+D.test('promo_calc: goods bonuses add to A, money bonuses come off B', () => {
+  const items = [
+    { name: 'Golden Booster 5W30 SN', qty: 10, per_box: 4, price: 29.32 },
+    { name: 'Liman ATF', qty: 11, price: 32.34, bonus: true },
+    { name: 'фильтр', qty: 10, price: 2.4, bonus: true },
+  ];
+  const r = M.TOOLS.promo_calc.run(null, { items, client_pays: 1055.52 });
+  eq(r.we_give, 1552.54, 'A'); eq(r.percent, 32.01, 'percent goods only');
+  const t = M.TPL.promo_calc(r);
+  assert(t.includes('10 кор × 4 шт × $29,32 = $1 172,80') && t.includes('✅ Акция: 32.01%'), 'answer: ' + t);
+  const m = M.TOOLS.promo_calc.run(null, { items, client_pays: 1055.52, money_bonus: 100 });
+  eq(m.client_gives, 955.52, 'B'); eq(m.percent, 38.45, 'percent with $100');
+  const d = M.TOOLS.promo_calc.run(null, { items, discount_pct: 10 });
+  eq(d.client_pays, 1055.52, 'pay from 10% discount'); eq(d.percent, 32.01, 'same percent');
+  assert(/цены/.test(M.TOOLS.promo_calc.run(null, { items: [{ name: 'x', qty: 1 }], client_pays: 5 }).error), 'missing price');
+  assert(/платит клиент/.test(M.TOOLS.promo_calc.run(null, { items }).error), 'missing payment');
+});
+
+D.test('stale CRM summary: warning next to its time after 24 h, none before', () => {
+  D.env.set('CRM_STALE_HOURS', '24');
+  const now = Date.parse('2026-11-19T12:00:00Z');
+  eq(M.staleNote('2026-11-19T00:00:00Z', now), '', '12 h — fresh');
+  assert(M.staleNote('2026-11-18T06:00:00Z', now).includes('устарел (30 ч назад)'), 'hours');
+  assert(M.staleNote('2026-11-16T10:00:00Z', now).includes('устарел (3 дн. назад) — откройте MitalCRM'), 'days');
+  eq(M.staleNote(undefined, now), '', 'no time — no warning');
+  D.env.set('CRM_STALE_HOURS', '1000000');
 });
