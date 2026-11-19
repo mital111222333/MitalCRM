@@ -254,7 +254,7 @@ function build(crm: any, fast: any, extra: any, inst: any, arcs: any[], arcPaths
   const allDates = [...orders.values()].map(o => o.date).filter(Boolean).sort();
   return {
     clients, agents, agentByRaw, orders, items, pays, rets: [...dedupRets.values()], debtors, instClients,
-    contracts: inst?.contracts || [], contractCfg: ext.inst?.contracts || [], promises: ext.payPlan || {},
+    contracts: inst?.contracts || [], contractCfg: ext.inst?.contracts || [], contractParts: Number(ext.inst?.parts) || 4, promises: ext.payPlan || {},
     balance: lastUp, uploads: S.ag?.uploads || [], stock, freq: extra?.data?.freq || [], workper: extra?.data?.workper || [], workFrom: extra?.from, workTo: extra?.to,
     plans: planKeys.length ? { from: planKeys.at(-1), byAgent: ext.agentPlans[planKeys.at(-1)!] } : null,
     // LINKO stock recommendation (the same list as the «Склад — заканчивается» sheet of autolinko.gs)
@@ -871,14 +871,33 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
     },
   },
   send_contract_files: {
-    desc: 'Прислать в чат фото/сканы подписанного договора клиента (те, что прикреплены в CRM → Рассрочка и договоры).',
-    params: { client: { type: 'string' } },
+    desc: 'Прислать в чат ДОГОВОР (шартнома) клиента из CRM → Рассрочка и договоры: прикреплённые фото/сканы, а если их нет — сам договор, составленный в платформе (файл для печати + кратко в чате). Можно по клиенту или по номеру договора («284-шартнома»).',
+    params: { client: { type: 'string' }, number: { type: 'string', description: 'номер договора (шартнома №), если назван' } },
     async run(db, a, ctx) {
-      const c = resolveClient(db, a.client); if (!c.name) return c;
-      const ks = db.contractCfg.filter((k: any) => (k.accounts || []).some((x: string) => norm(x) === norm(c.name!)) || score(a.client, k.title) > 0.8);
-      if (!ks.length) return { client: c.name, sent: 0, note: 'У этого клиента нет договора в CRM' };
+      const no = String(a.number || '').replace(/\D/g, '');
+      let ks = no ? db.contractCfg.filter((k: any) => String(k.doc?.no || '').replace(/\D/g, '') === no) : [];
+      let name = ks[0]?.accounts?.[0] || ks[0]?.title;
+      if (!ks.length) {
+        if (!a.client) return { error: no ? `Договор №${no} не найден в CRM` : 'Назовите клиента или номер договора', contracts: db.contractCfg.map((k: any) => `${k.doc?.no ? '№' + k.doc.no + ' ' : ''}${k.title}`) };
+        const c = resolveClient(db, a.client);
+        ks = db.contractCfg.filter((k: any) => (c.name && (k.accounts || []).some((x: string) => norm(x) === norm(c.name!))) || score(a.client, k.title) > 0.8 || (k.doc?.shop && score(a.client, k.doc.shop) > 0.8) || (k.doc?.fio && score(a.client, k.doc.fio) > 0.8));
+        if (!ks.length) return c.name ? { client: c.name, sent: 0, note: 'У этого клиента нет договора в CRM', contracts_in_crm: db.contractCfg.map((k: any) => `${k.doc?.no ? '№' + k.doc.no + ' ' : ''}${k.title}`) } : c;
+        name = c.name || ks[0].accounts?.[0] || ks[0].title;
+      }
       const files = ks.flatMap((k: any) => (k.files || []).map((f: any) => ({ ...f, title: k.title })));
-      if (!files.length) return { client: c.name, contracts: ks.map((k: any) => k.title), sent: 0, note: 'Договор есть, но скан/фото к нему не прикреплены в CRM' };
+      if (!files.length) {
+        // no scans: send the contract itself, the same A4 «Шартнома» the platform prints
+        let sent = 0;
+        for (const k of ks.slice(0, 5)) {
+          const d = contractDoc(k, db.contractParts);
+          const fd = new FormData(); fd.append('chat_id', String(ctx.chatId)); fd.append('caption', d.caption.slice(0, 1000));
+          fd.append('document', new File([d.html], d.file, { type: 'text/html' }));
+          const r = await fetch(`https://api.telegram.org/bot${CFG.tg()}/sendDocument`, { method: 'POST', body: fd });
+          if (r.ok) sent++; else console.warn('contract doc', r.status, await r.text());
+        }
+        return { client: name, sent, kind: 'document', contracts: ks.map((k: any) => k.title), note: sent ? 'Сканов нет — отправлен сам договор из платформы (файл открывается в браузере, можно распечатать)' : 'Не получилось отправить договор' };
+      }
+      const c = { name };
       let sent = 0;
       for (const f of files.slice(0, 10)) {
         try {
@@ -1444,6 +1463,46 @@ const unxml = (s: any) => String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
 const esc = (s: any) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 
+// ── the paper contract (шартнома) made in the platform, as the CRM prints it (inst.js ctDoc / ctCss) ──
+function addMonthsIso(d: string, k: number) { const y = +d.slice(0, 4), m = +d.slice(5, 7) - 1 + k, dd = +d.slice(8, 10), last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); return new Date(Date.UTC(y, m, Math.min(dd, last))).toISOString().slice(0, 10); }
+function contractDue(k: any, i: number) {
+  const s = String(k.start || ''), y = +s.slice(0, 4), m0 = +s.slice(5, 7) - 1, d = +s.slice(8, 10), pd = Math.round(Number(k.payDay) || 0);
+  if (!(pd >= 1 && pd <= 31)) return addMonthsIso(s, i + 1);
+  const at = (mm: number, dd: number) => { const last = new Date(Date.UTC(y, mm + 1, 0)).getUTCDate(); return new Date(Date.UTC(y, mm, Math.min(dd, last))).toISOString().slice(0, 10); };
+  const from = at(m0 + i, d), a = at(m0 + i, pd); return a > from ? a : at(m0 + i + 1, pd);
+}
+function contractDoc(k: any, defParts = 4) {
+  const D = k.doc || {}, P = Array.from({ length: Math.max(1, Number(k.months) || 1) }, (_, i) => (Array.isArray(k.plan) && k.plan[i] != null ? Number(k.plan[i]) : Number(k.monthly) || 0));
+  const tot = P.reduce((s, v) => s + v, 0), parts = Number(k.parts || defParts) || 4, ok = /^\d{4}-\d\d-\d\d/.test(String(k.start || ''));
+  const dt = (s: string) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(2, 4)}` : ''), due = (i: number) => (ok ? contractDue(k, i) : ''), num = (v: number) => String(Math.round(v * 100) / 100);
+  const u = (v: any, w: string) => `<span class="k-u" style="min-width:${w}">${esc(v || '') || '&nbsp;'}</span>`;
+  const shop = D.shop ?? String(k.accounts?.[0] || '').replace(/\s*\b(spe?t?s|спец)\b\s*/gi, ' ').trim();
+  const goods = String(D.goods ?? 'ECO FILTER\nMATTEX\nMITANOL\nDELPIN').split('\n').map(s => s.trim()).filter(Boolean), disc = String(D.disc ?? '10').trim().replace(/^-/, '').replace('.', ',');
+  const blank = '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>';
+  const css = `@page{size:A4;margin:0}*{box-sizing:border-box}html,body{margin:0;background:#fff}body{padding:10mm}.kdoc{width:190mm;max-width:100%;margin:auto;color:#111;font:13px/1.5 Arial,Helvetica,sans-serif}.k-fit{padding:5mm 7mm 4mm}.k-top{display:grid;grid-template-columns:1fr auto 1fr;gap:8px}.k-city{font-size:14px;padding-top:4px}.k-logo{font:700 50px/1 Georgia,serif;letter-spacing:5px;color:#2b2b2b}.k-no{text-align:right;font-size:15px;padding-top:4px}.k-ink,.k-u,.k-city,.k-no{color:#1d3c8f}.k-t{text-align:center;font-size:15px;margin:8px 0 6px}.k-u{display:inline-block;border-bottom:1px solid #111;padding:0 4px;text-align:center;font-weight:600}.k-row{display:flex;justify-content:space-between;gap:12px;margin:2px 0 6px}.k-p{text-indent:14mm;margin:4px 0 6px;text-align:justify}.k-ln{margin:4px 0 4px 14mm}.k-p2{margin:10px 0 6px;line-height:1.9}.k-sg{margin:10px 0 4px;line-height:1.9}.k-sg small{font-size:12px;margin:0 8px 0 2px}table{width:100%;border-collapse:collapse;margin:8px 0 0}td,th{border:1px solid #444;padding:2px 8px;vertical-align:top;text-align:left;font-size:13px}th{font-size:12.5px;font-weight:600}.k-gd th{border:0}.k-gd td{height:22mm}.k-big{font-size:20px;vertical-align:middle!important;text-align:center!important}.k-pl{margin-top:14px}.k-pl td{height:7mm;vertical-align:middle}.k-tot td{font-weight:700}`;
+  const html = `<!doctype html><html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Шартнома №${esc(D.no || '')}</title><style>${css}</style></head><body><section class="kdoc"><div class="k-fit">
+<div class="k-top"><div class="k-city">${esc(D.city || '')}</div><div class="k-logo">MITAL</div><div class="k-no">${D.no ? '№' + esc(D.no) : ''}</div></div>
+<div class="k-t">ШАРТНОМА №${u(D.no, '16mm')}</div>
+<div class="k-row"><div>${u(dt(D.date || ''), '30mm')} й.</div><div>Мижоз ${u(shop, '64mm')}</div></div>
+<p class="k-p">Ушбу шартнома ООО “MITAL” ва мижоз орасидаги келишув асосида мижоз томонидан олинган махсулотни прайс нархидан арзон сотмасликка, хамда олинган махсулотни куйида белгиланганидака йопиб беришни, яни олган махсулотларни ${parts} га булиб хар хафтада карзни тулик копланишини тасдиклайди:</p>
+<div class="k-ln">(Ф.И.Ш.) ${u(D.fio, '105mm')}</div>
+<div class="k-ln">Шартнома муддати ${u(ok ? dt(k.start) : '', '26mm')} дан ${u(dt(due(P.length - 1)), '26mm')} гача.</div>
+<table class="k-gd"><thead><tr><th>Махсулот</th><th>Амалдаги прайсдан чегирма %</th><th>Изох</th></tr></thead><tbody><tr><td class="k-ink">${goods.map(esc).join('<br>')}</td><td class="k-ink k-big">${disc ? '-' + esc(disc) + '%' : ''}</td><td class="k-ink">${esc(D.note || '').replace(/\n/g, '<br>')}</td></tr></tbody></table>
+<table class="k-pl"><thead><tr><th>Ой</th><th>План</th><th>Топширилган сана</th><th>Сумма</th><th>Мижоз имзо</th></tr></thead><tbody>
+${P.map((v, i) => `<tr><td class="k-ink">${i + 1}</td><td class="k-ink">${num(v)}</td><td class="k-ink">${dt(due(i))}</td><td></td><td></td></tr>`).join('')}
+<tr class="k-tot"><td>Жами:</td><td class="k-ink">${num(tot)}$</td><td></td><td></td><td></td></tr>${blank.repeat(Math.max(2, 16 - P.length))}</tbody></table>
+<p class="k-p2">Ушбу шартнома асосида мажбуриятлар тулик копланиб, карздорлик колмаганидан сунг, ООО “MITAL” томонидан мукофот сифатида ${u(D.reward, '80mm')} берилади.</p>
+<div class="k-sg">Гувохлар ${u(D.w1, '52mm')}<small>(ИМЗО)</small> ${u(D.w2, '52mm')}<small>(ИМЗО)</small></div>
+<p class="k-p2">Келишув шартлари тулик бажарилмаса, ушбу шартнома уз кучини йокотишига розиман.</p>
+<div class="k-sg">${u('', '75mm')} &nbsp; ${u('', '30mm')}<small>(ИМЗО)</small></div>
+</div></section></body></html>`;
+  const caption = [`📄 Шартнома №${D.no || '—'} · ${shop || k.title || ''}`, D.fio ? `👤 ${D.fio}` : '', D.date ? `🗓 от ${dt(D.date)}` : '',
+    `💵 ${num(tot)}$: ${P.length} мес${ok ? `, ${dt(k.start)} — ${dt(due(P.length - 1))}` : ''}`, disc ? `🏷 скидка -${disc}% · ${goods.join(', ')}` : '',
+    k.agent ? `🧑‍💼 агент: ${k.agent}` : '', 'Сканов нет — это договор из платформы (откройте файл, можно распечатать).'].filter(Boolean).join('\n');
+  const file = ('Шартнома-' + (D.no || k.id || '') + '-' + String(shop || k.title || '').replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 30) + '.html').replace(/_\.html$/, '.html');
+  return { html, caption, file };
+}
+
 // ── web research with sources: Gemini + Google Search grounding (the «deep research» agent of OpenJarvis, in small) ──
 // Google Search grounding has its own quota, and on a free key it can be 0 («check your plan and billing»). Then the bot
 // searches by itself: DuckDuckGo (free, no key) → the top pages are read → Gemini writes the answer only from that text.
@@ -1954,7 +2013,7 @@ const SERVICE = {
   heard: { type: 'string', description: 'если сообщение голосовое — дословно, что услышал' },
 };
 const REQUIRED: Record<string, string[]> = {
-  client_card: ['client'], send_contract_files: ['client'], agent_report: ['agent'], find_client: ['query'], notebook_search: ['query'],
+  client_card: ['client'], agent_report: ['agent'], find_client: ['query'], notebook_search: ['query'],
   remember: ['text', 'kind'], forget: ['id'], reminder_add: ['at', 'text'], reminder_cancel: ['id'],
   personal_debt_add: ['person', 'action', 'amount'], personal_debt_delete: ['id'],
   crm_query: ['path'], promo_calc: ['items'],
@@ -2036,7 +2095,9 @@ const TPL: Record<string, (r: any) => string> = {
   sleeping_clients: r => !r.count ? 'Таких клиентов нет.' : [`😴 Давно не брали (${r.count})`, lines(r.rows, (c: any) => `• ${c.client}${c.agent ? ' · ' + c.agent.split(' ')[0] : ''} — ${c.days} дн. (последний ${dm(c.last_order)})${c.debt > 0.5 ? ', долг ' + $(c.debt) : ''}`, 20), `ℹ️ ${r.note}`].join('\n'),
   top_products: r => [`🏆 Топ товаров ${per(r)}`, lines(r.products, (p: any, i: number) => `${i + 1}. ${p.product} — ${p.qty} шт., ${$(p.sum)}`), `Всего: ${$(r.total_sum)}`].join('\n') + warn(r),
   stock: r => r.warehouses.map((w: any) => `🏬 ${w.warehouse} (на ${dm(w.taken_at)})\n` + (w.items.length ? lines(w.items, (i: any) => `• ${i.name} — ${i.available} шт.${i.reserved ? ` (+${i.reserved} в резерве)` : ''}`, 25) : 'ничего не найдено')).join('\n\n') || 'Склад не найден.',
-  send_contract_files: r => r.sent ? `Отправил ${r.sent} файл(а) договора ${r.client}.` : `${r.client}: ${r.note || 'файлы не отправились'}`,
+  send_contract_files: r => r.error ? `${r.error}${r.contracts?.length ? `\nДоговоры в CRM: ${r.contracts.join('; ')}` : r.candidates?.length ? `: ${r.candidates.join(', ')}` : ''}`
+    : r.sent ? (r.kind === 'document' ? `📄 Отправил договор ${r.client} (${r.sent} шт.) — сканов в CRM нет, это сам договор из платформы.` : `Отправил ${r.sent} файл(а) договора ${r.client}.`)
+    : `${r.client}: ${r.note || 'файлы не отправились'}${r.contracts_in_crm?.length ? `\nДоговоры в CRM: ${r.contracts_in_crm.join('; ')}` : ''}`,
   data_status: r => `🔄 LINKO обновлено: ${r.linko_updated}\nДолги пересчитаны: ${r.debts_counted}\nCRM сохранена: ${r.crm_saved}\nИстория заказов: с ${dm(r.orders_history_from)} по ${dm(r.orders_history_to)}`
     + (r.crm_summary ? `\n📊 Сводка CRM для бота: ${r.crm_summary.at}\n✅ ${r.crm_summary.ok.join(', ') || '—'}${r.crm_summary.missing.length ? `\n▫️ нет данных: ${r.crm_summary.missing.join(', ')}` : ''}${r.crm_summary.errors.length ? `\n⚠️ ${r.crm_summary.errors.join('\n⚠️ ')}` : ''}` : '\n📊 Сводки CRM для бота нет — откройте MitalCRM'),
   plan_forecast: r => [`📈 Прогноз плана ${per(r)}`, `Рабочих дней: прошло ${r.work_days_passed} из ${r.work_days_total}, осталось ${r.work_days_left}`,
@@ -2160,7 +2221,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 12. «Напомни …» → reminder_add: переведи время в YYYY-MM-DDTHH:MM по Ташкенту (сейчас ${t} ${L.time}; «через 2 часа» — прибавь к текущему времени). Список и отмена — reminder_list, reminder_cancel.
 13. Вопросы о правилах компании, ценах, условиях, акциях, документах, характеристиках товара → notebook_search. Отвечай только по найденным отрывкам и указывай источник в [квадратных скобках]; если в блокноте ответа нет — так и скажи.
 14. Если правило пользователя требует посчитать (бонус, процент) — возьми числа только из функций и покажи расчёт по шагам: 1 200 × 2% = 24. Сам числа не придумывай.
-15. Прогноз плана → plan_forecast. Кто перестал брать → stopped_clients. Что заканчивается на складе → stock_running_out. Обещания оплат → promises. Файл для NotebookLM → notebooklm_export.
+15. Прогноз плана → plan_forecast. Кто перестал брать → stopped_clients. Что заканчивается на складе → stock_running_out. Обещания оплат → promises. Файл для NotebookLM → notebooklm_export. «Пришли / покажи договор (шартнома) клиента или №N» → send_contract_files (client и/или number) — он присылает сканы, а если их нет, сам договор из платформы; не ищи договор через crm_query.
 16. Если прислали фото или документ (накладная, чек, прайс) — внимательно прочитай его. Для накладной перечисли товары, количество и суммы и, если указан клиент, сверь с его заказами в CRM (orders с with_products).
 17. СФЕРЫ: у remember, reminder_add и save_photo всегда указывай sphere по смыслу (у notebook_search и send_saved_file — только если сфера ясна из вопроса): work — всё про MITAL (клиенты, агенты, товары, план, склад, команда); personal — личные дела, здоровье, покупки; family — жена, дети, родители, родные; friends — друзья; ideas — бизнес-идеи и планы на будущее. Если сфера совсем неясна — коротко спроси. Отвечай в той сфере, о которой спрашивают, и не смешивай личное с рабочим.
 18. ДЕНЬГИ — ЛИЧНЫЕ И РАБОЧИЕ НЕ СМЕШИВАЙ. «Я должен / мне должны / я занял / дал в долг / вернул / мои долги / сколько у меня долгов / кто мне должен» → ЛИЧНЫЕ: personal_debts или personal_debt_add. Долги клиентов MITAL («должники», «долг клиента X», «долги агента», «кого дожимать», «остаток клиента») → debtors / client_card / collect_today. Если человек есть среди клиентов CRM и речь о товаре или оплате за товар — это работа; если непонятно — коротко спроси «личный долг или клиент MITAL?».

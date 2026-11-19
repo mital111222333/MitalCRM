@@ -854,3 +854,19 @@ D.test('stale CRM summary: warning next to its time after 24 h, none before', ()
   eq(M.staleNote(undefined, now), '', 'no time — no warning');
   D.env.set('CRM_STALE_HOURS', '1000000');
 });
+
+D.test('send_contract_files: no scans → the contract made in the platform, found by its number or client', async () => {
+  const k = { id: 'k1', title: 'Nurmuhammad Chimyon', accounts: ['Nurmuhammad Chimyon'], monthly: 500, months: 3, plan: [500, 600, 700], start: '2026-11-01', agent: 'Adxamjon',
+    doc: { no: '284', date: '2026-11-01', shop: 'Nurmuhammad', fio: 'Karimov Ali', city: 'Fargʻona', disc: '10', goods: 'MITANOL\nDELPIN', note: '', reward: 'TV', w1: '', w2: '' } };
+  const db = { contractCfg: [k, { id: 'k2', title: 'Other', accounts: ['Other'], monthly: 1, months: 1, start: '2026-01-01' }], contractParts: 4, clients: new Map(), debtors: new Map(), instClients: new Map(), orders: new Map() };
+  SENT.length = 0;
+  const r = await M.TOOLS.send_contract_files.run(db, { number: '284-shartnoma' }, { chatId: 111 });
+  eq(r.sent, 1, 'one contract sent'); eq(r.kind, 'document', 'the platform contract, not a scan');
+  const s: any = SENT.find((x: any) => x.method === 'sendDocument');
+  assert(/ШАРТНОМА №/.test(s.body.document) && /Karimov Ali/.test(s.body.document) && /1800\$/.test(s.body.document), 'the A4 contract with fio and total');
+  assert(/01\.12\.26/.test(s.body.document) && /01\.02\.27/.test(s.body.document), 'due dates like the platform (start + 1 month)');
+  assert(/№284/.test(s.body.caption) && /скидка -10%/.test(s.body.caption), 'short summary in the caption');
+  assert(/Отправил договор Nurmuhammad Chimyon/.test(M.TPL.send_contract_files(r)), 'reply text');
+  const miss = await M.TOOLS.send_contract_files.run(db, { number: '999' }, { chatId: 111 });
+  assert(/№999 не найден/.test(miss.error) && miss.contracts.includes('№284 Nurmuhammad Chimyon'), 'unknown number lists the contracts');
+});
