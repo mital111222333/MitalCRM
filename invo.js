@@ -75,16 +75,18 @@ const INVO = {
         if (sb) {
           const [p, g] = await Promise.all([sb.from('profiles').select('linko_name, full_name, region_id'), sb.from('regions').select('id, name')]);
           const reg = Object.fromEntries((g.data || []).map(x => [x.id, x.name]));
-          for (const x of p.data || []) if (reg[x.region_id]) for (const n of [x.linko_name, x.full_name]) if (n) m.set(LX.norm(n), reg[x.region_id]);
+          for (const x of p.data || []) if (reg[x.region_id]) for (const n of [x.linko_name, x.full_name]) if (n) m.set(INVO.akey(n), reg[x.region_id]);
         }
       } catch { /* no accounts: the form's cities only */ }
       INVO.regions = m; return m;
     })();
     return INVO._reg;
   },
+  // an agent's name as a key: the same with any apostrophe (Xamroxoʻja / Xamroxo'ja) and word order
+  akey: s => LX.norm(String(s || '').replace(/[’ʻʼ`´‘]/g, "'")),
   cityOf(r) {
-    const F = INVO.cfg().form, a = LX.norm(r.agent || ''), own = {};
-    for (const l of String(F.cities || '').split('\n')) { const i = l.indexOf('='); if (i > 0 && l.slice(i + 1).trim()) own[LX.norm(l.slice(0, i))] = l.slice(i + 1).trim(); }
+    const F = INVO.cfg().form, a = INVO.akey(r.agent || ''), own = {};
+    for (const l of String(F.cities || '').split('\n')) { const i = l.indexOf('='); if (i > 0 && l.slice(i + 1).trim()) own[INVO.akey(l.slice(0, i))] = l.slice(i + 1).trim(); }
     const c = r.x?.city || (a && own[a]) || (a && INVO.regions?.get(a)) || F.city || '';
     return String(c).trim().replace(/^./, s => s.toUpperCase());
   },
