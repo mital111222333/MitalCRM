@@ -745,3 +745,53 @@ D.test('google: setup message, signed sign-in link, callback stores the token, c
   for (const t of sentTexts().slice(-12)) assert(!/undefined|NaN|\[object/.test(t), 'no broken values: ' + t.slice(0, 200));
   D.env.delete('GOOGLE_CLIENT_ID'); D.env.delete('GOOGLE_CLIENT_SECRET');
 });
+
+D.test('any CRM data: explore the sections, query with filter / search / totals by code, users, secrets hidden', async () => {
+  const db = await M.loadDB(true);
+  db.raw.crm.ext.pay = { advances: [{ agent: AG1, date: ago(3), uzs: 500000 }, { agent: AG1, date: ago(1), uzs: 300000 }, { agent: AG2, date: ago(2), uzs: 200000 }], botToken: 'SECRET123' };
+  DB.regions = [{ id: 'r1', name: 'Наманган', status: 'active' }, { id: 'r2', name: 'Фергана', status: 'active' }];
+  DB.profiles = [{ id: 'p1', login: 'saidbonur', full_name: 'Saidbonur Saidmuratov', role: 'supervisor', region_id: null, supervisor_id: null, linko_name: 'Saidbonur', phone: '', is_active: true },
+    { id: 'p2', login: 'adxam', full_name: AG1, role: 'agent', region_id: 'r1', supervisor_id: 'p1', linko_name: AG1, phone: '+99890', is_active: true }];
+  const X = M.TOOLS.crm_explore.run, Q = M.TOOLS.crm_query.run;
+
+  const map = await X(db, {});
+  assert(map.sections.some((s: any) => s.path === "history.orders") && map.crm_sections.some((s: any) => s.path === 'ext.pay' && s.size === 1) && map.crm_sections.some((s: any) => s.path === 'ag.clients'), 'map of sections: ' + JSON.stringify(map).slice(0, 400));
+  const pay = await X(db, { path: 'ext.pay' });
+  assert(pay.type === 'object' && pay.entries.some((e: any) => e.key === 'advances' && e.size === 3) && !JSON.stringify(pay).includes('SECRET123'), 'ext.pay structure, token hidden: ' + JSON.stringify(pay));
+  assert(/Секретные/.test((await X(db, { path: 'ext.pay.botToken' })).error), 'secret path refused');
+  const bad = await X(db, { path: 'ext.nothing' }); assert(bad.error && bad.keys.includes('payPlan'), 'unknown key lists what exists');
+
+  const adv = await Q(db, { path: 'ext.pay.advances', filter: 'agent=Адхамжон', sum: 'uzs' });
+  eq([adv.matched, adv.totals.uzs], [2, 800000], 'advances of one agent (cyrillic name), total by code');
+  const g = await Q(db, { path: 'ext.pay.advances', group_by: 'agent', sum: 'uzs' });
+  eq(g.groups.map((x: any) => [x.group, x.count, x.uzs]), [[AG1, 2, 800000], [AG2, 1, 200000]], 'groups by agent');
+  eq(g.rows.length, 0, 'groups alone: no rows needed');
+
+  const o = await Q(db, { path: 'history.orders', filter: `date>=${ago(2)}; status!=4`, sum: 'sum', sort: '-sum' });
+  eq([o.matched, o.totals.sum, o.rows[0].sum], [3, 1000, 500], 'orders of the last days without cancelled, sorted');
+  const it = await Q(db, { path: 'history.order_items', search: 'liman atf', sum: 'qty' });
+  eq([it.matched, it.totals.qty, it.rows[0].client], [1, 10, 'Fozilxon Fargona'], 'items with order date and client');
+  const cl = await Q(db, { path: 'ag.clients', filter: `agent=${AG2}`, fields: '_key' });
+  eq(cl.rows.map((r: any) => r._key).sort(), ['Small Shop', 'Workspace Only'], 'a map becomes records with _key');
+  const de = await Q(db, { path: 'debtors', filter: 'total>500' });
+  eq([de.matched, de.rows[0].client, de.rows[0].d8_30], [1, 'Fozilxon Fargona', 500], 'debtors as records');
+  assert(/нет полей: colour/.test((await Q(db, { path: 'history.orders', filter: 'colour=red' })).error), 'unknown field explained');
+  assert(/Не понял/.test((await Q(db, { path: 'history.orders', filter: 'просто текст' })).error), 'bad filter explained');
+  const page = await Q(db, { path: 'history.orders', limit: 3 });
+  assert(page.rows.length === 3 && /offset=3/.test(page.more), 'paging: ' + page.more);
+
+  const u = await Q(db, { path: 'users', filter: 'region~Наманган' });
+  eq([u.matched, u.rows[0].full_name, u.rows[0].supervisor, u.rows[0].id], [1, AG1, 'Saidbonur Saidmuratov', undefined], 'users with region and supervisor names');
+  eq((await Q(db, { path: 'regions' })).rows.map((r: any) => r.name), ['Наманган', 'Фергана'], 'regions');
+
+  // the whole flow: the AI explores, queries, then answers from the totals
+  let step = 0;
+  GEM = () => [call('crm_explore', { path: 'ext.pay' }), call('crm_query', { path: 'ext.pay.advances', filter: 'agent=Adxamjon', sum: 'uzs' }), say('Авансы Adxamjon: 800 000 сум (2 шт.)')][step++];
+  await tgPost({ text: 'какие авансы у Адхамжона?' });
+  const sys = GEM_LOG.at(-1).systemInstruction.parts[0].text, back = JSON.stringify(GEM_LOG.at(-1).contents.at(-1));
+  assert(/ИСТОЧНИК — ТОЛЬКО MitalCRM/.test(sys) && /crm_explore/.test(sys), 'prompt: CRM is the only source');
+  assert(/"uzs":800000/.test(back) && !back.includes('SECRET123'), 'AI gets the code-computed total: ' + back.slice(0, 300));
+  assert(/800 000 сум/.test(lastText()), 'answer: ' + lastText());
+  assert(GEM_LOG.at(-1).tools[0].functionDeclarations.find((d: any) => d.name === 'crm_query').parameters.required.includes('path'), 'path required');
+  GEM = () => say('ok');
+});

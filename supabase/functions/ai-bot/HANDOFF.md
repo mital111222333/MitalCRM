@@ -137,3 +137,12 @@ Mital AI — уже не только рабочий бот: сферы work / p
 
 ## 5д. 19.11.2026: голос — WAV вместо MP3
 В бою голосовое не пришло: лог `CPU Time exceeded`. lamejs (MP3 на JS) — 0,8–2 с CPU на 40 с речи даже на ПК, у Edge Function лимит ~2 с CPU. Теперь `sayVoice` шлёт WAV (без кодирования) через `sendAudio` (плеер, а не «кружок» голосового). Для настоящего voice-пузыря нужен OGG/Opus через WASM (`npm:opusscript` / `@evan/opus` + свой OGG-муксер), замерить CPU перед внедрением.
+
+## 5е. 19.11.2026: любые данные MitalCRM (Opus 5.5)
+Владелец: «Jumavoy должен брать всю информацию только с моей платформы MitalCRM; любые данные, если я попрошу, он должен выдать».
+- `loadDB` хранит все данные платформы как есть: `db.raw = { crm (state из workspace), snap (bot.json.gz), linko_fast, linko_extra, inst }`.
+- **`crm_explore`**: без path — карта разделов (CRM: `ag.*`, `wh.*`, `ext.*` с описаниями из `CRM_SECTIONS`; `history.orders / order_items / payments / returns` — вся история LINKO, склеенная из архива; `debtors`; `inst`; `snap`; `users` и `regions` из таблиц `profiles`/`regions`). С path — поля, число записей, примеры. Карта «имя → запись» (клиенты, планы) показывается как таблица с `_key`.
+- **`crm_query`**: path + `filter` («поле=знач; поле>=2026-11-01; поле~текст; поле!=4», имена нечётко, кириллица → латиница) + `search` + `fields` + `sort` (`-sum`) + `limit/offset`; итоги `sum` и `group_by` считает КОД. Ответ режется до ~14 000 знаков, с подсказкой offset.
+- Секреты (`token|secret|password|api_key|cookie|refresh`) не показываются ни в карте, ни в записях; base64-файлы → «[файл]».
+- Промпт: правило 0 «ИСТОЧНИК — ТОЛЬКО MitalCRM» (работа никогда из интернета/писем/своих знаний), правило 1 — не говорить «нет данных», пока не поискал через crm_explore/crm_query; правило 20 — интернет только для того, чего в CRM быть не может; правило 23 — когда и как звать crm_explore/crm_query.
+- Тесты 17/17 (`deno test -A index.test.ts`), `deno check`, `deno lint` — чисто. **Нужен деплой** (команда выше в 5а).
