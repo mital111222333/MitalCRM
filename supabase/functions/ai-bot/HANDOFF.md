@@ -94,6 +94,16 @@ Mital AI — уже не только рабочий бот: сферы work / p
 - Сфера у блокнота и фото (миграция `20261118000005_mital_ai_notebook_sphere.sql`, применена): `save_photo`, `notebook_search`, `send_saved_file` принимают `sphere` (пустая сфера → весь блокнот). Без ИИ: `/nb идея: текст`, подпись к файлу `/nb семья: название`, список одной сферы `/nb семья`; `/nb` группирует по сферам.
 - Утренняя сводка: блок «👤 Личное — долги» (`personalBrief`: просрочено, сегодня и в ближайшие 3 дня), у напоминаний значок сферы.
 
+## 5в. Идеи из OpenJarvis, 19.11.2026 (Opus 5.5)
+Сравнили JUMAVOY со Stanford OpenJarvis (local-first фреймворк, Python, ~180 тыс. строк). Оставили JUMAVOY (знает CRM, работает в облаке без ПК) и перенесли 4 идеи:
+- **Интернет-поиск с источниками** `web_research` (Gemini + `google_search` grounding): quick = 1 запрос; deep = план из 3 подвопросов (JSON) → 3 поиска параллельно → синтез, ~6 запросов. Поле `ai_requests` в результате инструмента добавляется к счётчику ответа в `ask`.
+- **Мир в утреннем плане** (`morningWorld`, всё через `Promise.allSettled` + `fetchT` с таймаутом 8 с — упавший сайт просто пропадает из плана): погода Open-Meteo (3 города, без ключа), курс ЦБ cbu.uz (кэш 1 ч), RSS spot.uz/gazeta.uz/kun.uz (кэш 15 мин, секрет `NEWS_RSS`). Инструменты `weather`, `currency_rates`, `news`; команды `/weather`, `/kurs`, `/news`. Голосовая сводка утром (`briefSpeech` → `sayVoice`), если `/voice` не off.
+- **Навыки** (agentskills.io): таблица `ai_skills` (миграция `20261119000002_jumavoy_skills_google.sql`), 3 встроенных (`weekly_report`, `agent_review`, `client_message_uz`), список имя — описание в системном промпте (правило 22), `skill_use` отдаёт шаги (без шаблона → второй запрос ИИ). `skill_add`, `skill_list`, `skill_delete`; `/skills`, `/skill del N`, `/skill <url SKILL.md>`, файл SKILL.md с подписью `/skill`.
+- **Google** (OAuth, секреты `GOOGLE_CLIENT_ID/SECRET`, таблица `ai_google` с refresh-токеном): `/google` → ссылка с подписанным HMAC(TG_SECRET) state на 30 мин → редирект `.../functions/v1/ai-bot/google` → `googleCallback` меняет code на токены. Scope: calendar.events, gmail.readonly, contacts.readonly (отправки писем нет). Инструменты `calendar_events`, `calendar_add`, `gmail_search`, `gmail_read` (текст письма помечен как данные), `contacts_search`; `/cal`; утром события, дни рождения (сегодня/завтра), новые письма. Приложение в Google Cloud надо перевести в «In production», иначе refresh-токен живёт 7 дней.
+- Исправлено попутно: `/kurs` раньше перехватывала `/k` — у быстрых команд теперь граница слова.
+- Тесты 16/16 (`deno test -A index.test.ts`), живая проверка погоды, курса и RSS на реальных сайтах прошла.
+- **Осталось владельцу:** миграция `20261119000002`, деплой функции, `?setup=` (новые команды в меню), для Google — шаги README «Google».
+
 ## 6. Этап 2 (план, см. 5а — что уже сделано)
 1. **Постоянная память** в таблице Supabase (нужна миграция: Саидбонур вставит SQL сам). Хранить всю переписку и факты, которые он сообщает («обещал отдать в пятницу», «агент в отпуске»), и учитывать их в ответах.
 2. **Напоминания**:
