@@ -133,7 +133,7 @@ async function sbWorkspace(): Promise<any> {
     };
     // the CRM's own results for the bot (botsnap.js): salary, discipline, leaderboard, signals, payment calendar, tasks
     const [data, snap] = await Promise.all([file(`v${w.version}.json.gz`), file('bot.json.gz').catch(() => null)]);
-    return data?.state ? { ...data, savedAt: data.savedAt || w.saved_at, from: 'workspace', snap } : snap ? { snap } : null;
+    return data?.state ? { ...data, savedAt: data.savedAt || w.saved_at, from: 'workspace', snap, owner: w.owner_id } : { snap, owner: w.owner_id };
   } catch (e) { console.warn('workspace', (e as Error).message); return null; }
 }
 const newerCrm = (a: any, b: any) => !a ? b : !b ? a : Date.parse(a.savedAt || 0) >= Date.parse(b.savedAt || 0) ? a : b;
@@ -169,6 +169,8 @@ async function loadDB(force = false) {
   }));
   const db = build(crm, fast, extra, inst, arcs.filter(Boolean), arcPaths);
   (db as any).snap = ws?.snap || null;
+  (db as any).crmOwner = ws?.owner || env('CRM_OWNER_ID') || null; // whose CRM applies crm_inbox and whose CRM bot talks to agents
+  (db as any).tgChats = crm?.state?.ext?.tg?.chats || {}; // agent → his chat with the CRM bot (CRM → Настройки → Telegram)
   DBC = { at: Date.now(), db };
   return db;
 }
@@ -587,7 +589,73 @@ function balanceFor(db: any, from?: string, to?: string) {
   const asOf = grace ? to! : u.period_to;
   return { from, to: asOf, period: `${dm(from)} — ${dm(asOf)}`, byAgent };
 }
-const WRITES = new Set(['remember', 'forget', 'reminder_add', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'save_photo', 'send_saved_file']);
+const WRITES = new Set(['remember', 'forget', 'reminder_add', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'save_photo', 'send_saved_file', 'message_agent', 'crm_task', 'crm_note', 'message_client']);
+
+// ───────────────────────────── actions ─────────────────────────────
+// Anything that reaches another person is only a DRAFT until the owner presses «✅ Отправить» (ai_outbox + inline buttons → onButton).
+// Agents are written to by the CRM's own Telegram bot (the token is in workspace_secrets of the CRM owner, the agent's chat in
+// state.ext.tg.chats) — the same bot and chat the CRM uses for tasks and day plans, so agents see it where they always do.
+// Changes inside the CRM go to crm_inbox; the owner's CRM (botinbox.js) applies them the next time it is open.
+async function crmBotToken(db: any): Promise<string> {
+  if (!db?.crmOwner) return '';
+  const rows = await sb(`workspace_secrets?owner_id=eq.${db.crmOwner}&select=data`).catch(() => []);
+  return String(rows?.[0]?.data?.tg?.token || '');
+}
+async function crmBot(token: string, method: string, params: any) {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
+  const j = await r.json().catch(() => ({}));
+  if (!j.ok) throw new Error(/chat not found|blocked/i.test(j.description || '') ? 'агент не открыл чат с ботом CRM или заблокировал его' : j.description || `Telegram ${r.status}`);
+  return j.result;
+}
+const agentChat = (db: any, agent: string) => String(db.tgChats?.[agent]?.id || '');
+async function draft(ctx: any, row: { kind: string; target: string; text: string; payload: any }) {
+  const [d] = await sb('ai_outbox', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, status: 'draft', ...row } });
+  const head = row.kind === 'agent_msg' ? `✉️ Черновик — сообщение для ${row.target} (уйдёт через бота CRM):` : `📋 Черновик — задание для ${row.target}:`;
+  await tg('sendMessage', {
+    chat_id: ctx.chatId, text: `${head}\n\n${row.text}`.slice(0, 4000), disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: [[{ text: '✅ Отправить', callback_data: `ob:send:${d.id}` }, { text: '✖ Отмена', callback_data: `ob:cancel:${d.id}` }]] },
+  });
+  return d;
+}
+const phoneOf = (db: any, client: string) => {
+  let d = String(db.clients[client]?.phone || db.debtors.get(client)?.phone || '').replace(/\D/g, '');
+  if (d.length === 9) d = '998' + d;
+  return d.length >= 11 ? d : '';
+};
+// the owner pressed a button under a draft
+async function onButton(q: any) {
+  const chatId = q.message?.chat?.id, uid = String(q.from?.id || ''), answer = (text = '') => tg('answerCallbackQuery', { callback_query_id: q.id, text: text.slice(0, 190) });
+  if (!CFG.allowed().includes(uid)) return answer('Нет доступа');
+  const m = String(q.data || '').match(/^ob:(send|cancel):(\d+)$/); if (!m || !chatId) return answer();
+  const now = new Date().toISOString();
+  // claimed by a conditional update: a double tap never sends twice
+  const claimed = await sb(`ai_outbox?id=eq.${m[2]}&chat_id=eq.${chatId}&status=eq.draft`, { method: 'PATCH', body: { status: m[1] === 'send' ? 'sent' : 'cancelled', done_at: now }, prefer: 'return=representation' });
+  if (!claimed?.length) return answer('Этот черновик уже обработан');
+  const row = claimed[0];
+  let note = '✖ Отменено';
+  if (m[1] === 'send') {
+    try { note = await sendDraft(row); }
+    catch (e) { note = '⚠️ Не отправилось: ' + (e as Error).message; await sb(`ai_outbox?id=eq.${row.id}`, { method: 'PATCH', body: { status: 'failed', error: (e as Error).message } }).catch(() => {}); }
+  }
+  await tg('editMessageText', { chat_id: chatId, message_id: q.message.message_id, text: `${q.message.text || ''}\n\n${note}`.slice(0, 4096), disable_web_page_preview: true });
+  await answer(note);
+}
+async function sendDraft(row: any): Promise<string> {
+  const db = await needData(), token = await crmBotToken(db), at = nowTime(new Date().toISOString());
+  if (row.kind === 'agent_msg') {
+    if (!token) throw new Error('в CRM не подключён бот Telegram (Настройки → Telegram)');
+    await crmBot(token, 'sendMessage', { chat_id: row.payload.chat, text: row.text, disable_web_page_preview: true });
+    return `✅ Отправлено ${row.target} · ${at}`;
+  }
+  // crm_task: into the CRM first, then the agent is told at once (the CRM will not tell him again: notified)
+  if (!db.crmOwner) throw new Error('не найден владелец CRM');
+  const p = row.payload;
+  await sb('crm_inbox', { method: 'POST', body: { owner_id: db.crmOwner, kind: 'atask', payload: { agent: row.target, title: p.title, text: p.text || '', due: p.due, notified: !!(token && p.chat) } } });
+  if (!token || !p.chat) return `✅ Задание записано — появится в CRM, когда она откроется. В Telegram агенту не ушло: ${!token ? 'в CRM не подключён бот' : 'у агента нет чата с ботом CRM'}`;
+  try { await crmBot(token, 'sendMessage', { chat_id: p.chat, text: `🆕 Новое задание\n${p.title}${p.text ? '\n' + p.text : ''}\nСрок: ${dm(p.due)}` }); }
+  catch (e) { return `✅ Задание записано в CRM, но агенту в Telegram не ушло: ${(e as Error).message}`; }
+  return `✅ Задание дано ${row.target} (${at}) — агент получил его в Telegram, в CRM появится при открытии`;
+}
 // a part of the CRM's own summary (botsnap.js → workspaces/<owner>/bot.json.gz); without it the bot says so instead of guessing
 function snapPart(db: any, key: string): { error?: string; at?: string; data?: any } {
   const s = db.snap;
@@ -920,6 +988,63 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       return { crm_at: s.at, count: list.length, overdue: list.filter((x: any) => x.overdue).length, tasks: list.slice(0, 40) };
     },
   },
+  message_agent: {
+    desc: 'НАПИСАТЬ АГЕНТУ в Telegram от имени руководителя (через бота CRM): «отправь Адхамжону его остатки и скажи собрать быстрее», «напиши всем… » — для каждого агента отдельный вызов. text — само сообщение агенту, вежливо и по делу, на языке, который просит пользователь (по умолчанию русский). attach_debts=true — приложить список его должников с суммами из LINKO. Сообщение НЕ уходит сразу: пользователь видит черновик и жмёт «Отправить».',
+    params: { agent: { type: 'string' }, text: { type: 'string', description: 'текст сообщения агенту' }, attach_debts: { type: 'boolean' }, limit: { type: 'number', description: 'сколько должников приложить, по умолчанию 15' } },
+    async run(db, a, ctx) {
+      const g = resolveAgent(db, a.agent); if (!g.name) return g;
+      const chat = agentChat(db, g.name);
+      if (!chat) return { error: `У ${g.name} нет чата с ботом CRM — агент должен открыть бота CRM, а вы подключить его в CRM: Настройки → Telegram` };
+      let text = String(a.text || '').trim();
+      if (a.attach_debts) {
+        const list = [...db.debtors.entries()].filter(([, d]: any) => d.agent === g.name && d.total > 0.5).sort((x: any, y: any) => y[1].total - x[1].total), k = Math.min(Math.max(n(a.limit) || 15, 1), 40);
+        const total = r2(list.reduce((s: number, [, d]: any) => s + d.total, 0));
+        text += `\n\nВаши должники: ${list.length} клиентов на ${$(total)}\n` + list.slice(0, k).map(([c, d]: any, i: number) => `${i + 1}. ${c} — ${$(d.total)}${d.d31_120 + d.d120 > 0.5 ? ` (старше 30 дн: ${$(d.d31_120 + d.d120)})` : ''}`).join('\n')
+          + (list.length > k ? `\n…и ещё ${list.length - k}` : '') + `\n(данные LINKO на ${db.meta.linko_updated})`;
+      }
+      if (!text) return { error: 'Что написать агенту?' };
+      const d = await draft(ctx, { kind: 'agent_msg', target: g.name, text, payload: { chat } });
+      return { draft: d.id, agent: g.name };
+    },
+  },
+  crm_task: {
+    desc: 'ДАТЬ ЗАДАНИЕ АГЕНТУ в MitalCRM (Задания агентам): «поставь Адхамжону задание собрать долг Fozilxon до пятницы». Агент получит его в Telegram и в кабинете. Сначала черновик с кнопкой «Отправить». Для нескольких агентов — отдельный вызов на каждого.',
+    params: { agent: { type: 'string' }, title: { type: 'string', description: 'что сделать — коротко' }, text: { type: 'string', description: 'подробности, если есть' }, due: { type: 'string', description: 'YYYY-MM-DD — срок; если не сказали — завтра' } },
+    async run(db, a, ctx) {
+      const g = resolveAgent(db, a.agent); if (!g.name) return g;
+      if (!db.crmOwner) return { error: 'Не найден владелец CRM — откройте MitalCRM один раз' };
+      const title = String(a.title || '').trim().slice(0, 150); if (!title) return { error: 'Что должен сделать агент?' };
+      const t = todayStr(), due = /^\d{4}-\d{2}-\d{2}$/.test(a.due || '') ? a.due : addDays(t, 1);
+      if (due < t) return { error: `Срок ${dm(due)} уже прошёл` };
+      const text = String(a.text || '').trim().slice(0, 500);
+      const d = await draft(ctx, { kind: 'crm_task', target: g.name, text: `${title}${text ? '\n' + text : ''}\nСрок: ${dm(due)}`, payload: { title, text, due, chat: agentChat(db, g.name) } });
+      return { draft: d.id, agent: g.name };
+    },
+  },
+  crm_note: {
+    desc: 'ЗАПИСАТЬ В КАРТОЧКУ КЛИЕНТА в MitalCRM пометку или ОБЕЩАНИЕ ОПЛАТЫ: «запиши Fozilxon: обещал $500 в пятницу», «пометь у Big Client — сменился директор». promise_date + sum — если это обещание оплатить. Появится в CRM, когда она откроется.',
+    params: { client: { type: 'string' }, text: { type: 'string' }, promise_date: { type: 'string', description: 'YYYY-MM-DD, если клиент обещал оплатить' }, sum: { type: 'number', description: 'сумма обещания в $' } },
+    async run(db, a) {
+      const c = resolveClient(db, a.client); if (!c.name) return c;
+      if (!db.crmOwner) return { error: 'Не найден владелец CRM — откройте MitalCRM один раз' };
+      const promise = /^\d{4}-\d{2}-\d{2}$/.test(a.promise_date || '') ? a.promise_date : '', text = String(a.text || '').trim().slice(0, 500);
+      if (!text && !promise) return { error: 'Что записать клиенту?' };
+      await sb('crm_inbox', { method: 'POST', body: { owner_id: db.crmOwner, kind: 'note', payload: { client: c.name, text: text ? text + ' (через JUMAVOY)' : 'через JUMAVOY', promise: promise || undefined, sum: promise ? r2(n(a.sum)) : undefined } } });
+      return { client: c.name, text, promise: promise || undefined, sum: promise ? r2(n(a.sum)) : undefined };
+    },
+  },
+  message_client: {
+    desc: 'НАПИСАТЬ КЛИЕНТУ по его телефону: бот готовит текст и даёт ссылку, которая открывает чат с клиентом в Telegram (и WhatsApp с готовым текстом) — отправляет сам пользователь. text — само сообщение клиенту, вежливо, на нужном языке (узбекский — если клиент узбек или так просят). Если пользователь дал номер сам — передай его в phone.',
+    params: { client: { type: 'string' }, phone: { type: 'string', description: 'номер, если пользователь назвал его сам' }, text: { type: 'string' } },
+    run(db, a) {
+      const c = a.client ? resolveClient(db, a.client) : { name: '' };
+      let digits = String(a.phone || '').replace(/\D/g, ''); if (digits.length === 9) digits = '998' + digits;
+      if (!digits) { if (!c.name) return c; digits = phoneOf(db, c.name); }
+      if (digits.length < 11) return { error: `${c.name ? `У ${c.name} в CRM и LINKO нет номера` : 'Не понял номер'} — напишите номер телефона` };
+      const text = String(a.text || '').trim(); if (!text) return { error: 'Что написать клиенту?' };
+      return { client: c.name || undefined, phone: '+' + digits, text, telegram: `https://t.me/+${digits}`, whatsapp: `https://wa.me/${digits}?text=${encodeURIComponent(text)}` };
+    },
+  },
   save_photo: {
     desc: 'Сохранить ФОТО или файл из ТЕКУЩЕГО сообщения в блокнот вместе с описанием (на «запомни это фото», «сохрани», «запиши цену с фото»). description — что на фото: товары, марки, объёмы, количество, цены, текст. Потом его можно найти (notebook_search) и прислать обратно (send_saved_file).',
     params: { title: { type: 'string', description: 'короткое название' }, description: { type: 'string', description: 'подробно, что на фото' }, note: { type: 'string', description: 'что сказал пользователь: цена, задание, пометка' }, sphere: { ...SPHERE_PARAM, description: 'сфера: товар, прайс, накладная, клиент — work; документы семьи, фото детей — family; чек, личная покупка — personal; идея — ideas' } },
@@ -1186,6 +1311,11 @@ const TPL: Record<string, (r: any) => string> = {
     lines(r.items, (x: any) => `• ${dm(x.date)} ${x.client}${x.agent ? ' · ' + first(x.agent) : ''} — ${$(x.sum)} · ${x.state}\n   ${x.kind}: ${x.why}`, 30), r.count > 30 ? `…и ещё ${r.count - 30}` : '', `ℹ️ Данные CRM на ${r.crm_at}`].filter(Boolean).join('\n'),
   crm_tasks: r => !r.count ? `✅ Заданий нет (CRM на ${r.crm_at})` : [`📋 Задания: ${r.count}${r.overdue ? `, просрочено ${r.overdue}` : ''}`,
     lines(r.tasks, (t: any) => `• ${first(t.agent)}: ${t.title}${t.due ? ` (до ${dm(t.due)})` : ''} — ${t.state}${t.overdue ? ' ❗просрочено' : ''}${t.progress ? ` · ${t.progress}` : ''}${t.returned_comment ? ` · «${t.returned_comment}»` : ''}`, 30), `ℹ️ Данные CRM на ${r.crm_at}`].join('\n'),
+  message_agent: () => '👆 Проверьте черновик и нажмите «✅ Отправить». Поправить — просто напишите, что изменить.',
+  crm_task: () => '👆 Проверьте задание и нажмите «✅ Отправить». Поправить — просто напишите, что изменить.',
+  crm_note: r => `📝 Записал в карточку ${r.client}${r.promise ? `: обещание ${r.sum ? $(r.sum) + ' ' : ''}на ${dm(r.promise)}` : ''}${r.text ? ` — «${r.text}»` : ''}. В CRM появится, когда она откроется.`,
+  message_client: r => [`📨 Сообщение для ${r.client || r.phone} (${r.phone}):`, '', r.text, '', `👉 Открыть чат в Telegram: ${r.telegram}`, `👉 WhatsApp с готовым текстом: ${r.whatsapp}`,
+    'ℹ️ В Telegram текст вставьте сами (скопируйте сообщение выше). Если ссылка Telegram не открывает чат — у клиента скрыт номер, тогда WhatsApp или звонок.'].join('\n'),
   save_photo: r => `📸 Сохранил в блокнот${r.sphere && r.sphere !== 'work' ? ` (${SPH[r.sphere]})` : ''}: «${r.title}». Найти: «пришли фото ${r.title}».`,
   send_saved_file: r => `📎 Отправил: ${r.sent}`,
   remember: r => `🧠 Запомнил${r.kind === 'rule' ? ' правило' : ''} #${r.saved}${r.sphere && r.sphere !== 'work' ? ` (${SPH[r.sphere]})` : ''}: ${r.text}${r.until ? ` (до ${dm(r.until)})` : ''}`,
@@ -1559,8 +1689,20 @@ async function sendExport(db: any, chatId: number) {
 }
 
 // ───────────────────────────── schedule (pg_cron calls ?cron=1 every minute, see cron.sql) ─────────────────────────────
+// the webhook was set up for messages only: button presses (callback_query) must be delivered too — fixed once, by itself
+let hookOk = false;
+async function ensureWebhook() {
+  if (hookOk) return;
+  const i = (await tg('getWebhookInfo', {}))?.result;
+  if (!i?.url) return;
+  const want = ['message', 'edited_message', 'callback_query'];
+  if (want.every(k => (i.allowed_updates || want).includes(k))) { hookOk = true; return; }
+  const r = await tg('setWebhook', { url: i.url, secret_token: CFG.secret(), allowed_updates: want });
+  hookOk = !!r?.ok; console.log('webhook: buttons enabled', r?.ok);
+}
 async function tick() {
   const res: Record<string, any> = { reminders: 0 };
+  await ensureWebhook().catch(e => console.warn('webhook', e));
   if (!sbOn()) return { ...res, skipped: NO_DB };
   // 1) reminders that are due. The row is claimed by a conditional update first, so two overlapping ticks never send it twice
   const nowIso = new Date().toISOString();
@@ -1791,6 +1933,11 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 • 📷 фото накладной — распознаю и сверю с заказами
 • 📷 фото товара + «запомни, цена $14» — сохраню фото с описанием; «пришли фото масла» — пришлю обратно
 • 📷 фото + «напомни завтра в 10 проверить» — напомню вместе с фото
+✉️ Действия (сначала черновик — уходит только по кнопке «✅ Отправить»):
+• Отправь Адхамжону его остатки и скажи собрать быстрее — напишу агенту через бота CRM
+• Поставь Адхамжону задание собрать долг Fozilxon до пятницы — задание в CRM и агенту в Telegram
+• Запиши Fozilxon: обещал $500 в пятницу — пометка / обещание в карточку клиента CRM
+• Напиши клиенту Fozilxon про оплату — текст + ссылка на чат в Telegram и WhatsApp
 📚 Блокнот знаний (как NotebookLM): пришлите PDF / Word / Excel / фото без подписи — я его прочитаю и буду отвечать по нему со ссылкой на источник. /nb — список.
 📤 /notebooklm — файл-сводка CRM для Google NotebookLM (по понедельникам присылаю сам).
 Быстрые команды (мгновенно, без ИИ):
@@ -1815,6 +1962,7 @@ const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого д
 
 const seen = new Map<number, number>();
 async function handle(u: any) {
+  if (u.callback_query) { if (seen.has(u.update_id)) return; seen.set(u.update_id, Date.now()); return void await onButton(u.callback_query).catch(e => console.error('button', e)); }
   const m = u.message || u.edited_message; if (!m?.chat) return;
   if (seen.has(u.update_id)) return; seen.set(u.update_id, Date.now());
   if (seen.size > 500) for (const [k, t] of seen) if (Date.now() - t > 3600e3) seen.delete(k);
@@ -1876,7 +2024,7 @@ async function serve(req: Request) {
     // one-time setup: open <function url>?setup=<TG_SECRET> in a browser
     if (CFG.secret() && url.searchParams.get('setup') === CFG.secret()) {
       const hook = env('SUPABASE_URL') ? `${env('SUPABASE_URL')}/functions/v1/ai-bot` : `https://${url.host}/functions/v1/ai-bot`;
-      const r = await tg('setWebhook', { url: hook, secret_token: CFG.secret(), allowed_updates: ['message', 'edited_message'], drop_pending_updates: true });
+      const r = await tg('setWebhook', { url: hook, secret_token: CFG.secret(), allowed_updates: ['message', 'edited_message', 'callback_query'], drop_pending_updates: true });
       const c = await tg('setMyCommands', { commands: COMMANDS });
       await tg('setMyName', { name: CFG.name });
       await tg('setMyDescription', { description: `${CFG.name} — личный AI-ассистент: работа MITAL (долги, заказы, агенты, план), личное, семья, друзья, идеи, напоминания, блокнот знаний. Понимает голос и текст на русском и узбекском.` });

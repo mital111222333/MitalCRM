@@ -68,9 +68,10 @@ const XLSX = await zip({
 const FILES: Record<string, Uint8Array> = { docx1: DOCX, xlsx1: XLSX };
 
 // ───── mini PostgREST ─────
-const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [], ai_ledger: [], workspaces: [] };
-// the CRM workspace in Supabase Storage (newer than the GitHub copy): the same state plus one client that only it has
-const WS_FILE = await gz({ app: 'mitalcrm', savedAt: new Date(Date.now() + 1000).toISOString(), state: { ...crm.state, ag: { ...crm.state.ag, clients: { ...crm.state.ag.clients, 'Workspace Only': { agent: AG2 } } } } });
+const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [], ai_ledger: [], workspaces: [], ai_outbox: [], crm_inbox: [], workspace_secrets: [{ owner_id: 'u1', data: { tg: { token: 'CRMT' } } }] };
+// the CRM workspace in Supabase Storage (newer than the GitHub copy): the same state plus one client that only it has,
+// and AG1's chat with the CRM bot (ext.tg.chats — the token itself is in workspace_secrets)
+const WS_FILE = await gz({ app: 'mitalcrm', savedAt: new Date(Date.now() + 1000).toISOString(), state: { ...crm.state, ext: { ...crm.state.ext, tg: { chats: { [AG1]: { id: 555 } } } }, ag: { ...crm.state.ag, clients: { ...crm.state.ag.clients, 'Workspace Only': { agent: AG2 } } } } });
 DB.workspaces.push({ owner_id: 'u1', version: 7, saved_at: new Date().toISOString() });
 let seq = 1;
 const isTime = (k: string) => k.endsWith('_at');
@@ -130,7 +131,7 @@ function postgrest(url: URL, method: string, body: any, prefer: string) {
 }
 
 // ───── Telegram + Gemini recorders ─────
-const SENT: { method: string; body: any }[] = [];
+const SENT: { method: string; body: any; bot?: string }[] = [];
 const sentTexts = () => SENT.filter(s => s.method === 'sendMessage').map(s => s.body.text);
 let GEM: (body: any) => any = () => say('ok');
 const GEM_LOG: any[] = [];
@@ -151,7 +152,7 @@ function say(text: string) { return { candidates: [{ content: { role: 'model', p
     const methodName = url.pathname.split('/').pop()!;
     let body: any = init.body;
     if (body instanceof FormData) { const o: any = {}; for (const [k, v] of body) o[k] = typeof v === 'string' ? v : await (v as File).text(); body = o; } else body = JSON.parse(body || '{}');
-    SENT.push({ method: methodName, body });
+    SENT.push({ method: methodName, body, bot: url.pathname.split('/')[1] });
     if (methodName === 'getFile') return new Response(JSON.stringify({ ok: true, result: { file_path: 'docs/' + body.file_id, file_size: FILES[body.file_id]?.length || 10 } }));
     return new Response(JSON.stringify({ ok: true, result: true }));
   }
@@ -543,4 +544,48 @@ D.test('voice replies: auto on a voice message, /voice off and on, «ответ�
 D.test('mp3 encoder (downloads the npm package once)', async () => {
   const mp3 = await M.pcmToMp3(sine(), 24000);
   assert(mp3.length > 1000 && mp3[0] === 0xff && (mp3[1] & 0xe0) === 0xe0, 'MP3 frame sync, size ' + mp3.length);
+});
+
+D.test('actions: draft → «Отправить» → the CRM bot writes the agent; double tap, cancel, task, note, client link', async () => {
+  const btn = (data: string, text = 'черновик') => M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: upd++, callback_query: { id: 'cb' + upd, from: { id: 111 }, data, message: { message_id: 9, chat: { id: 111 }, text } } }) }));
+  const crmSent = () => SENT.filter(s => s.bot === 'botCRMT' && s.method === 'sendMessage');
+  await M.loadDB(true);
+  // 1) a message to the agent with his debts: only a draft with buttons, nothing goes to the agent yet
+  GEM = () => call('message_agent', { agent: 'Адхамжон', text: 'Соберите, пожалуйста, долги быстрее.', attach_debts: true });
+  await tgPost({ text: 'отправь адхамжону его остатки и скажи собрать быстрее' });
+  const dr = SENT.filter(s => s.method === 'sendMessage' && s.body.reply_markup).at(-1)!;
+  assert(dr && /Fozilxon Fargona — \$800/.test(dr.body.text) && /Соберите/.test(dr.body.text), 'draft with debts: ' + dr?.body.text);
+  const sendData = dr.body.reply_markup.inline_keyboard[0][0].callback_data, id = +sendData.split(':')[2];
+  eq([DB.ai_outbox.find(r => r.id === id)?.status, crmSent().length], ['draft', 0], 'still a draft, the agent got nothing');
+  // 2) «Отправить» → the CRM bot (its own token) writes to the agent's chat 555
+  await btn(sendData);
+  const s1 = crmSent().at(-1)!;
+  eq([s1?.body.chat_id, DB.ai_outbox.find(r => r.id === id)?.status], ['555', 'sent'], 'sent by the CRM bot to the agent chat');
+  assert(/Fozilxon Fargona/.test(s1.body.text), 'the agent got the text with debts');
+  assert(SENT.some(s => s.method === 'editMessageText' && /✅ Отправлено/.test(s.body.text)), 'the draft shows «✅ Отправлено»');
+  // 3) a double tap sends nothing more
+  const n1 = crmSent().length; await btn(sendData);
+  eq(crmSent().length, n1, 'double tap: not sent twice');
+  assert(/уже обработан/.test(SENT.filter(s => s.method === 'answerCallbackQuery').at(-1)!.body.text), 'double tap answered');
+  // 4) cancel
+  GEM = () => call('message_agent', { agent: 'Adxamjon', text: 'тест' }); await tgPost({ text: 'напиши адхамжону тест' });
+  const c2 = SENT.filter(s => s.body?.reply_markup).at(-1)!.body.reply_markup.inline_keyboard[0][1].callback_data;
+  await btn(c2); eq(crmSent().length, n1, 'cancelled: nothing sent');
+  // 5) an agent without a chat with the CRM bot → a clear error, no draft
+  const noChat = await M.TOOLS.message_agent.run(await M.loadDB(), { agent: 'Abdulmutallib', text: 'x' }, { chatId: 111 });
+  assert(/нет чата с ботом CRM/.test(noChat.error), 'no chat → error');
+  // 6) a task: draft → «Отправить» → crm_inbox (notified) + the agent told at once
+  GEM = () => call('crm_task', { agent: 'Adxamjon', title: 'Собрать долг Fozilxon', due: '2099-01-10' }); await tgPost({ text: 'поставь задание' });
+  await btn(SENT.filter(s => s.body?.reply_markup).at(-1)!.body.reply_markup.inline_keyboard[0][0].callback_data);
+  const t = DB.crm_inbox.find(r => r.kind === 'atask');
+  eq([t?.owner_id, t?.payload.agent, t?.payload.due, t?.payload.notified], ['u1', 'Adxamjon Umarov', '2099-01-10', true], 'task in the CRM inbox');
+  assert(/Новое задание\nСобрать долг Fozilxon\nСрок: 10\.01/.test(crmSent().at(-1)!.body.text), 'agent told about the task');
+  // 7) a note / promise goes straight to the CRM inbox
+  const nt = await M.TOOLS.crm_note.run(await M.loadDB(), { client: 'Fozilxon', text: 'обещал', promise_date: '2099-01-12', sum: 500 }, { chatId: 111 });
+  eq([nt.client, DB.crm_inbox.find(r => r.kind === 'note')?.payload.sum], ['Fozilxon Fargona', 500], 'promise in the CRM inbox');
+  // 8) a client: Telegram link by phone + WhatsApp with the text
+  const mc = await M.TOOLS.message_client.run(await M.loadDB(), { client: 'Fozilxon', text: 'Assalomu alaykum! To‘lov eslatmasi' }, { chatId: 111 });
+  eq([mc.phone, mc.telegram], ['+998901112233', 'https://t.me/+998901112233'], 'phone from the CRM');
+  assert(mc.whatsapp.startsWith('https://wa.me/998901112233?text=Assalomu'), 'WhatsApp link with the text');
+  GEM = () => say('ok');
 });
