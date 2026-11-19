@@ -15,7 +15,7 @@ const BOTSNAP = {
   owner() {
     let o = null; try { o = localStorage.getItem('crm_ws_owner'); } catch { /* storage blocked */ }
     const p = window.AUTH?.profile;
-    return o && p && p.id === o && p.role !== 'agent' && window.AUTH?.sb ? o : null;
+    return o && p && p.id === o && !['agent', 'store'].includes(p.role) && window.AUTH?.sb ? o : null;
   },
   async part(out, name, fn) {
     try { const v = await fn(); if (v !== undefined && v !== null) out[name] = v; } catch (e) { out.errors[name] = String(e?.message || e); console.warn('botsnap', name, e); }

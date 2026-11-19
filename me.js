@@ -34,7 +34,48 @@
   const SB = !link && sbUid && window.supabase?.createClient ? window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'crm_auth' } }) : null;
   const DATA_KEY = SB ? 'mital_me_data:' + sbUid : 'mital_me_data'; // a shared phone never shows the previous agent's cabinet
   const NO_ACT = 'Это отмечается в кабинете Telegram: кнопка «📱 Мой кабинет» в боте вашего руководителя.';
-  let tab = 'main', q = '', cf = 'all', S = store.get(DATA_KEY), loading = false, doing = null;
+  let tab = 'main', q = '', cf = 'all', calDay = '', routeDay = '', S = store.get(DATA_KEY), loading = false, doing = null;
+
+  // ---------- the cabinet as an app on the phone: install button (Android / Chrome — one tap; iPhone — Safari → «На экран Домой») ----------
+  let installEv = null;
+  const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIos = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEv = e; const b = $('#meInst'); if (b) b.hidden = false; });
+  addEventListener('appinstalled', () => { installEv = null; const b = $('#meInst'); if (b) b.hidden = true; });
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) addEventListener('load', () => navigator.serviceWorker.register('sw.js', { scope: './' }).catch(() => {}));
+  const installCard = () => (standalone() || inTg ? '' : panel('📲 Приложение на телефоне', installEv ? '<button class="btn" type="button" data-inst="1">📲 Установить приложение</button><p class="mut" style="margin:8px 0 0">Иконка MITAL появится на экране телефона — кабинет будет открываться как обычное приложение, без браузера.</p>'
+    : isIos ? '<ol style="margin:0;padding-left:20px;line-height:1.7"><li>Откройте кабинет в <b>Safari</b>.</li><li>Нажмите кнопку <b>«Поделиться»</b> (квадрат со стрелкой вверх).</li><li>Выберите <b>«На экран „Домой“»</b> → «Добавить».</li></ol>'
+      : '<ol style="margin:0;padding-left:20px;line-height:1.7"><li>Откройте кабинет в <b>Chrome</b>.</li><li>Нажмите меню <b>⋮</b> справа вверху.</li><li>Выберите <b>«Установить приложение»</b> или «Добавить на главный экран».</li></ol>'));
+  async function install() { if (!installEv) return; installEv.prompt(); try { await installEv.userChoice; } catch { /* closed */ } installEv = null; draw(); }
+
+  // ---------- language: Русский / Oʻzbekcha (lotin). The page is written in Russian; me-uz.js translates what is on the screen ----------
+  const LANG_KEY = 'mital_me_lang';
+  let lang = store.get(LANG_KEY) || (/^uz/i.test(TGA?.initDataUnsafe?.user?.language_code || navigator.language || '') ? 'uz' : 'ru');
+  const langCard = () => panel('🌐 Til / Язык', `<div class="chips" style="margin:0"><button type="button" data-lang="ru" class="${lang === 'ru' ? 'on' : ''}">Русский</button><button type="button" data-lang="uz" class="${lang === 'uz' ? 'on' : ''}">Oʻzbekcha</button></div>`);
+  function setLang(l) { lang = l; store.set(LANG_KEY, l); document.documentElement.lang = l === 'uz' ? 'uz-Latn' : 'ru'; location.reload(); }
+  function bindExtras(root) {
+    root.querySelectorAll('[data-inst]').forEach(b => b.onclick = install);
+    root.querySelectorAll('[data-lang]').forEach(b => b.onclick = () => { if (b.dataset.lang !== lang) setLang(b.dataset.lang); });
+  }
+  if (lang === 'uz' && window.ME_UZ) {
+    document.documentElement.lang = 'uz-Latn';
+    // a phrase that starts / ends with a letter matches only whole words: «план» never eats the start of «плана»
+    const L = 'А-Яа-яЁё', rx = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const T = window.ME_UZ.slice().sort((a, b) => b[0].length - a[0].length).map(([ru, uz]) => [ru, new RegExp((/^[А-Яа-яЁё]/.test(ru) ? `(?<![${L}])` : '') + rx(ru) + (/[А-Яа-яЁё]$/.test(ru) ? `(?![${L}])` : ''), 'g'), uz]);
+    const ATTR = ['placeholder', 'aria-label', 'title'];
+    const tr = s => { if (!s || !/[А-Яа-яЁё]/.test(s)) return s; let o = s; for (const [ru, re, uz] of T) if (o.includes(ru)) o = o.replace(re, uz); return o; };
+    const walk = root => {
+      if (root.nodeType === 3) { const v = tr(root.nodeValue); if (v !== root.nodeValue) root.nodeValue = v; return; }
+      if (root.nodeType !== 1 || root.tagName === 'SCRIPT' || root.tagName === 'STYLE' || root.tagName === 'TEXTAREA') return;
+      for (const a of ATTR) if (root.hasAttribute?.(a)) { const v = tr(root.getAttribute(a)); if (v !== root.getAttribute(a)) root.setAttribute(a, v); }
+      if (root.tagName === 'INPUT' && /^(button|submit)$/.test(root.type)) root.value = tr(root.value);
+      for (const c of root.childNodes) walk(c);
+    };
+    const mo = new MutationObserver(list => { mo.disconnect(); for (const m of list) { if (m.type === 'characterData') walk(m.target); else m.addedNodes.forEach(walk); } mo.observe(document.body, { childList: true, subtree: true, characterData: true }); });
+    document.addEventListener('DOMContentLoaded', () => { walk(document.body); document.title = tr(document.title); mo.observe(document.body, { childList: true, subtree: true, characterData: true }); });
+    // alerts and confirms in Uzbek too
+    const A = window.alert.bind(window), C = window.confirm.bind(window); window.alert = m => A(tr(String(m))); window.confirm = m => C(tr(String(m)));
+  }
   // chat tab: the agent's conversation with the bot through the chat worker (/agent/*), signed in by Telegram's initData
   const CH = { msgs: [], last: 0, timer: null, sending: false };
   const chatUrl = p => S?.chat ? S.chat.replace(/\/+$/, '') + p : '';
@@ -73,6 +114,12 @@
       const { data, error } = await SB.from('agent_cabinets').select('data, updated_at, updated_by').eq('agent_id', session.user.id).maybeSingle();
       if (error) throw error;
       if (!data) msg('Кабинет ещё не готов: ваш руководитель должен открыть свою CRM — кабинет появится через минуту.', true);
+      else if (data.data.role === 'store') {
+        // завсклад: the list of goods and today's count come from the auto-loader (it checks this login with the MITAL database)
+        const gas = data.data.gas; if (!gas) throw new Error('no gas');
+        const r = await fetch(gas, { method: 'POST', body: JSON.stringify({ sb: session.access_token, act: 'load' }) }), j = await r.json();
+        if (j.error) msg(j.error, true); else { S = j; S._gas = gas; store.set(DATA_KEY, S); msg(''); }
+      }
       else { S = data.data; S._owner = data.updated_by; store.set(DATA_KEY, S); msg(''); keepMarks(S); }
     } catch (e) {
       // the server refused the sign-in (expired, password changed, account blocked): sign in again; otherwise there is no connection
@@ -150,6 +197,11 @@
   // Before sending, numbers far from the store keeper's OWN last count are asked once more (typos like 400 instead of 40).
   const CNT = { get: () => store.get('mital_cnt'), set: v => store.set('mital_cnt', v) };
   async function storePost(body) {
+    if (SB && S?._gas) { // завсклад signed in with his login: the auto-loader, with the fresh sign-in token instead of the Telegram signature
+      const { data: { session } } = await SB.auth.getSession(); if (!session) { location.replace('./'); throw new Error('Войдите снова'); }
+      const r = await fetch(S._gas, { method: 'POST', body: JSON.stringify({ sb: session.access_token, ...body }) }), j = await r.json();
+      if (j.error) throw new Error(j.error); return j;
+    }
     if (SB && (body.act === 'collect' || body.act === 'absreq')) {
       if (body.act === 'collect' && body.r === 'promise' && (!body.pd || body.pd < tashToday() || !body.s)) throw new Error('Укажите дату и сумму обещания');
       return sbAct(body);
@@ -311,7 +363,7 @@
       S.queue = (S.queue || []).map(x => (by.has(x.name) ? { ...x, debt: by.get(x.name).debt } : x)).filter(x => x.debt > 0 || (mine?.day === today && mine.m?.[x.name])); }
     $('#meName').textContent = S.agent;
     $('#meSub').innerHTML = `Период ${dm(S.period.from)} — ${dm(S.period.to)}${S.period.days_left != null ? ` · осталось <b>${S.period.days_left} дн.</b>` : ''}<br><span style="opacity:.75">Обновлено: план ${esc(hhmm(S.at))}${S.live?.debt ? ` · долги ${esc(hhmm(S.live.debt))}` : ''}${S.live?.stock ? ` · склад ${esc(hhmm(S.live.stock))}` : ''}</span>`;
-    document.querySelectorAll('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
+    document.querySelectorAll('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === tab || (a.dataset.tab === 'more' && ['clients', 'contracts', 'stock', 'disc', 'chat'].includes(tab))));
     const openN = (S.tasks || []).filter(isOpen).length; $('#meTaskN').textContent = openN ? `(${openN})` : '';
     if (tab !== 'chat') chatStop();
     if (tab === 'chat') {
@@ -333,6 +385,71 @@
       };
       $('#chatGo').onclick = () => { const t = $('#chatT').value.trim(); if (t) send(t); };
       $('#chatPh').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) send($('#chatT').value.trim(), f); };
+      return;
+    }
+    // ---------- Ещё (phone): the sections that do not fit the bottom bar ----------
+    if (tab === 'more') {
+      const L = [['clients', '👥', 'Мои клиенты'], ['contracts', '📄', 'Договоры'], ['stock', '📦', 'Склад'], ['disc', '⏰', 'Дисциплина'], ['chat', '💬', 'Чат с руководителем']];
+      body.innerHTML = `<div class="cards">${L.map(([k, ic, t]) => `<a class="ccard" href="#" data-go="${k}" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">${ic}</span>${t}</a>`).join('')}
+        <a class="ccard" href="${ACADEMY}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">🎓</span>MITAL Akademiya</a></div>
+        ${installCard()}${langCard()}`;
+      bindExtras(body);
+      return;
+    }
+    // ---------- Оплаты: who must pay and when (spec orders by parts, contracts by month, promises) ----------
+    if (tab === 'cal') {
+      const C = S.cal || [], t0 = tashToday(), KIND = { spec: ['Спец · разовый договор', 'warn'], ct: ['Договор', 'info'], prom: ['Обещание', 'good'] };
+      const ST = { paid: ['✓ оплачено', 'pos'], late: ['просрочено', 'neg'], wait: ['ждём', 'mut'] };
+      if (!S.cal) { body.innerHTML = panel('📅 Календарь оплат', '<p class="mut">Календарь появится после следующего обновления кабинета руководителем.</p>'); return; }
+      const days = []; for (let d = new Date(S.period.from + 'T12:00:00'); d.toISOString().slice(0, 10) <= S.period.to; d.setDate(d.getDate() + 1)) days.push(d.toISOString().slice(0, 10));
+      if (!calDay || !days.includes(calDay)) calDay = days.includes(t0) ? t0 : days[0];
+      const sumOf = L => L.reduce((t, x) => t + x.s, 0), late = C.filter(x => x.st === 'late').sort((a, b) => a.d.localeCompare(b.d));
+      const by = new Map(); for (const x of C) (by.get(x.d) || by.set(x.d, []).get(x.d)).push(x);
+      const row = x => `<div class="ccard"><div class="top"><b>${esc(x.client)}</b><span class="amt ${ST[x.st][1]}">${$$(x.s)}</span></div>
+        <div class="meta"><span class="pill ${KIND[x.kind]?.[1] || ''}">${KIND[x.kind]?.[0] || ''}</span><span class="${ST[x.st][1]}">${ST[x.st][0]}${x.st === 'late' ? ' с ' + dm(x.d) : ''}</span></div>${x.why ? `<div class="mut" style="font-size:13px;margin-top:4px">${esc(x.why)}</div>` : ''}
+        ${S.clients.find(c => c.name === x.client)?.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(S.clients.find(c => c.name === x.client).phone)}">📞 Позвонить</a></div>` : ''}</div>`;
+      const dayL = (by.get(calDay) || []), wd = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+      body.innerHTML = `<div class="kpis">${tile('Сегодня должны', $$(sumOf((by.get(t0) || []).filter(x => x.st !== 'paid'))), `${(by.get(t0) || []).filter(x => x.st !== 'paid').length} оплат`, 'warn')}${tile('Просрочено', $$(sumOf(late)), `${late.length} оплат`, late.length ? 'bad' : 'good')}${tile('Ждём до ' + dm(S.period.to), $$(sumOf(C.filter(x => x.st === 'wait' && x.d >= t0 && x.d <= S.period.to))), 'по графикам и обещаниям')}</div>
+        <div class="chips" id="calStrip">${days.map(d => { const L = by.get(d) || [], s = sumOf(L.filter(x => x.st !== 'paid')); return `<button type="button" data-cd="${d}" class="${d === calDay ? 'on' : ''}" style="display:flex;flex-direction:column;align-items:center;min-width:54px;line-height:1.2${d === t0 ? ';font-weight:700' : ''}"><small>${wd[new Date(d + 'T12:00:00').getDay()]}</small><b>${Number(d.slice(8))}</b><small>${s ? (s >= 1000 ? '$' + (Math.round(s / 100) / 10).toLocaleString('ru-RU') + 'k' : '$' + Math.round(s)) : L.length ? '✓' : '·'}</small></button>`; }).join('')}</div>
+        ${panel(`${dRu(calDay)}${calDay === t0 ? ' — сегодня' : ''}`, dayL.length ? `<div class="cards">${dayL.map(row).join('')}</div>` : '<p class="mut">В этот день оплат по графику нет.</p>', dayL.length ? `Всего ${$$(sumOf(dayL))} · оплачено ${$$(sumOf(dayL.filter(x => x.st === 'paid')))}` : '')}
+        ${late.length ? panel('🔴 Просрочено — собрать в первую очередь', `<div class="cards">${late.map(row).join('')}</div>`) : ''}`;
+      body.querySelectorAll('[data-cd]').forEach(b => b.onclick = () => { calDay = b.dataset.cd; draw(); });
+      const on = body.querySelector('#calStrip .on'); if (on) on.scrollIntoView({ inline: 'center', block: 'nearest' });
+      return;
+    }
+    // ---------- Маршрут: the weekly route, today first; every stop with its debt, promise and phone ----------
+    if (tab === 'route') {
+      const R = S.route, DN = ['', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
+      if (!R || !Object.keys(R).length) { body.innerHTML = panel('🗺 Маршрут', '<p class="mut">Маршрут ещё не составлен. Попросите руководителя заполнить его в CRM: Агенты → Маршруты.</p>'); return; }
+      const wd0 = new Date(tashToday() + 'T12:00:00').getDay() || 1; // Sunday → Monday's route
+      if (!routeDay || !R[routeDay]) routeDay = R[wd0] ? String(wd0) : Object.keys(R)[0];
+      const by = new Map(S.clients.map(c => [c.name, c])), calBy = new Map(); for (const x of S.cal || []) if (x.st !== 'paid' && x.d <= tashToday()) calBy.set(x.client, (calBy.get(x.client) || 0) + x.s);
+      const D = R[routeDay], vis = S.disc?.days?.find(x => x.day === tashToday());
+      const stops = D.clients.map((n, i) => { const c = by.get(n) || { name: n }, due = calBy.get(n) || 0;
+        return `<div class="ccard"><div class="top"><b>${i + 1}. ${esc(n)}</b>${c.debt > 0 ? `<span class="amt neg">${$$(c.debt)}</span>` : '<span class="amt mut">долга нет</span>'}</div>
+          <div class="meta">${due ? `<span class="neg">💰 к оплате сейчас ${$$(due)}</span>` : ''}${c.promise ? `<span>🤝 обещал ${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}</span>` : ''}${c.lastBuy ? `<span>посл. покупка ${dm(c.lastBuy)}</span>` : c.name && by.has(n) ? '<span>покупок не было — предложите заказ</span>' : ''}${c.landmark ? `<span>📍 ${esc(c.landmark)}</span>` : ''}</div>
+          <div class="acts">${c.phone ? `<a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a>` : ''}<a class="btn gray sm" href="https://yandex.uz/maps/?text=${encodeURIComponent(n + (c.landmark ? ' ' + c.landmark : ''))}" target="_blank" rel="noopener">🧭 Карта</a></div></div>`; });
+      const debtSum = D.clients.reduce((t, n) => t + (by.get(n)?.debt > 0 ? by.get(n).debt : 0), 0);
+      body.innerHTML = `<div class="chips">${Object.keys(R).sort().map(k => `<button type="button" data-rd="${k}" class="${k === routeDay ? 'on' : ''}">${DN[k]}${String(wd0) === k ? ' · сегодня' : ''} (${R[k].clients.length})</button>`).join('')}</div>
+        ${routeDay === String(wd0) && vis?.plan ? `<div class="kpis">${tile('Визиты сегодня в LINKO', `${vis.done || 0} из ${vis.plan}`, 'отмечайте визит у каждого клиента', vis.done >= vis.plan ? 'good' : 'warn')}</div>` : ''}
+        ${panel(`🗺 ${DN[routeDay]}${D.zone ? ' — ' + esc(D.zone) : ''}`, `<div class="cards">${stops.join('')}</div>`, `${D.clients.length} точек · долг на маршруте ${$$(debtSum)}. Порядок — как задал руководитель.`)}`;
+      body.querySelectorAll('[data-rd]').forEach(b => b.onclick = () => { routeDay = b.dataset.rd; draw(); });
+      return;
+    }
+    // ---------- Договоры: one-time (special offers, by parts) and long contracts of the agent's clients ----------
+    if (tab === 'contracts') {
+      const K = S.contracts, ST = { paid: ['✓', 'pos', 'оплачено'], late: ['!', 'neg', 'просрочено'], wait: ['·', 'mut', 'ждём'] };
+      if (!K) { body.innerHTML = panel('📄 Договоры', '<p class="mut">Договоры появятся после следующего обновления кабинета руководителем.</p>'); return; }
+      const part = p => `<span class="${ST[p.st][1]}" style="white-space:nowrap">${ST[p.st][0]} ${dm(p.d || p.to)} ${$$(p.s ?? p.plan)}${p.paid != null && p.st !== 'paid' ? ` (опл. ${$$(p.paid)})` : ''}</span>`;
+      const once = K.once || [], long = K.long || [];
+      body.innerHTML = `${panel(`🧾 Разовые договоры и спецпредложения (${once.length})`, once.length ? `<div class="cards">${once.map(o => { const left = o.parts.filter(p => p.st !== 'paid').reduce((t, p) => t + p.s, 0);
+          return `<div class="ccard"><div class="top"><b>${esc(o.client)}</b><span class="amt">${$$(o.s)}</span></div>
+            <div class="meta"><span>№${esc(o.id)} от ${dm(o.d)}</span>${o.spec ? '<span class="pill warn">спецпредложение</span>' : ''}${o.disc != null ? `<span>скидка ${esc(o.disc)}%</span>` : ''}${left ? `<span class="${o.parts.some(p => p.st === 'late') ? 'neg' : ''}">осталось ${$$(left)}</span>` : '<span class="pos">оплачено полностью</span>'}</div>
+            ${o.cond ? `<div class="mut" style="font-size:13px;margin-top:4px">${esc(o.cond)}</div>` : ''}<div class="meta" style="margin-top:6px">${o.parts.map(part).join('')}</div></div>`; }).join('')}</div>` : '<p class="mut">Разовых договоров нет.</p>', 'Каждый заказ на спеццене платится по своему графику — по частям. Красным — просроченные части.')}
+        ${panel(`📑 Большие договоры (${long.length})`, long.length ? `<div class="cards">${long.map(k => { const late = k.months.filter(m => m.st === 'late'), tot = k.months.reduce((t, m) => t + m.plan, 0), paid = k.months.reduce((t, m) => t + (m.paid || 0), 0);
+          return `<div class="ccard"><div class="top"><b>${esc(k.title)}</b><span class="amt">${$$(tot)}</span></div>
+            <div class="meta"><span>${esc(k.client)}</span><span>с ${dm(k.start)} · ${k.months.length} мес.</span><span>оплачено ${$$(paid)}</span>${late.length ? `<span class="neg">просрочено месяцев: ${late.length}</span>` : ''}</div>
+            <div class="meta" style="margin-top:6px">${k.months.map(m => part({ ...m, d: m.to })).join('')}</div></div>`; }).join('')}</div>` : '<p class="mut">Больших договоров нет.</p>', 'Сумма месяца должна прийти до последнего дня этого месяца договора.')}`;
       return;
     }
     if (tab === 'tasks') {
@@ -373,6 +490,8 @@
       const openT = (S.tasks || []).filter(isOpen), cqLeft = (S.queue || []).length;
       const todo = [
         ...due.map(c => `<li>🤝 <b>${esc(c.name)}</b> обещал${c.promise.date < t0 ? ` <b class="neg">${dm(c.promise.date)} — просрочено</b>` : ' сегодня'}${c.promise.sum ? ` ${$$(c.promise.sum)}` : ''} · долг ${$$(c.debt)}${c.phone ? ` · <a href="tel:${esc(c.phone)}">📞 позвонить</a>` : ''}</li>`),
+        (() => { const L = (S.cal || []).filter(x => x.d === t0 && x.st !== 'paid'), s = L.reduce((t, x) => t + x.s, 0); return L.length ? `<li>📅 Сегодня по графику должны заплатить <b>${L.length}</b> клиентов на <b>${$$(s)}</b> — <a href="#" data-go="cal">кто именно</a></li>` : ''; })(),
+        (() => { const wd = new Date(t0 + 'T12:00:00').getDay() || 1, D = S.route?.[wd]; return D ? `<li>🗺 Маршрут на сегодня${D.zone ? ' (' + esc(D.zone) + ')' : ''}: <b>${D.clients.length}</b> точек — <a href="#" data-go="route">открыть</a></li>` : ''; })(),
         cqLeft ? `<li>💰 Очередь сбора: <b>${cqLeft}</b> должников — <a href="#" data-go="collect">открыть и отметить результат</a></li>` : '',
         openT.length ? `<li>✅ Открытых заданий: <b>${openT.length}</b>${openT.some(x => x.overdue) ? ' <b class="neg">есть просроченные</b>' : ''} — <a href="#" data-go="tasks">открыть</a></li>` : '',
         S.disc && !t?.first && !t?.st && !S.disc.skip && !S.disc.free ? `<li>⏰ Первый фотоотчёт в LINKO — до <b>${esc(S.disc.start)}</b>, иначе штраф ${f0(S.disc.rate)} сум за минуту</li>` : '',
@@ -394,7 +513,8 @@
         ${panel('Рейтинг агентов', `<div class="tscroll"><table><thead><tr><th class="n">#</th><th>Агент</th><th class="n">План продаж</th><th class="n">Сбор пула</th></tr></thead><tbody>${S.board.map(b => `<tr${b.me ? ' style="font-weight:700"' : ''}><td class="n">${b.place}</td><td>${esc(b.agent)}${b.me ? ' — вы' : ''}</td><td class="n">${b.sold != null ? b.sold + '%' : '—'}</td><td class="n">${b.paid != null ? b.paid + '%' : '—'}</td></tr>`).join('')}</tbody></table></div>`, 'Место — по сумме % плана продаж и % сбора пула')}
         ${top.length ? panel('Кому собрать в первую очередь', `<div class="cards">${top.map(c => `<div class="ccard"><div class="top"><b>${esc(c.name)}</b><span class="amt neg">${$$(c.debt)}</span></div><div class="meta">${c.pool ? `<span>по пулу осталось ${$$(Math.max(0, c.pool - c.paid))}</span>` : ''}${c.promise ? `<span>🤝 обещал ${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}</span>` : ''}${c.lastPay ? `<span>посл. оплата ${dm(c.lastPay)}</span>` : ''}</div>${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`) : ''}
         ${sleep.length ? panel('🛒 Давно не покупали — предложите заказ', `<div class="cards">${sleep.map(c => `<div class="ccard"><div class="top"><b>${esc(c.name)}</b><span class="amt">${c.buyDays} дн.</span></div><div class="meta">${c.lastBuy ? `<span>посл. покупка ${dm(c.lastBuy)}</span>` : ''}${c.debt > 0 ? `<span class="neg">долг ${$$(c.debt)}</span>` : '<span class="pos">долга нет</span>'}${c.landmark ? `<span>${esc(c.landmark)}</span>` : ''}</div>${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`, 'Эти клиенты брали товар, но перестали — каждый вернувшийся клиент поднимает и продажи, и АКБ.') : ''}
-        <section class="panel w12" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><div style="font-size:32px" aria-hidden="true">🎓</div><div style="flex:1;min-width:200px"><h4 style="margin:0">MITAL Akademiya</h4><div class="sub">Курсы для агентов: продажи, работа с клиентами и долгами, товары</div></div><a class="btn" style="padding:10px 18px;white-space:nowrap;line-height:1.2" href="${ACADEMY}" target="_blank" rel="noopener">Перейти к курсам →</a></section>`;
+        <section class="panel w12" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><div style="font-size:32px" aria-hidden="true">🎓</div><div style="flex:1;min-width:200px"><h4 style="margin:0">MITAL Akademiya</h4><div class="sub">Курсы для агентов: продажи, работа с клиентами и долгами, товары</div></div><a class="btn" style="padding:10px 18px;white-space:nowrap;line-height:1.2" href="${ACADEMY}" target="_blank" rel="noopener">Перейти к курсам →</a></section>${installCard()}`;
+      bindExtras(body);
     }
     // ---------- Сбор: the queue of debtors from the supervisor's CRM; every contact is marked in one tap ----------
     const cqDay = new Date().toLocaleDateString('sv-SE'), cqMine = (() => { const x = store.get('mital_me_cq'); return x && x.day === cqDay ? x.m : {}; })();
@@ -483,6 +603,10 @@
     document.addEventListener('click', e => { if (e.target.closest('[data-chat]') && inTg) { try { TGA.close(); } catch { /* old Telegram */ } } });
     document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (!g) return; e.preventDefault(); tab = g.dataset.go; doing = null; draw(); scrollTo(0, 0); });
     $('#meUpd').onclick = load;
+    // header: language switch and «install» (shown when the browser offers it)
+    const lb = document.createElement('button'); lb.type = 'button'; lb.textContent = lang === 'uz' ? 'RU' : 'UZ'; lb.title = lang === 'uz' ? 'Русский' : 'Oʻzbekcha'; lb.onclick = () => setLang(lang === 'uz' ? 'ru' : 'uz');
+    const ib = document.createElement('button'); ib.type = 'button'; ib.id = 'meInst'; ib.textContent = '📲'; ib.title = 'Установить приложение'; ib.hidden = !installEv || standalone(); ib.onclick = install;
+    $('#meUpd').before(ib, lb);
     if (SB) {
       const out = document.createElement('button'); out.type = 'button'; out.textContent = 'Выйти'; $('#meUpd').after(out);
       out.onclick = async () => { try { await SB.auth.signOut(); } catch { /* offline */ } try { localStorage.removeItem('crm_me'); } catch { /* blocked */ } location.replace('./'); };

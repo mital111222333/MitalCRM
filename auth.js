@@ -1,4 +1,4 @@
-// Accounts: every person signs in with his own login and password (Supabase Auth). Roles: admin, rop, supervisor, agent.
+// Accounts: every person signs in with his own login and password (Supabase Auth). Roles: admin, rop, supervisor, agent, store (завсклад).
 // app.js already asks /api/me, /api/login, /api/logout and /api/me/password — this file answers them from Supabase
 // (static-api.js used to answer /api/me with a fixed «Вы»). Must load after static-api.js and before app.js.
 // What each person may see is decided by the database (RLS), not by this page: the page only hides buttons that would be refused.
@@ -7,8 +7,8 @@ window.AUTH = (() => {
   const URL_ = 'https://oxchgcfyzszemqlvdjjr.supabase.co';
   const KEY = 'sb_publishable_FlwHIDb04LSfDA18DFo_Yw_YesRxk9g'; // public key: safe in the page, the database rules protect the data
   const DOMAIN = 'mital.crm';
-  const ROLE_RU = { admin: 'Администратор', rop: 'РОП', supervisor: 'Супервайзер', agent: 'Агент' };
-  const ROLE_ORDER = { admin: 0, rop: 1, supervisor: 2, agent: 3 };
+  const ROLE_RU = { admin: 'Администратор', rop: 'РОП', supervisor: 'Супервайзер', agent: 'Агент', store: 'Завсклад' };
+  const ROLE_ORDER = { admin: 0, rop: 1, supervisor: 2, agent: 3, store: 4 };
   const CACHE = 'crm_me';
   const sb = window.supabase?.createClient ? window.supabase.createClient(URL_, KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'crm_auth' } }) : null;
   let profile = null;
@@ -96,11 +96,13 @@ window.EXT_PAGES.users = async el => {
   const [p, r, l, cb, names] = await Promise.all([sb.from('profiles').select('*'), sb.from('regions').select('*').order('name'), sb.from('supervisor_regions').select('*'),
     sb.from('agent_cabinets').select('agent_id, updated_at'), crmNames]);
   if (!el.isConnected || location.hash !== at) return; // the person went to another page while this one loaded: do not draw over it
+  let whs = []; try { if (!window.CLOUD?.gate?.()) whs = (await CRMLocal.request('GET', '/api/wh/warehouses')).map(w => w.name); } catch { /* no warehouses */ }
   const err = p.error || r.error || l.error;
   const cabAt = Object.fromEntries((cb.data || []).map(x => [x.agent_id, x.updated_at]));
   const norm = v => String(v || '').toLowerCase().replace(/[’ʻʼ`´‘]/g, "'").replace(/\s+/g, ' ').trim(), known = new Set(names.map(norm));
   // the agent's cabinet: when it was last sent, or why it cannot be
   const cabText = x => {
+    if (x.role === 'store') return x.linko_name ? (cabAt[x.id] ? `<span title="последнее обновление">✓ ${new Date(cabAt[x.id]).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>` : UI.pill('muted', 'ещё не отправлен')) : UI.pill('warn', 'нет склада');
     if (x.role !== 'agent') return '';
     if (!x.linko_name) return UI.pill('warn', 'нет имени в LINKO');
     if (names.length && !known.has(norm(x.linko_name))) return UI.pill('crit', 'имя не найдено в LINKO');
@@ -113,7 +115,7 @@ window.EXT_PAGES.users = async el => {
   const svRegions = id => links.filter(x => x.supervisor_id === id).map(x => x.region_id);
   const LEADS = ['supervisor', 'admin', 'rop']; // may lead a team of agents and have own regions
   const whereText = x => {
-    if (x.role === 'agent') return regName[x.region_id] || '—';
+    if (x.role === 'agent' || x.role === 'store') return regName[x.region_id] || '—';
     const own = svRegions(x.id).map(id => regName[id]).filter(Boolean).join(', ');
     return x.role === 'supervisor' ? own || '—' : own ? `вся страна · ведёт: ${own}` : 'вся страна';
   };
@@ -140,7 +142,8 @@ window.EXT_PAGES.users = async el => {
     cbBtn.disabled = true;
     try {
       const r = await AC.publishDb({ force: true });
-      toast(`Кабинетов отправлено: ${r.n}` + (r.missing?.length ? `. Не найдены в LINKO: ${r.missing.join(', ')} — исправьте «Имя в LINKO»` : ''));
+      const st = typeof WC !== 'undefined' && WC.publishSb ? await WC.publishSb({ force: true }).catch(e => { toast('Завсклад: ' + (e.message || e)); return 0; }) : 0;
+      toast(`Кабинетов отправлено: ${r.n}${st ? ` + завсклад: ${st}` : ''}` + (r.missing?.length ? `. Не найдены в LINKO: ${r.missing.join(', ')} — исправьте «Имя в LINKO»` : ''));
       again();
     } catch (e) { toast('Не удалось: ' + (e.message || e)); cbBtn.disabled = false; }
   };
@@ -170,15 +173,19 @@ window.EXT_PAGES.users = async el => {
         <div id="f_agent"><label>Супервайзер<select id="f_sv"><option value="">— выберите —</option>${sups.map(s => `<option value="${s.id}" ${x?.supervisor_id === s.id ? 'selected' : ''}>${esc(s.full_name)}</option>`).join('')}</select></label>
           <label>Регион<select id="f_reg"><option value="">— выберите —</option>${regions.map(g => `<option value="${g.id}" ${x?.region_id === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label></div>
         <div id="f_sup"><label>Регионы, которые он ведёт сам (его команда агентов)</label>${regions.map(g => `<label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" data-reg="${g.id}" ${mine.includes(g.id) ? 'checked' : ''}> ${esc(g.name)}</label>`).join('')}</div>
-        <label>Имя в LINKO (выберите из списка — по нему агент получает свой кабинет)<input id="f_linko" list="f_names" autocomplete="off" value="${esc(x?.linko_name || '')}"></label>
+        <label id="f_linkoL">Имя в LINKO (выберите из списка — по нему агент получает свой кабинет)<input id="f_linko" list="f_names" autocomplete="off" value="${esc(x?.linko_name || '')}"></label>
         <datalist id="f_names">${names.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
+        <datalist id="f_whs">${whs.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
         <label>Телефон<input id="f_phone" value="${esc(x?.phone || '')}"></label>
       </div><small id="f_err" class="neg" role="alert"></small>
       ${isNew ? '<p class="mut" style="margin:8px 0 0">Запишите логин и пароль и передайте человеку лично. Пароль он сможет сменить сам: клик по своему имени вверху.</p>' : ''}
       <div class="bar" style="margin-top:12px">${!isNew && x.id !== AUTH.profile?.id ? `<button class="btn gray" id="f_pw">Новый пароль</button><button class="btn ${x.is_active ? 'danger' : 'gray'}" id="f_act">${x.is_active ? 'Заблокировать' : 'Разблокировать'}</button>` : ''}
         <span class="spacer"></span><button class="btn gray" id="f_x">Закрыть</button><button class="btn" id="f_ok">${isNew ? 'Создать' : 'Сохранить'}</button></div>`);
     const q = s => $(s, m.el);
-    const sync = () => { const role = q('#f_role').value; q('#f_agent').hidden = role !== 'agent'; q('#f_sup').hidden = !LEADS.includes(role); };
+    // a store keeper: supervisor + his warehouse (in «Имя в LINKO» — the warehouse name, picked from the CRM warehouses)
+    const sync = () => { const role = q('#f_role').value, st = role === 'store'; q('#f_agent').hidden = role !== 'agent' && !st; q('#f_sup').hidden = !LEADS.includes(role);
+      q('#f_linkoL').firstChild.textContent = st ? 'Склад завсклада (как в LINKO — выберите из списка)' : 'Имя в LINKO (выберите из списка — по нему агент получает свой кабинет)';
+      q('#f_linko').setAttribute('list', st ? 'f_whs' : 'f_names'); };
     q('#f_role').onchange = sync; sync();
     if (isNew) q('#f_gen').onclick = () => { q('#f_pass').value = AUTH.genPassword(); };
     q('#f_x').onclick = m.close;

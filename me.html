@@ -11,6 +11,7 @@
 <meta name="apple-mobile-web-app-title" content="Мой кабинет">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="me-manifest.json">
 <title>Мой кабинет — MITAL</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap">
@@ -48,6 +49,8 @@
   .bar2 u { position: absolute; top: 0; bottom: 0; width: 2px; background: #0e2433; }
   .todo { margin: 0; padding: 0; } .todo li { padding: 8px 0; border-bottom: 1px solid var(--line, #e2e7ec); list-style: none; } .todo li:last-child { border: 0; }
   .me-tabs .ic { margin-right: 4px; }
+  .me-tabs .mob { display: none; }
+  .me-top button[hidden] { display: none; }
   @media (max-width: 700px) {
     .me-wrap { padding: 12px 12px calc(84px + env(safe-area-inset-bottom)); }
     .me-wrap h2 { font-size: 20px; }
@@ -60,6 +63,8 @@
     .me-tabs a [id] { position: absolute; top: 2px; right: 4px; font-size: 10px; background: #e0564a; color: #fff; border-radius: 99px; padding: 0 5px; line-height: 16px; }
     .me-tabs a [id]:empty { display: none; }
     .me-tabs .wide { display: none; }
+    .me-wrap .me-tabs .mob { display: flex; }
+    .me-top { gap: 8px; } .me-top > span:not(.spacer) { display: none; } .me-top button { padding: 6px 10px; }
     .me-wrap .me-tabs a { color: #5b6b78; } .me-wrap .me-tabs a.on { color: #0e2433; font-weight: 700; }
     html[data-theme="dark"] .me-wrap .me-tabs a { color: #9fb0bd; } html[data-theme="dark"] .me-wrap .me-tabs a.on { color: #fff; background: #ffffff1a; }
     .kpis { grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -77,11 +82,12 @@
 <main class="me-wrap">
   <div class="page-head"><div><h2 id="meName">Мой кабинет</h2><div class="sub" id="meSub"></div></div></div>
   <p id="meMsg" class="mut" role="status" hidden></p>
-  <nav class="tabs me-tabs" aria-label="Разделы"><a href="#" data-tab="main" class="on"><span class="ic" aria-hidden="true">🏠</span>Главное</a><a href="#" data-tab="collect"><span class="ic" aria-hidden="true">💰</span>Сбор <span id="meCqN"></span></a><a href="#" data-tab="tasks"><span class="ic" aria-hidden="true">✅</span>Задания <span id="meTaskN"></span></a><a href="#" data-tab="clients"><span class="ic" aria-hidden="true">👥</span>Клиенты</a><a href="#" data-tab="stock"><span class="ic" aria-hidden="true">📦</span>Склад</a><a href="#" data-tab="disc"><span class="ic" aria-hidden="true">⏰</span>Дисциплина</a><a href="#" data-tab="chat" class="wide"><span class="ic" aria-hidden="true">💬</span>Чат</a><a class="wide" href="https://mital111222333.github.io/academy/" target="_blank" rel="noopener"><span class="ic" aria-hidden="true">🎓</span>Академия</a></nav>
+  <nav class="tabs me-tabs" aria-label="Разделы"><a href="#" data-tab="main" class="on"><span class="ic" aria-hidden="true">🏠</span>Главное</a><a href="#" data-tab="collect"><span class="ic" aria-hidden="true">💰</span>Сбор <span id="meCqN"></span></a><a href="#" data-tab="cal"><span class="ic" aria-hidden="true">📅</span>Оплаты</a><a href="#" data-tab="route"><span class="ic" aria-hidden="true">🗺</span>Маршрут</a><a href="#" data-tab="tasks"><span class="ic" aria-hidden="true">✅</span>Задания <span id="meTaskN"></span></a><a href="#" data-tab="clients" class="wide"><span class="ic" aria-hidden="true">👥</span>Клиенты</a><a href="#" data-tab="contracts" class="wide"><span class="ic" aria-hidden="true">📄</span>Договоры</a><a href="#" data-tab="stock" class="wide"><span class="ic" aria-hidden="true">📦</span>Склад</a><a href="#" data-tab="disc" class="wide"><span class="ic" aria-hidden="true">⏰</span>Дисциплина</a><a href="#" data-tab="chat" class="wide"><span class="ic" aria-hidden="true">💬</span>Чат</a><a class="wide" href="https://mital111222333.github.io/academy/" target="_blank" rel="noopener"><span class="ic" aria-hidden="true">🎓</span>Академия</a><a href="#" data-tab="more" class="mob"><span class="ic" aria-hidden="true">☰</span>Ещё</a></nav>
   <div id="meBody"></div>
 </main>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
-<script src="me.js?v=202611191800"></script>
+<script src="me-uz.js?v=202611192100"></script>
+<script src="me.js?v=202611192100"></script>
 </body>
 </html>

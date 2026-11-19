@@ -307,6 +307,20 @@ function live_(snap) {
   snap.live = live;
   return snap;
 }
+// ---------- вход по логину MITAL CRM: база MITAL (Supabase) проверяет токен входа и называет аккаунт → файл agents/sb/<id>.json ----------
+// Ключ ниже — публичный (тот же, что в странице кабинета), он не даёт доступа к данным: только проверка входа.
+const SB_AUTH = { URL: 'https://oxchgcfyzszemqlvdjjr.supabase.co', KEY: 'sb_publishable_FlwHIDb04LSfDA18DFo_Yw_YesRxk9g' };
+function sbUser_(token) {
+  if (!/^[A-Za-z0-9._-]{20,4096}$/.test(String(token))) return { error: 'Войдите в MITAL CRM заново' };
+  const key = 'sb_' + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token))).slice(0, 40);
+  const cache = CacheService.getScriptCache(), hit = cache.get(key); if (hit) return { id: hit };
+  const r = UrlFetchApp.fetch(SB_AUTH.URL + '/auth/v1/user', { headers: { apikey: SB_AUTH.KEY, Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
+  if (r.getResponseCode() !== 200) return { error: 'Вход устарел — откройте кабинет заново' };
+  const id = String(JSON.parse(r.getContentText()).id || '');
+  if (!/^[0-9a-f-]{36}$/.test(id)) return { error: 'Вход не подтверждён' };
+  cache.put(key, id, 300);
+  return { id: id };
+}
 // ---------- вход из Telegram: проверка подписи initData ключом бота (как требует Telegram), затем файл agents/tg/<id>.json ----------
 function tgAgent_(initData) {
   const u = tgUser_(initData); if (u.error) return u;
@@ -344,10 +358,12 @@ function doPost(e) {
   try {
     let path;
     if (p.tg) { const u = tgUser_(p.tg); if (u.error) return json_(u); path = 'agents/tg/' + u.id + '.json'; }
+    else if (p.sb) { const u = sbUser_(p.sb); if (u.error) return json_(u); path = 'agents/sb/' + u.id + '.json'; } // вход по логину MITAL CRM (завсклад)
     else if (/^[A-Za-z0-9_-]{20,64}$/.test(String(p.k || ''))) path = 'agents/' + Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(p.k), Utilities.Charset.UTF_8).map(b => ((b + 256) % 256).toString(16).padStart(2, '0')).join('') + '.json';
     else return json_({ error: 'Откройте кабинет кнопкой в боте' });
     const f = ghRaw_(path); if (f.code !== 200) return json_({ error: 'Доступ к кабинету не открыт' });
     const snap = JSON.parse(f.text);
+    if (p.act === 'load') return json_(snap.role === 'store' ? storeLive_(snap) : live_(snap)); // открыть кабинет (вход по логину)
     if (p.act === 'count_start' || p.act === 'count') return json_(countAct_(p, snap)); // сверка склада
     if (p.act === 'order') return json_(cntOrder_(p, snap));                            // порядок товаров как на полках
     if (p.act === 'collect') return json_(collectAct_(p, snap));                        // очередь сбора: результат контакта с должником

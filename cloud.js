@@ -22,7 +22,7 @@ window.CLOUD = (() => {
   // crm_ws_owner = the account this device's data belongs to. It is set only when the data is moved to the database
   // (or on a device that had no data yet). A different person signing in here never gets this data sent to his workspace.
   const WS = { owner: 'crm_ws_owner', BUCKET: 'workspaces' };
-  const me = () => (window.AUTH && AUTH.sb && AUTH.profile && AUTH.profile.role !== 'agent' ? AUTH.profile : null);
+  const me = () => (window.AUTH && AUTH.sb && AUTH.profile && !['agent', 'store'].includes(AUTH.profile.role) ? AUTH.profile : null);
   const sbOn = () => { const p = me(); return !!p && get(WS.owner) === p.id; };
   const foreign = () => { const o = get(WS.owner), p = window.AUTH?.profile; return !!o && !!p && o !== p.id; }; // data of another account
   // once the data moved to the database this device never writes the GitHub file again (not even offline or signed out)
@@ -386,7 +386,7 @@ window.CLOUD = (() => {
     //   null      — yes: the device is his, or it is empty, or it is the admin's own old device not moved yet
     gate() {
       const p = window.AUTH?.profile; if (!p) return null; // not signed in: app.js shows the sign-in form
-      if (p.role === 'agent') return 'agent';
+      if (p.role === 'agent' || p.role === 'store') return 'agent'; // a store keeper too: his cabinet, not the CRM
       if (!CRMLocal.engine) return 'wait';
       const o = get(WS.owner);
       if (o) return o === p.id ? null : 'foreign';
@@ -604,7 +604,7 @@ function loadCss(href) {
     await basePage(el);
     if (!el.isConnected || location.hash !== at) return; // another page is open now
     const p = window.AUTH?.profile;
-    if (!AUTH?.sb || !p || p.role === 'agent') return;
+    if (!AUTH?.sb || !p || ['agent', 'store'].includes(p.role)) return;
     const grid = el.querySelector('.grid'); if (!grid) return;
     const box = document.createElement('div'); box.style.display = 'contents'; grid.prepend(box);
     const st = CLOUD.store(), foreign = CLOUD.gate() === 'foreign';

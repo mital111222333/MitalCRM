@@ -44,6 +44,9 @@ const AC = {
     const reqs = disc ? Object.entries(DS.cfg().req).filter(([, q]) => q.agent === agent).map(([id, q]) => ({ id, type: DS.ST[q.type]?.t || q.type, from: q.from, to: q.to, note: q.note || '', st: q.st, at: q.at })).sort((p, q) => String(q.at).localeCompare(String(p.at))).slice(0, 15) : [];
     // statuses of today and the days ahead + the permanent free schedule: the auto-loader (autolinko.gs) does not fine such a day
     const marks = disc ? Object.fromEntries(Object.keys(DS.cfg().abs).filter(dd => dd >= t0 && DS.cfg().abs[dd][agent]).map(dd => [dd, DS.cfg().abs[dd][agent]])) : {}, tSt = disc ? DS.status(t0, agent) : '';
+    // the weekly route (Агенты → Маршруты): day 1..6 → zone and clients in the visiting order
+    const R = CRMLocal.ext().routes?.[agent], route = R?.days ? Object.fromEntries(Object.entries(R.days).filter(([, v]) => v && (v.clients || []).length).map(([k, v]) => [k, { zone: v.zone || '', clients: (v.clients || []).slice(0, 80) }])) : null;
+    const money = await AC.money(agent).catch(e => { console.warn('cabinet: calendar / contracts', e); return null; });
     const wh = AC.cfg().agents[agent]?.wh || '';
     const items = wh && stock ? stock.items.filter(i => i.cells[wh]).map(i => ({ name: i.name, art: i.art, brand: i.brand || '', available: i.cells[wh].available, total: i.cells[wh].total })).sort((x, y) => (x.brand || '').localeCompare(y.brand || '') || x.name.localeCompare(y.name)) : [];
     const whUp = wh && stock ? stock.warehouses.find(w => w.name === wh)?.upload?.taken_at || null : null;
@@ -54,7 +57,9 @@ const AC = {
       // debt and debtors from the same client list the agent sees (before: «должников 25» on the tile, 22 in the list)
       kpi: { sold: r2(a.sold), plan: r2(a.plan), paid: r2(a.paid), pool: r2(a.pool), debt: r2(clients.reduce((t, c) => t + (c.debt > 0 ? c.debt : 0), 0)), debtors: clients.filter(c => c.debt > 0).length, akb: a.akb, okb: a.okb },
       queue: typeof MY !== 'undefined' ? await MY.queueFor(agent).catch(() => []) : [], day: { sell: r2(a.need_sell_day), collect: r2(a.need_collect_day) },
-      board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [],
+      board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [], route,
+      // the payment calendar (as Деньги → Календарь оплат, only his clients) and his contracts: one-time (spec) and long
+      cal: money?.cal || null, contracts: money?.contracts || null,
       // the pay slip of the last closed month (pay.js «Закрыть месяц»)
       pay: CRMLocal.ext().pay?.slips?.[agent] || null,
       disc: disc ? { start: disc.startTxt, rate: disc.rate, today: today || tSt ? { first: today?.first || '', late: today?.first ? DS.lateFor(t0, agent, today.first, disc.start) : 0, st: tSt ? DS.ST[tSt].t : '' } : null, marks, free: !!DS.cfg().free[agent], skip: !!DS.cfg().skip[agent], end: DS.cfg().end || '', autoAbs: DS.cfg().autoAbs || '',
@@ -62,6 +67,37 @@ const AC = {
       // branch: the LINKO warehouse number of this warehouse, so the auto-loader can put fresh stock in (autolinko.gs live_)
       stock: wh ? { warehouse: wh, at: whUp, branch: Object.keys(CRMLocal.ext().linkoBranch || {}).find(b => CRMLocal.ext().linkoBranch[b] === wh) || null, items } : null,
     };
+  },
+
+  // who must pay and when (CAL.items: spec orders by parts, long contracts by month, promises), and the agent's contracts.
+  // Computed once per publish for all agents (AC._money), so 10 agents do not read the instalment state 10 times.
+  async money(agent) {
+    if (typeof CAL === 'undefined' || typeof INST === 'undefined') return null;
+    if (!AC._money || Date.now() - AC._money.t > 60000) AC._money = { t: Date.now(), p: CAL.items() };
+    const { list, st } = await AC._money.p, t0 = UI.localDate(Date.now());
+    const txt = s => String(s ?? '').replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    const r2 = v => Math.round((Number(v) || 0) * 100) / 100, lo = UI.localDate(Date.now() - 60 * 864e5), hi = UI.localDate(Date.now() + 75 * 864e5);
+    const cal = list.filter(x => x.agent === agent && x.d && ((x.d >= lo && x.d <= hi) || x.st === 'late')).sort((a, b) => a.d.localeCompare(b.d))
+      .slice(-400).map(x => ({ d: x.d, s: r2(x.s), client: x.client, kind: x.kind, st: x.st, why: txt(x.why) }));
+    const cfg = INST.cfg(), mine = n => (INST.agentOfClient(n) || (typeof LX !== 'undefined' ? LX.clientAgent(n) : '')) === agent;
+    // one-time contracts: every order on special conditions that still has something to pay (or was made in the last 60 days)
+    const once = [];
+    for (const c of st?.clients || []) {
+      if (c.contract || !((c.agent || '') === agent || (!c.agent && mine(c.name)))) continue;
+      for (const o of c.orders || []) {
+        const parts = (o.parts || []).map(p => ({ d: p.d, s: r2(p.s), st: p.st === 'paid' ? 'paid' : p.st === 'late' ? 'late' : 'wait' }));
+        if (!parts.some(p => p.st !== 'paid') && !(o.d >= lo)) continue;
+        const set = cfg.orders?.[o.id] || {};
+        once.push({ client: c.name, id: String(o.id), d: o.d, s: r2(o.s), parts, cond: txt(o.cond || set.cond || ''), spec: !!set.spec, own: !!o.own, disc: set.disc ?? null });
+      }
+    }
+    // long contracts: plan per contract month and what is paid of it
+    const got = new Map((st?.contracts || []).map(k => [k.id, k]));
+    const long = cfg.contracts.filter(k => k.start && ((k.agent || '') === agent || (!k.agent && mine(k.accounts?.[0] || k.title)))).map(k => {
+      const P = INST.planOf(k), s = got.get(k.id);
+      return { title: k.title, client: k.accounts?.[0] || k.title, start: k.start, months: P.map((plan, i) => { const w = CAL.ctMonth(k.start, i), paid = s?.list?.[i]?.paid ?? null; return { from: w.from, to: w.to, plan: r2(plan), paid: paid == null ? null : r2(paid), st: paid != null && paid >= plan - 0.5 ? 'paid' : w.to < t0 ? 'late' : 'wait' }; }) };
+    });
+    return { cal, contracts: { once: once.sort((a, b) => String(b.d).localeCompare(String(a.d))).slice(0, 120), long } };
   },
 
   async gh(c, method, path, body) {
@@ -80,7 +116,7 @@ const AC = {
   norm: s => String(s || '').toLowerCase().replace(/[’ʻʼ`´‘]/g, "'").replace(/\s+/g, ' ').trim(),
   async publishDb({ force = false } = {}) {
     const sb = window.AUTH?.sb, me = window.AUTH?.profile;
-    if (!sb || !me || me.role === 'agent' || window.CLOUD?.gate?.() || AC._busyDb) return { n: 0 };
+    if (!sb || !me || ['agent', 'store'].includes(me.role) || window.CLOUD?.gate?.() || AC._busyDb) return { n: 0 };
     AC._busyDb = true;
     try {
       const { data: ppl, error } = await sb.from('profiles').select('id, full_name, linko_name, is_active').eq('role', 'agent');
@@ -147,6 +183,7 @@ const AC = {
   const later = () => { clearTimeout(AC._t); AC._t = setTimeout(() => {
     AC.publish().catch(e => console.warn('agent cabinets', e));
     AC.publishDb().catch(e => console.warn('agent cabinets (database)', e));
+    if (typeof WC !== 'undefined' && WC.publishSb) WC.publishSb().catch(e => console.warn('store keepers (database)', e)); // завсклад with his own login
   }, 20000); };
   addEventListener('crm:login', later); // signed in on an open page: the agents get their cabinets without waiting for new data
   for (const k of ['importSnap', 'importFast', 'put']) { const orig = LX[k]; if (typeof orig === 'function') LX[k] = function (...a) { const r = orig.apply(this, a); later(); return r; }; }

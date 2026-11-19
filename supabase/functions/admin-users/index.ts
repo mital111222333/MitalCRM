@@ -9,7 +9,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 
 const DOMAIN = 'mital.crm';
-const ROLES = ['admin', 'rop', 'supervisor', 'agent'];
+const ROLES = ['admin', 'rop', 'supervisor', 'agent', 'store']; // store — завсклад: his own cabinet with the daily stock count
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -40,6 +40,13 @@ async function links(role: string, b: Record<string, unknown>) {
     if (!sv || !LEADS.includes(sv.role)) throw new Fail('Выберите супервайзера агента');
     if (!b.region_id) throw new Fail('Выберите регион агента');
     out.supervisor_id = sv.id; out.region_id = String(b.region_id);
+  }
+  // a store keeper belongs to the supervisor whose CRM publishes his warehouse; the region is optional
+  if (role === 'store') {
+    const sv = b.supervisor_id ? await profile(String(b.supervisor_id)) : null;
+    if (!sv || !LEADS.includes(sv.role)) throw new Fail('Выберите супервайзера завсклада');
+    if (!str(b.linko_name)) throw new Fail('Укажите склад завсклада (как в LINKO)');
+    out.supervisor_id = sv.id; out.region_id = b.region_id ? String(b.region_id) : null;
   }
   return out;
 }

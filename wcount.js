@@ -62,17 +62,43 @@ const WC = {
     return true;
   },
 
+  // the store keeper's file: the product list of his warehouse (names only: the count is blind) and the count settings
+  file(who, name, wh, bot) {
+    const c = WC.cfg(), last = c.subs.filter(x => x.who === who).at(-1), recount = last && last.status === 'recount' ? last.recount : [];
+    const S = CRMLocal.engine.getState(), up = (S.wh.uploads || []).filter(u => u.warehouse === wh).sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1))[0];
+    const items = (up?.rows || []).map(r => ({ art: String(r.art), name: r.name, brand: r.brand || '' }));
+    return { v: 1, role: 'store', who, name, warehouse: wh, branch: WC.branchOf(wh), deadline: c.deadline || '10:00', boss: AC.boss() || null, bot: bot || null, chat: typeof CHAT !== 'undefined' && CHAT.url ? CHAT.url() : null, at: new Date().toISOString(), recount: recount.map(a => ({ art: a, name: last.items.find(i => i.art === a)?.name || a })), items,
+      mode: c.mode || 'full', fullDay: Number(c.fullDay || 1), extra: Number(c.extra ?? 8), packs: c.packs || {} };
+  },
+  // store keepers with their own CRM login (Пользователи → role «Завсклад», «Имя в LINKO» = his warehouse): the same file as
+  // agents/sb/<account id>.json for the auto-loader (it checks the login with the MITAL database), and a small row in agent_cabinets
+  // that tells his page where the auto-loader is. who = 'sb_<id>' keeps his counts apart from the Telegram store keepers.
+  async publishSb({ force = false } = {}) {
+    const sb = window.AUTH?.sb, me = window.AUTH?.profile, cl = typeof AC !== 'undefined' ? AC.cloud() : null, web = typeof AC !== 'undefined' ? AC.web() : '';
+    if (!sb || !me || ['agent', 'store'].includes(me.role) || window.CLOUD?.gate?.() || !cl || !web || WC._busySb) return 0;
+    WC._busySb = true;
+    try {
+      const { data, error } = await sb.from('profiles').select('id, full_name, linko_name, is_active').eq('role', 'store');
+      if (error) throw error;
+      let n = 0; WC._lastSb ||= {};
+      for (const p of (data || []).filter(x => x.is_active && x.linko_name)) {
+        const file = WC.file('sb_' + p.id, p.full_name, p.linko_name, ''), key = JSON.stringify({ ...file, at: '' });
+        if (!force && WC._lastSb[p.id] === key) continue;
+        await AC.gh(cl, 'PUT', 'agents/sb/' + p.id + '.json', { message: 'CRM: кабинет склада (логин)', content: AC.b64(JSON.stringify(file)) });
+        const { error: e2 } = await sb.from('agent_cabinets').upsert({ agent_id: p.id, data: { v: 1, role: 'store', name: p.full_name, warehouse: p.linko_name, gas: web, items: file.items.length, at: file.at }, updated_at: new Date().toISOString(), updated_by: me.id });
+        if (e2) throw e2;
+        WC._lastSb[p.id] = key; n++;
+      }
+      return n;
+    } finally { WC._busySb = false; }
+  },
   // the store keepers' cabinets + stores.json for the reminder
   async publish() {
     const c = WC.cfg(), cl = typeof AC !== 'undefined' ? AC.cloud() : null; if (!cl) return 0;
     const on = Object.entries(c.stores).filter(([, s]) => s.on && s.wh);
     const bot = CRMLocal.ext().tg?.token ? await AC.bot() : '';
     for (const [who, s] of on) {
-      const last = c.subs.filter(x => x.who === who).at(-1), recount = last && last.status === 'recount' ? last.recount : [];
-      const S = CRMLocal.engine.getState(), up = (S.wh.uploads || []).filter(u => u.warehouse === s.wh).sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1))[0];
-      const items = (up?.rows || []).map(r => ({ art: String(r.art), name: r.name, brand: r.brand || '' })); // names only: the count is blind
-      const file = { v: 1, role: 'store', who, name: s.name, warehouse: s.wh, branch: WC.branchOf(s.wh), deadline: c.deadline || '10:00', boss: AC.boss() || null, bot: bot || null, chat: typeof CHAT !== 'undefined' && CHAT.url ? CHAT.url() : null, at: new Date().toISOString(), recount: recount.map(a => ({ art: a, name: last.items.find(i => i.art === a)?.name || a })), items,
-        mode: c.mode || 'full', fullDay: Number(c.fullDay || 1), extra: Number(c.extra ?? 8), packs: c.packs || {} };
+      const file = WC.file(who, s.name, s.wh, bot);
       await AC.gh(cl, 'PUT', 'agents/tg/' + who + '.json', { message: 'CRM: кабинет склада', content: AC.b64(JSON.stringify(file)) });
     }
     await AC.gh(cl, 'PUT', 'stores.json', { message: 'CRM: склады и срок сверки', content: AC.b64(JSON.stringify({ deadline: c.deadline || '10:00', remind: c.remind || '09:00', app: AC.web() ? AC.miniUrl() : '', list: on.map(([who, s]) => ({ who, name: s.name, warehouse: s.wh })) })) });
