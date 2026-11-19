@@ -5,6 +5,7 @@
 // Add a phrase: [ 'как на экране по-русски', 'oʻzbekcha' ]. Keep the Russian part exactly as me.js writes it.
 window.ME_UZ = [
   // header, tabs, common
+  ['🔁 Руководитель просит провести сверку ещё раз — полностью, все товары.', '🔁 Rahbar omborni yana bir bor toʻliq, barcha tovarlar boʻyicha sanashni soʻrayapti.'], ['Считайте внимательно: коробки и штуки, отложенное под заказы тоже.', 'Diqqat bilan sanang: qutilar va donalar, buyurtmalarga ajratilganlari ham.'],
   ['Мой кабинет — MITAL', 'Mening kabinetim — MITAL'], ['Мой кабинет', 'Mening kabinetim'], ['🔄 Обновить', '🔄 Yangilash'], ['Обновляю…', 'Yangilanmoqda…'], ['Выйти', 'Chiqish'],
   ['Главное', 'Asosiy'], ['Сбор', 'Undiruv'], ['Оплаты', 'Toʻlovlar'], ['Маршрут', 'Marshrut'], ['Задания', 'Topshiriqlar'], ['Ещё', 'Yana'],
   ['Мои клиенты', 'Mijozlarim'], ['Клиенты', 'Mijozlar'], ['Договоры', 'Shartnomalar'], ['Склад', 'Ombor'], ['Дисциплина', 'Intizom'], ['Чат с руководителем', 'Rahbar bilan chat'], ['Чат', 'Chat'], ['Академия', 'Akademiya'],

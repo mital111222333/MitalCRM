@@ -6,6 +6,15 @@ const WH_TABS = [['wh', 'Обзор'], ['whstock', 'Остатки'], ['whlow', 
 const WH_STATUS = { out: ['crit', '✕', 'Закончился'], blocked: ['serious', '⊘', 'Всё в резерве'], low: ['warn', '▼', 'Мало'], soon: ['warn', '◔', 'Скоро закончится'], ok: ['good', '✓', 'В норме'] };
 const whPill = s => UI.pill(WH_STATUS[s][0], WH_STATUS[s][2], WH_STATUS[s][1]);
 const whEnc = encodeURIComponent;
+// goods no longer brought in (Сверка складов → «Не считать», e.g. MATTEX) are left out of the stock, «what is running out» and movement lists
+async function whApi(url) {
+  const d = await api(url), skip = typeof WC !== 'undefined' ? i => WC.skipped(i) : () => false;
+  if (d && Array.isArray(d.items)) {
+    d.items = d.items.filter(i => !skip(i));
+    if (d.counts && d.items.every(i => i.status)) { const c = {}; for (const k in d.counts) c[k] = 0; for (const i of d.items) c[i.status] = (c[i.status] || 0) + 1; d.counts = c; }
+  }
+  return d;
+}
 // "хватит на" makes no sense for items that are already out or fully reserved
 const whDays = i => (i.days_left != null && !['out', 'blocked'].includes(i.status) ? Math.round(i.days_left) + ' дн.' : '—');
 const whTime = u => { const v = u && (u.snap_at || ''); const d = v ? new Date(v) : null; return d && !isNaN(d) ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''; };
@@ -39,7 +48,7 @@ function whEmpty(el, st) {
 
 // ---------- product details ----------
 async function whProductModal(art, name, onChange) {
-  const [h, st, low] = await Promise.all([api('/api/wh/history?art=' + whEnc(art)), api('/api/wh/stock'), api('/api/wh/low')]);
+  const [h, st, low] = await Promise.all([api('/api/wh/history?art=' + whEnc(art)), whApi('/api/wh/stock'), whApi('/api/wh/low')]);
   const it = st.items.find(i => i.art === art), lo = low.items.find(i => i.art === art);
   const dates = [...new Set(h.map(r => r.date))].sort(), whs = [...new Set(h.map(r => r.warehouse))];
   const series = whs.map((w, i) => { let last = 0; return { name: w, color: CH.colors[i % 8], values: dates.map(d => { const r = h.find(x => x.warehouse === w && x.date === d); if (r) last = r.total; return last; }) }; });
@@ -63,12 +72,12 @@ async function whProductModal(art, name, onChange) {
 
 // ---------- overview ----------
 EXT_PAGES.wh = async el => {
-  const [st, low] = await Promise.all([api('/api/wh/stock'), api('/api/wh/low')]);
+  const [st, low] = await Promise.all([whApi('/api/wh/stock'), whApi('/api/wh/low')]);
   const latest = whLatest(st);
   const body = whShell(el, 'wh', latest ? `Данные на ${UI.dateRu(latest)}${whNewest(st)} · складов: ${st.warehouses.filter(w => w.upload).length} из ${st.warehouses.length}` : 'Нет загруженных остатков');
   if (!latest) return whEmpty(body, st);
   const from = (() => { const d = new Date(latest + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 90); return d.toISOString().slice(0, 10); })();
-  const mv = await api(`/api/wh/movement?from=${from}&to=${latest}`);
+  const mv = await whApi(`/api/wh/movement?from=${from}&to=${latest}`);
   const S = k => st.items.reduce((a, i) => a + i.sum[k], 0), inStock = st.items.filter(i => i.sum.total > 0).length, c = low.counts || {};
   const moved = mv.snapshots >= 2 && mv.series.length >= 2;
   const att = low.items.filter(i => i.status !== 'ok').slice(0, 8);
@@ -99,7 +108,7 @@ EXT_PAGES.wh = async el => {
 // ---------- stock matrix ----------
 let whStockState = { q: '', brand: '', type: '', status: '', zero: false };
 EXT_PAGES.whstock = async el => {
-  const [st, low] = await Promise.all([api('/api/wh/stock'), api('/api/wh/low')]);
+  const [st, low] = await Promise.all([whApi('/api/wh/stock'), whApi('/api/wh/low')]);
   const latest = whLatest(st), body = whShell(el, 'whstock', latest ? `Данные на ${UI.dateRu(latest)}${whNewest(st)}` : 'Нет загруженных остатков');
   if (!latest) return whEmpty(body, st);
   const stat = new Map(low.items.map(i => [i.art, i])), uniq = k => [...new Set(st.items.map(i => i[k]).filter(Boolean))].sort();
@@ -134,7 +143,7 @@ EXT_PAGES.whstock = async el => {
 // ---------- what is running out ----------
 let whLowState = { showOk: false, status: '' };
 EXT_PAGES.whlow = async el => {
-  const low = await api('/api/wh/low'), body = whShell(el, 'whlow', low.window ? `Расход считается по загрузкам за последние ${low.window.days} дней · данные на ${UI.dateRu(low.window.to)}` : 'Нет загруженных остатков');
+  const low = await whApi('/api/wh/low'), body = whShell(el, 'whlow', low.window ? `Расход считается по загрузкам за последние ${low.window.days} дней · данные на ${UI.dateRu(low.window.to)}` : 'Нет загруженных остатков');
   if (!low.window) return whEmpty(body, low);
   const S = whLowState, c = low.counts, cfg = low.settings;
   const noRate = low.window.snapshots < 2;
@@ -163,14 +172,14 @@ EXT_PAGES.whlow = async el => {
 // ---------- movement ----------
 let whMoveState = { days: 'auto', from: '', to: '', wh: '' };
 EXT_PAGES.whmove = async el => {
-  const [st, whs] = await Promise.all([api('/api/wh/stock'), api('/api/wh/warehouses')]);
+  const [st, whs] = await Promise.all([whApi('/api/wh/stock'), api('/api/wh/warehouses')]);
   const latest = whLatest(st), body = whShell(el, 'whmove', latest ? 'Что приходило и уходило со склада между загрузками' : 'Нет загруженных остатков');
   if (!latest) return whEmpty(body, st);
   const S = whMoveState, add = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
   const range = () => (S.days === 'custom' ? [S.from || add(latest, -30), S.to || latest] : S.days === 'all' || S.days === 'auto' ? ['2000-01-01', latest] : [add(latest, -Number(S.days)), latest]);
   const PRESETS = [['30', '30 дней'], ['60', '60 дней'], ['90', '90 дней'], ['all', 'Всё время'], ['custom', 'Свой период']];
   const [from, to] = range();
-  const mv = await api(`/api/wh/movement?from=${from}&to=${to}&warehouse=${whEnc(S.wh)}`);
+  const mv = await whApi(`/api/wh/movement?from=${from}&to=${to}&warehouse=${whEnc(S.wh)}`);
   body.innerHTML = `<div class="bar">${PRESETS.map(([k, t]) => `<button class="btn ${(S.days === k || (S.days === 'auto' && k === 'all')) ? 'on' : 'gray'} sm" data-d="${k}">${t}</button>`).join('')}
     ${S.days === 'custom' ? `<input type="date" id="f" value="${from}"> — <input type="date" id="t" value="${to}"><button class="btn sm" id="go">Показать</button>` : ''}
     <span class="spacer"></span><select id="wsel"><option value="">Все склады</option>${whs.map(w => `<option ${w.name === S.wh ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></div><div id="mvBody"></div>`;

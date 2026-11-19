@@ -466,6 +466,24 @@ function stockTotals_(branch) {
   rows.slice(1).forEach(r => { if (!r[iName]) return; const k = String(r[iArt] || r[iName]).trim(); out[k] = { name: r[iName], brand: r[iBrand] || '', total: (out[k] ? out[k].total : 0) + n_(String(r[iTotal]).replace(',', '.')) }; });
   return { at: L.at, items: out };
 }
+// the stock of the store keeper's warehouse without the goods the CRM does not count (snap.skip: brands / words in the name that are no
+// longer brought in, e.g. MATTEX) — they are left out of his list and of the comparison
+function storeStock_(snap) {
+  const s = stockTotals_(snap.branch); if (!s) return s;
+  const skip = (snap.skip || []).map(x => String(x).trim().toUpperCase()).filter(Boolean);
+  if (skip.length) Object.keys(s.items).forEach(k => { const t = (s.items[k].brand + ' ' + s.items[k].name).toUpperCase(); if (skip.some(b => t.indexOf(b) >= 0)) delete s.items[k]; });
+  return s;
+}
+// «Сверить ещё раз» from the CRM (snap.again = time of the request, ≤ 2 days old): a count that was closed before the request opens
+// again for a new full count. cntRoundFor_ returns today's round as the count should see it (null — start from scratch).
+function cntAgain_(snap, r) {
+  const a = snap.again ? Date.parse(snap.again) : 0;
+  return !!(a && Date.now() - a < 2 * 864e5 && (!r || Date.parse(r.at) < a));
+}
+function cntRoundFor_(day, snap) {
+  const r = cntRound_(day, snap.who);
+  return cntAgain_(snap, r) ? null : r;
+}
 // Попытки сверки за день (автоматически, без руководителя):
 //  1) полная сверка. Сошлось → завскладу «Сверка прошла успешно, склад в порядке». Есть расхождение → завскладу уходят ТОЛЬКО названия
 //     этих товаров (без цифр LINKO и без «больше/меньше») на пересчёт.
@@ -504,6 +522,7 @@ function cntOrder_(p, snap) {
 // Полная сверка — в день snap.fullDay (1 = понедельник), если прошлой сверки нет или она старше 7 дней, или если «коротких» и так ≥ 70 %.
 // План дня один на весь день: cntplan_<день>_<завсклад> = { short, list: [артикулы] | null, total }.
 function cntPlan_(snap, day, s) {
+  if (cntAgain_(snap, cntRound_(day, snap.who))) return { short: false, list: null, total: Object.keys(s.items).length }; // повторная — всегда полная
   const k = 'cntplan_' + day + '_' + snap.who, have = cntProp_(k); if (have) return have;
   const all = Object.keys(s.items), last = cntProp_('cntsnap_' + snap.who), dow = Number(Utilities.formatDate(new Date(), CFG.TZ, 'u'));
   let plan = { short: false, list: null, total: all.length };
@@ -521,12 +540,14 @@ function cntPlan_(snap, day, s) {
 // the store keeper's file with the product list from LINKO — names only: the count is blind
 function storeLive_(snap) {
   let S0 = null;
-  try { const s = snap.branch && stockTotals_(snap.branch); S0 = s; if (s) { snap.items = Object.keys(s.items).map(k => ({ art: k, name: s.items[k].name, brand: s.items[k].brand })).sort((a, b) => a.brand.localeCompare(b.brand) || a.name.localeCompare(b.name)); snap.items_at = s.at; } }
+  try { const s = snap.branch && storeStock_(snap); S0 = s; if (s) { snap.items = Object.keys(s.items).map(k => ({ art: k, name: s.items[k].name, brand: s.items[k].brand })).sort((a, b) => a.brand.localeCompare(b.brand) || a.name.localeCompare(b.name)); snap.items_at = s.at; } }
   catch (e) { Logger.log('Кабинет склада: ' + mask_(e.message || e)); }
   const P = PropertiesService.getScriptProperties(), day = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), done = P.getProperty('cntdone_' + day + '_' + snap.who);
-  snap.today = done ? JSON.parse(done) : null;
   // the list to recount and the result of the day come from here, not from the CRM file: they change the moment the store keeper sends
-  const r = cntRound_(day, snap.who);
+  const r = cntRoundFor_(day, snap);
+  snap.today = done && r ? JSON.parse(done) : null;
+  snap.again = cntAgain_(snap, cntRound_(day, snap.who)) ? snap.again : null; // the cabinet shows «руководитель просит пересчитать»
+  delete snap.known; delete snap.skip; // the count is blind: the store keeper does not see the expected differences
   snap.round = r ? { status: r.status, round: r.round, at: r.at, items: (r.items || []).map(i => ({ art: i.art, name: i.name })) } : null;
   snap.recount = r && r.status === 'recount' ? snap.round.items : [];
   // today's plan (full / short list), the shelf order, and the store keeper's OWN last counts (to catch typos — never the LINKO numbers)
@@ -538,11 +559,11 @@ function storeLive_(snap) {
 function countAct_(p, snap) {
   if (snap.role !== 'store' || !snap.branch) return { error: 'Это не кабинет склада' };
   const cache = CacheService.getScriptCache(), key = 'cnt_' + snap.who;
-  const day = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), round = cntRound_(day, snap.who);
+  const day = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), again = cntAgain_(snap, cntRound_(day, snap.who)), round = cntRoundFor_(day, snap);
   if (round && (round.status === 'ok' || round.status === 'final')) return { error: 'Сверка за сегодня уже закрыта', round: round.status };
   if (round && round.status === 'recount' && !p.partial) return { error: 'Сначала пересчитайте товары из списка — обновите кабинет' };
   if (p.act === 'count_start') {
-    const s = stockTotals_(snap.branch); if (!s) return { error: 'Нет остатков склада из LINKO — попробуйте через 5 минут' };
+    const s = storeStock_(snap); if (!s) return { error: 'Нет остатков склада из LINKO — попробуйте через 5 минут' };
     const totals = {}; Object.keys(s.items).forEach(k => { totals[k] = s.items[k].total; });
     const pl = p.partial ? null : cntPlan_(snap, day, s);
     cache.put(key, JSON.stringify({ at: new Date().toISOString(), linko_at: s.at, totals: totals, list: pl && pl.short ? pl.list : null }), 6 * 3600);
@@ -554,18 +575,20 @@ function countAct_(p, snap) {
   const counts = p.counts || {}, arts = Object.keys(counts).filter(a => !want || want.indexOf(a) >= 0); if (!arts.length) return { error: 'Нет посчитанных товаров' };
   if (want && want.some(a => arts.indexOf(a) < 0)) return { error: 'Пересчитайте все товары из списка' };
   let start = null; try { start = JSON.parse(cache.get(key) || 'null'); } catch (e) { start = null; }
-  if (!p.partial) { const pl = cntProp_('cntplan_' + day + '_' + snap.who), need = pl && pl.short ? pl.list : null; if (need && need.some(a => arts.indexOf(a) < 0)) return { error: 'Посчитайте все товары из сегодняшнего списка — обновите кабинет' }; }
-  const now = stockTotals_(snap.branch); if (!now) return { error: 'Нет остатков склада из LINKO — попробуйте через 5 минут' };
-  const base = start ? start.totals : null, items = arts.map(a => ({ art: a, name: (now.items[a] || {}).name || a, linko: base && a in base ? base[a] : ((now.items[a] || {}).total || 0), now: (now.items[a] || {}).total || 0, fact: Math.max(0, Math.round(n_(counts[a]))) }));
+  if (!p.partial && !again) { const pl = cntProp_('cntplan_' + day + '_' + snap.who), need = pl && pl.short ? pl.list : null; if (need && need.some(a => arts.indexOf(a) < 0)) return { error: 'Посчитайте все товары из сегодняшнего списка — обновите кабинет' }; }
+  const now = storeStock_(snap); if (!now) return { error: 'Нет остатков склада из LINKO — попробуйте через 5 минут' };
+  const base = start ? start.totals : null, items = arts.map(a => ({ art: a, name: (now.items[a] || {}).name || a, linko: base && a in base ? base[a] : ((now.items[a] || {}).total || 0), now: (now.items[a] || {}).total || 0, fact: Math.max(0, Math.round(n_(counts[a]))), k: Math.round(n_((snap.known || {})[a])) || 0 }));
   const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   let photo = '';
   if (p.photo && /^[A-Za-z0-9+/=]+$/.test(p.photo) && p.photo.length < 2800000) { photo = 'inbox/photos/' + uid + '.jpg'; saveB64ToGithub_(photo, p.photo, 'Сверка склада: фото'); }
-  // a real discrepancy: the fact matches neither the stock at the start nor the stock now (a shipment during the count is not a shortage)
-  const diff = items.filter(i => i.fact !== i.linko && i.fact !== i.now), moved = items.filter(i => i.fact !== i.linko && i.fact === i.now);
+  // a real discrepancy: the fact matches neither the stock at the start nor the stock now (a shipment during the count is not a shortage).
+  // i.k — a known permanent difference marked in the CRM («всегда −2»): fact = LINKO + k counts as matching
+  const diff = items.filter(i => i.fact !== i.linko + i.k && i.fact !== i.now + i.k), moved = items.filter(i => i.fact !== i.linko + i.k && i.fact === i.now + i.k);
+  const knownOk = items.filter(i => i.k && (i.fact === i.linko + i.k || i.fact === i.now + i.k));
   // attempt 1 with a discrepancy → recount; attempt 2 with a discrepancy → closed for good; no discrepancy → ok
   const nRound = p.partial ? 2 : 1, result = !diff.length ? 'ok' : nRound === 1 ? 'recount' : 'final';
   const atIso = new Date().toISOString(), names = diff.map(i => ({ art: i.art, name: i.name }));
-  const rec = { act: 'count', at: atIso, start_at: start ? start.at : null, who: snap.who, name: snap.name, warehouse: snap.warehouse, partial: !!p.partial, short: !p.partial && !!(start && start.list), total_items: Object.keys(now.items).length, round: nRound, result: result, recount: result === 'recount' ? diff.map(i => i.art) : [], items: items, photo: photo, comment: String(p.comment || '').slice(0, 500) };
+  const rec = { act: 'count', at: atIso, start_at: start ? start.at : null, who: snap.who, name: snap.name, warehouse: snap.warehouse, partial: !!p.partial, short: !p.partial && !!(start && start.list), total_items: Object.keys(now.items).length, round: nRound, result: result, again: again && !p.partial, recount: result === 'recount' ? diff.map(i => i.art) : [], items: items, photo: photo, comment: String(p.comment || '').slice(0, 500) };
   saveB64ToGithub_('inbox/' + stamp + '/' + uid + '.json', Utilities.base64Encode(JSON.stringify(rec), Utilities.Charset.UTF_8), 'Сверка склада: ' + snap.warehouse);
   cache.remove(key);
   cntRound_(stamp, snap.who, { status: result, round: nRound, at: atIso, items: result === 'ok' ? [] : names });
@@ -585,7 +608,7 @@ function countAct_(p, snap) {
   // to the supervisor: the numbers
   const lines = diff.slice(0, 15).map(i => '• ' + i.name + ': по LINKO ' + i.linko + ', факт ' + i.fact + ' (' + (i.fact > i.linko ? '+' : '') + (i.fact - i.linko) + ')');
   const verdict = result === 'recount' ? '\n↻ Завскладу автоматически отправлены названия на пересчёт (без цифр).' : result === 'final' ? '\n🔒 Окончательно после пересчёта: ' + (short ? 'недостача ' + short + ' поз.' : '') + (short && plus ? ', ' : '') + (plus ? 'излишек ' + plus + ' поз.' : '') : (nRound === 2 ? '\n✅ После пересчёта всё сошлось — завсклад получил «склад в порядке».' : '\n✅ Завсклад получил «склад в порядке».');
-  notify_('📦 ' + snap.warehouse + (rec.partial ? ' — пересчёт ' : rec.short ? ' — короткая сверка ' : ' — сверка ') + t + ' (' + snap.name + ')\n' + (diff.length ? 'Расхождений: ' + diff.length + ' из ' + items.length + '\n' + lines.join('\n') + (diff.length > 15 ? '\n…и ещё ' + (diff.length - 15) : '') : '✓ Всё сходится: ' + items.length + ' позиций') + (moved.length ? '\nℹ Сошлось с LINKO после отгрузки во время сверки: ' + moved.map(i => i.name).slice(0, 5).join(', ') + (moved.length > 5 ? ' и ещё ' + (moved.length - 5) : '') : '') + (rec.comment ? '\n💬 ' + rec.comment : '') + verdict);
+  notify_('📦 ' + snap.warehouse + (rec.partial ? ' — пересчёт ' : rec.again ? ' — повторная сверка ' : rec.short ? ' — короткая сверка ' : ' — сверка ') + t + ' (' + snap.name + ')\n' + (diff.length ? 'Расхождений: ' + diff.length + ' из ' + items.length + '\n' + lines.join('\n') + (diff.length > 15 ? '\n…и ещё ' + (diff.length - 15) : '') : '✓ Всё сходится: ' + items.length + ' позиций') + (knownOk.length ? '\n📌 Учтены постоянные разницы: ' + knownOk.map(i => i.name + ' (' + (i.k > 0 ? '+' : '') + i.k + ')').slice(0, 5).join(', ') + (knownOk.length > 5 ? ' и ещё ' + (knownOk.length - 5) : '') : '') + (moved.length ? '\nℹ Сошлось с LINKO после отгрузки во время сверки: ' + moved.map(i => i.name).slice(0, 5).join(', ') + (moved.length > 5 ? ' и ещё ' + (moved.length - 5) : '') : '') + (rec.comment ? '\n💬 ' + rec.comment : '') + verdict);
   return { ok: true, result: result, round: nRound, total: items.length, items: result === 'ok' ? [] : names };
 }
 // reminders (stores.json from the CRM): in the morning at «remind» (09:00) to every store keeper who has not sent today's count yet,
