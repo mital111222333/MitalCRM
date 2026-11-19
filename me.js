@@ -369,23 +369,42 @@
   // 🎤 numbers by voice while counting: «пять коробок три штуки», «двенадцать», «ноль», «дальше» (skip). Russian and Uzbek words,
   // digits as the phone hears them. One number for an item in boxes = boxes; «штук» after a number = pieces.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const NUMW = { ноль: 0, нуль: 0, один: 1, одна: 1, одну: 1, одно: 1, два: 2, две: 2, три: 3, четыре: 4, пять: 5, шесть: 6, семь: 7, восемь: 8, девять: 9, десять: 10, одиннадцать: 11, двенадцать: 12, тринадцать: 13, четырнадцать: 14, пятнадцать: 15, шестнадцать: 16, семнадцать: 17, восемнадцать: 18, девятнадцать: 19, двадцать: 20, тридцать: 30, сорок: 40, пятьдесят: 50, шестьдесят: 60, семьдесят: 70, восемьдесят: 80, девяносто: 90, сто: 100, двести: 200, триста: 300, четыреста: 400, пятьсот: 500, шестьсот: 600, семьсот: 700, восемьсот: 800, девятьсот: 900,
-    nol: 0, bir: 1, ikki: 2, uch: 3, tort: 4, besh: 5, olti: 6, yetti: 7, sakkiz: 8, toqqiz: 9, on: 10, yigirma: 20, ottiz: 30, qirq: 40, ellik: 50, oltmish: 60, yetmish: 70, sakson: 80, toqson: 90, yuz: 100 };
+  // the language the phone listens in — separate from the page language: many say numbers in Russian even with the page in Uzbek
+  const vLang = () => store.get('mital_vlang') || (lang === 'uz' ? 'uz' : 'ru');
+  // number words, Russian and Uzbek (Latin and Cyrillic, with the spellings the phone writes: «tort», «turt», «etti», «sakiz», «kirk»).
+  // Text is normalised first: lower case, ё→е, ў→у, қ→к, ғ→г, ҳ→х, apostrophes dropped («to'rt» → «tort», «o'n» → «on»).
+  const NUMW = { ноль: 0, нуль: 0, один: 1, одна: 1, одну: 1, одно: 1, два: 2, две: 2, три: 3, четыре: 4, пять: 5, шесть: 6, семь: 7, восемь: 8, девять: 9, десять: 10, одиннадцать: 11, двенадцать: 12, тринадцать: 13, четырнадцать: 14, пятнадцать: 15, шестнадцать: 16, семнадцать: 17, восемнадцать: 18, девятнадцать: 19, двадцать: 20, тридцать: 30, сорок: 40, пятьдесят: 50, шестьдесят: 60, семьдесят: 70, восемьдесят: 80, девяносто: 90, двести: 200, триста: 300, четыреста: 400, пятьсот: 500, шестьсот: 600, семьсот: 700, восемьсот: 800, девятьсот: 900,
+    nol: 0, nul: 0, bir: 1, ikki: 2, iki: 2, uch: 3, tort: 4, turt: 4, besh: 5, bes: 5, olti: 6, yetti: 7, etti: 7, sakkiz: 8, sakiz: 8, toqqiz: 9, toqiz: 9, tuqqiz: 9, tukkiz: 9, tokkiz: 9, on: 10, un: 10,
+    yigirma: 20, igirma: 20, ottiz: 30, otiz: 30, uttiz: 30, qirq: 40, kirk: 40, qirk: 40, kirq: 40, ellik: 50, elik: 50, oltmish: 60, yetmish: 70, etmish: 70, sakson: 80, toqson: 90, tuqson: 90, tokson: 90,
+    нол: 0, бир: 1, икки: 2, ики: 2, уч: 3, турт: 4, беш: 5, олти: 6, етти: 7, йетти: 7, саккиз: 8, сакиз: 8, туккиз: 9, токкиз: 9, ун: 10, йигирма: 20, игирма: 20, уттиз: 30, утиз: 30, кирк: 40, эллик: 50, элик: 50, олтмиш: 60, етмиш: 70, йетмиш: 70, саксон: 80, туксон: 90 };
+  const HUNDRED = /^(сто|сотня|yuz|юз)$/, THOUSAND = /^(тысяч\w*|ming|минг)$/;
+  const BOXW = /^(кор|короб|ящик|quti|kuti|qutt|karob|korob|yashik|кути|каробк)/, PCSW = /^(шт|штук|штуки|штука|штучек|dona|donasi|дона|донаси)$/, NEUTW = /^(ta|та|tasi|таси)$/;
+  const SKIPW = /дальше|пропус|следующ|keyingi|кейинги|otkaz|утказ|next|keyin|кейин/;
+  const voiceNorm = t => String(t || '').toLowerCase().replace(/ё/g, 'е').replace(/ў/g, 'у').replace(/қ/g, 'к').replace(/ғ/g, 'г').replace(/ҳ/g, 'х').replace(/[ʻʼ'`’‘´]/g, '');
+  // a number word with the Uzbek counter glued on: «beshta», «ontasi», «бешта» → «besh» (neutral); digits too: «5ta»
+  const numWord = t => { if (t in NUMW) return { v: NUMW[t] }; const m = t.match(/^(.+?)(ta|tasi|tadan|та|таси|тадан)$/); if (m && (m[1] in NUMW || /^\d+$/.test(m[1]))) return { v: /^\d+$/.test(m[1]) ? Number(m[1]) : NUMW[m[1]], ta: true }; return null; };
   function hearNums(text) {
-    const toks = String(text).toLowerCase().replace(/ё/g, 'е').replace(/[ʻ'`’‘]/g, '').replace(/(\d)\s+(?=\d{3}\b)/g, '$1').split(/[^a-zа-я0-9]+/).filter(Boolean), out = [];
-    let cur = null;
-    const flush = unit => { if (cur !== null) { out.push({ n: cur, unit }); cur = null; } };
+    const norm = voiceNorm(text), toks = norm.replace(/(\d)\s+(?=\d{3}\b)/g, '$1').split(/[^a-zа-я0-9]+/).filter(Boolean), out = [];
+    let total = null, group = 0;
+    const flush = unit => { if (total !== null) { out.push({ n: total + group, unit }); total = null; group = 0; } };
     for (let k = 0; k < toks.length; k++) {
-      const t = toks[k], next = toks[k + 1] || '';
-      let v = /^\d+$/.test(t) ? Number(t) : t in NUMW ? NUMW[t] : /^тысяч|^ming$/.test(t) ? 'k' : /^(нет|нету|yoq|yuq)$/.test(t) ? 0 : null;
-      if (v === 'k') { cur = (cur || 1) * 1000; continue; }
-      if (v !== null) { if (/^\d+$/.test(t) && cur !== null) flush(null); cur = (cur || 0) + v; }
-      else if (/^(кор|короб|quti|yashik|ящик)/.test(t)) flush('b');
-      else if (/^(шт|штук|штуки|штука|дона|dona|ta)$/.test(t)) flush('p');
-      else flush(null);
-      if (!next) flush(null);
+      const t = toks[k];
+      const w = /^\d+$/.test(t) ? null : numWord(t);
+      if (/^\d+$/.test(t)) { flush(null); total = 0; group = Number(t); }
+      else if (HUNDRED.test(t)) { if (total === null) { total = 0; group = 0; } group = group > 0 && group < 10 ? group * 100 : group + 100; } // «besh yuz» = 500, «сто» = 100
+      else if (THOUSAND.test(t)) { if (total === null) { total = 0; group = 1; } total += (group || 1) * 1000; group = 0; }
+      else if (/^(нет|нету|yoq|yuq|йук|йок)$/.test(t)) { flush(null); total = 0; group = 0; flush(null); }
+      else if (w) {
+        if (total !== null && group % 10 !== 0 && w.v < 10) flush(null); // «ikki uch» → 2 and 3; «yigirma besh» → 25, «on ikki» → 12
+        if (total === null) { total = 0; group = 0; }
+        group += w.v;
+      }
+      else if (BOXW.test(t)) flush('b');
+      else if (PCSW.test(t)) flush('p');
+      else flush(null); // «ta» and any other word end the number
     }
-    return { nums: out, skip: /дальше|пропус|следующ|keyingi|otkaz/.test(String(text).toLowerCase().replace(/[ʻ'`’‘]/g, '')) };
+    flush(null);
+    return { nums: out, skip: SKIPW.test(norm) };
   }
   function voiceCount(body, list, sel, recalc) {
     const btn = $('#scMic'), stat = $('#scV'); if (!btn) return;
@@ -409,12 +428,13 @@
       nextRow();
     };
     const start = () => {
-      rec = new SR(); rec.lang = lang === 'uz' ? 'uz-UZ' : 'ru-RU'; rec.interimResults = false; rec.maxAlternatives = 3; rec.continuous = false;
+      rec = new SR(); rec.lang = vLang() === 'uz' ? 'uz-UZ' : 'ru-RU'; rec.interimResults = false; rec.maxAlternatives = 5; rec.continuous = false;
       rec.onresult = e => { const alts = [...e.results[e.results.length - 1]].map(r => r.transcript), t = alts.find(x => hearNums(x).nums.length) || alts[0]; apply(t); };
       rec.onerror = e => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { on = false; btn.textContent = '🎤'; stat.textContent = 'Разрешите доступ к микрофону в настройках браузера'; } };
-      rec.onend = () => { if (on) setTimeout(() => { if (on) try { rec.start(); } catch { /* already started */ } }, 250); };
+      rec.onend = () => { if (on) setTimeout(() => { if (on) start(); }, 250); }; // a new recogniser each time: picks up a changed voice language
       try { rec.start(); } catch { /* already started */ }
     };
+    const vl = $('#scVl'); if (vl) vl.onclick = () => { const v = vLang() === 'uz' ? 'ru' : 'uz'; store.set('mital_vlang', v); vl.textContent = v.toUpperCase(); stat.textContent = v === 'uz' ? '🎤 Ovoz: oʻzbekcha (sonlarni oʻzbekcha ayting)' : '🎤 Голос: по-русски (числа говорите по-русски)'; if (on) { try { rec && rec.abort(); } catch { /* stopped */ } } };
     btn.onclick = () => {
       on = !on; btn.textContent = on ? '⏹' : '🎤'; btn.classList.toggle('sc-live', on);
       if (on) { target(); const r = cur && sel('r', cur); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' }); stat.textContent = '🔴 Слушаю: называйте количество по порядку («5 коробок 3 штуки», «ноль», «дальше»)'; start(); }
@@ -469,7 +489,7 @@
         <div class="sc-in">${pk > 1 ? `<input type="number" inputmode="numeric" min="0" step="1" placeholder="кор." aria-label="Коробок" data-b="${a}" value="${st.box[i.art] ?? ''}"><span class="mut">× ${pk} +</span>` : ''}<input type="number" inputmode="numeric" min="0" step="1" placeholder="шт" aria-label="Штук" data-p="${a}" value="${st.pcs[i.art] ?? (pk > 1 ? '' : v ?? '')}">
           <b class="sc-sum" data-s="${a}">${v !== undefined ? '= ' + v : ''}</b><span class="spacer" style="flex:1"></span><button class="btn gray sm" type="button" data-z="${a}" title="Товара нет">0</button></div>
         <small class="sc-w" data-w="${a}">${w !== null ? `⚠ Проверьте: в прошлый раз вы насчитали ${w}` : ''}</small></div>`; };
-    body.innerHTML = `<div class="bar" style="position:sticky;top:52px;z-index:4;background:var(--bg,#eef2f5);padding:8px 0"><input id="scQ" type="search" placeholder="Поиск товара" value="${esc(q)}" style="flex:1;min-width:0">${SR ? '<button class="btn gray" id="scMic" type="button" aria-label="Считать голосом" title="Считать голосом">🎤</button>' : ''}<b id="scN">${filled} / ${list.length}</b><small id="scV" class="mut" role="status" style="flex-basis:100%"></small></div>
+    body.innerHTML = `<div class="bar" style="position:sticky;top:52px;z-index:4;background:var(--bg,#eef2f5);padding:8px 0"><input id="scQ" type="search" placeholder="Поиск товара" value="${esc(q)}" style="flex:1;min-width:0">${SR ? `<button class="btn gray" id="scMic" type="button" aria-label="Считать голосом" title="Считать голосом">🎤</button><button class="btn gray sm" id="scVl" type="button" title="Язык голоса">${vLang() === 'uz' ? 'UZ' : 'RU'}</button>` : ''}<b id="scN">${filled} / ${list.length}</b><small id="scV" class="mut" role="status" style="flex-basis:100%"></small></div>
       <div class="bar"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="scOnly"> только непосчитанные</label><span class="spacer"></span>${rec ? '' : `<button class="btn gray sm" id="scOrd">⇅ Порядок полок</button>`}</div>
       ${panel(rec ? 'Пересчёт' : want ? 'Короткая сверка' : 'Пересчитайте товары', [...groups].map(([g, L]) => `<div class="sc-g">${g ? `<h4 style="margin:14px 0 6px">${esc(g)}</h4>` : ''}${L.map(row).join('')}</div>`).join(''), 'Коробки — в «кор.», россыпь — в «шт», приложение сложит. Товара нет — нажмите «0».' + (SR ? ' 🎤 — считать голосом: называйте количество по порядку. Одно число у товара в коробках — это коробки; со словом «штук» — штуки.' : ' Можно диктовать: микрофон на клавиатуре телефона.'))}
       ${panel('Отправить', `<div class="form"><label style="grid-column:1/-1">Комментарий (необязательно)<textarea id="scC" rows="2" maxlength="500" placeholder="например: 2 коробки повреждены"></textarea></label><label style="grid-column:1/-1">Фото (необязательно)<input id="scP" type="file" accept="image/*" capture="environment"></label></div>
