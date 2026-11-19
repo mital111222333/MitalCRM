@@ -53,7 +53,16 @@
   let lang = store.get(LANG_KEY) || (/^uz/i.test(TGA?.initDataUnsafe?.user?.language_code || navigator.language || '') ? 'uz' : 'ru');
   const langCard = () => panel('🌐 Til / Язык', `<div class="chips" style="margin:0"><button type="button" data-lang="ru" class="${lang === 'ru' ? 'on' : ''}">Русский</button><button type="button" data-lang="uz" class="${lang === 'uz' ? 'on' : ''}">Oʻzbekcha</button></div>`);
   function setLang(l) { lang = l; store.set(LANG_KEY, l); document.documentElement.lang = l === 'uz' ? 'uz-Latn' : 'ru'; location.reload(); }
+  // sign out: the login session (agent / store keeper) or the personal link remembered on this phone; the saved data goes too,
+  // so the next person on a shared phone sees nothing of it
+  async function logout() {
+    if (!confirm('Выйти из аккаунта на этом телефоне?')) return;
+    try { if (SB) await SB.auth.signOut(); } catch { /* offline: the local session is removed anyway */ }
+    for (const k of ['crm_me', 'crm_auth', 'mital_me', DATA_KEY, 'mital_me_data', 'mital_me_marks', 'mital_me_cq', 'mital_cnt']) { try { localStorage.removeItem(k); } catch { /* blocked */ } }
+    location.replace('./');
+  }
   function bindExtras(root) {
+    root.querySelectorAll('[data-out]').forEach(b => b.onclick = logout);
     root.querySelectorAll('[data-inst]').forEach(b => b.onclick = install);
     root.querySelectorAll('[data-lang]').forEach(b => b.onclick = () => { if (b.dataset.lang !== lang) setLang(b.dataset.lang); });
   }
@@ -392,7 +401,7 @@
       const L = [['clients', '👥', 'Мои клиенты'], ['contracts', '📄', 'Договоры'], ['stock', '📦', 'Склад'], ['disc', '⏰', 'Дисциплина'], ['chat', '💬', 'Чат с руководителем']];
       body.innerHTML = `<div class="cards">${L.map(([k, ic, t]) => `<a class="ccard" href="#" data-go="${k}" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">${ic}</span>${t}</a>`).join('')}
         <a class="ccard" href="${ACADEMY}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">🎓</span>MITAL Akademiya</a></div>
-        ${installCard()}${langCard()}`;
+        ${installCard()}${langCard()}${inTg ? '' : '<button class="btn gray" type="button" data-out="1" style="width:100%;margin-top:4px;padding:12px">🚪 Выйти из аккаунта</button>'}`;
       bindExtras(body);
       return;
     }
@@ -607,9 +616,11 @@
     const lb = document.createElement('button'); lb.type = 'button'; lb.textContent = lang === 'uz' ? 'RU' : 'UZ'; lb.title = lang === 'uz' ? 'Русский' : 'Oʻzbekcha'; lb.onclick = () => setLang(lang === 'uz' ? 'ru' : 'uz');
     const ib = document.createElement('button'); ib.type = 'button'; ib.id = 'meInst'; ib.textContent = '📲'; ib.title = 'Установить приложение'; ib.hidden = !installEv || standalone(); ib.onclick = install;
     $('#meUpd').before(ib, lb);
-    if (SB) {
-      const out = document.createElement('button'); out.type = 'button'; out.textContent = 'Выйти'; $('#meUpd').after(out);
-      out.onclick = async () => { try { await SB.auth.signOut(); } catch { /* offline */ } try { localStorage.removeItem('crm_me'); } catch { /* blocked */ } location.replace('./'); };
+    // «Выйти» in the header (only the icon on the phone, so it always fits) — and a full button in «Ещё». Not inside Telegram:
+    // there the cabinet is opened by the bot, without a login
+    if (!inTg) {
+      const out = document.createElement('button'); out.type = 'button'; out.id = 'meOut'; out.innerHTML = '🚪<span class="lbl"> Выйти</span>'; out.title = 'Выйти из аккаунта'; out.setAttribute('aria-label', 'Выйти из аккаунта'); $('#meUpd').after(out);
+      out.onclick = logout;
     }
     // links inside Telegram: t.me opens in Telegram itself (the chat), other links in the browser — not inside the small app window
     document.addEventListener('click', e => { const a = e.target.closest('a[href^="http"]'); if (!a || !inTg) return; e.preventDefault(); if (a.href.startsWith('https://t.me/')) TGA.openTelegramLink(a.href); else TGA.openLink(a.href); });

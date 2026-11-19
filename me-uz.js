@@ -108,6 +108,8 @@ window.ME_UZ = [
   // short words left between translated phrases (whole words only)
   ['сегодня', 'bugun'], ['до', 'gacha'], ['из', '/'], ['или', 'yoki'], ['и', 'va'], ['нет', 'yoʻq'], ['долг', 'qarz'], ['Долг', 'Qarz'], ['клиентов', 'mijoz'], ['точек', 'nuqta'], ['оплата', 'toʻlov'],
 
+  ['Выйти из аккаунта на этом телефоне?', 'Bu telefonda akkauntdan chiqasizmi?'], ['🚪 Выйти из аккаунта', '🚪 Akkauntdan chiqish'], ['Выйти из аккаунта', 'Akkauntdan chiqish'],
+
   // errors and system messages
   ['Нет доступа — обновите кабинет и попробуйте ещё раз', 'Ruxsat yoʻq — kabinetni yangilab qayta urinib koʻring'], ['Не отправилось:', 'Yuborilmadi:'], ['Войдите снова', 'Qayta kiring'],
   ['Кабинет ещё не готов — обновите через минуту', 'Kabinet hali tayyor emas — bir daqiqadan soʻng yangilang'], ['Фото не отправилось:', 'Foto yuborilmadi:'],
