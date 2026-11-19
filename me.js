@@ -320,7 +320,7 @@
 
   // 🚚 приход / отгрузка / возврат: what physically came in or went out (boxes × pieces like the count), with a photo of the waybill
   const MV = { get: () => store.get('mital_mv'), set: v => store.set('mital_mv', v) };
-  const MVT = { in: '📥 Приход', out: '📤 Отгрузка', ret: '↩ Возврат' };
+  const MVT = { in: '📥 Приход', out: '📤 Отгрузка', ret: '↩ Возврат', dmg: '🗑 Брак' };
   function drawMove(body) {
     const mv = MV.get() || { type: 'in', party: '', it: {} }; mv.it ||= {};
     const byArt = new Map((S.items || []).map(i => [i.art, i])), added = Object.keys(mv.it).filter(a => byArt.has(a));
@@ -332,11 +332,11 @@
         <b class="sc-sum" data-ms="${esc(a)}">${qty(a) ? '= ' + qty(a) : ''}</b><span style="flex:1"></span><button class="btn gray sm" type="button" data-mx="${esc(a)}" aria-label="Убрать">✕</button></div></div>`; };
     const hist = (S.moves || []).slice(0, 15);
     body.innerHTML = panel('🚚 Приход / отгрузка', `<div class="sc-seg">${Object.entries(MVT).map(([k, t]) => `<button type="button" class="${mv.type === k ? 'on' : ''}" data-mt="${k}">${t}</button>`).join('')}</div>
-      <label class="mut" style="display:block;margin-top:10px">${mv.type === 'in' ? 'Откуда (поставщик, машина, другой склад)' : mv.type === 'out' ? 'Кому (агент, клиент, другой склад)' : 'От кого (клиент, агент)'}<input id="mvP" maxlength="120" value="${esc(mv.party || '')}" style="width:100%;margin-top:4px"></label>
+      <label class="mut" style="display:block;margin-top:10px">${mv.type === 'in' ? 'Откуда (поставщик, машина, другой склад)' : mv.type === 'out' ? 'Кому (агент, клиент, другой склад)' : mv.type === 'dmg' ? 'Что случилось (помято, протекло, разбито, просрочено) — обязательно' : 'От кого (клиент, агент)'}<input id="mvP" maxlength="120" value="${esc(mv.party || '')}" style="width:100%;margin-top:4px"></label>
       <div style="margin-top:12px"><input id="mvQ" type="search" placeholder="🔍 Найти товар и добавить" style="width:100%"><div id="mvR"></div></div>
       <div id="mvL">${added.length ? added.map(row).join('') : '<p class="mut">Найдите товары поиском — они появятся здесь — и укажите количество (коробки и штуки).</p>'}</div>
       ${added.length ? `<p style="font-size:17px">Итого: <b id="mvT">${added.length} поз., ${total()} шт</b></p>` : ''}
-      <div class="form"><label style="grid-column:1/-1">Фото накладной (лучше приложить)<input id="mvPh" type="file" accept="image/*" capture="environment"></label><label style="grid-column:1/-1">Комментарий<textarea id="mvC" rows="2" maxlength="500" placeholder="например: 1 коробка помята"></textarea></label></div>
+      <div class="form">${mv.type === 'dmg' ? '<p class="neg" style="grid-column:1/-1;margin:0"><b>🗑 Брак:</b> сфотографируйте повреждённый товар и отложите его отдельно. <b>В сверке брак не считайте</b> — руководитель спишет его в LINKO.</p>' : ''}<label style="grid-column:1/-1">${mv.type === 'dmg' ? 'Фото брака — обязательно' : 'Фото накладной (лучше приложить)'}<input id="mvPh" type="file" accept="image/*" capture="environment"></label><label style="grid-column:1/-1">Комментарий<textarea id="mvC" rows="2" maxlength="500" placeholder="например: 1 коробка помята"></textarea></label></div>
       <div class="bar"><button class="btn gray" id="mvX" type="button">Очистить</button><span class="spacer"></span><button class="btn" id="mvGo" type="button">Отправить руководителю</button></div><small id="mvE" class="neg" role="alert"></small>`,
       'Записывайте то, что физически приняли или отдали. Руководитель сверит с накладной и LINKO.')
       + (hist.length ? panel('Мои записи', hist.map(h => `<div class="sc-row"><b>${MVT[h.type] || esc(h.type)}</b> · ${dRu(new Date(h.at).toLocaleDateString('sv-SE'))} ${new Date(h.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}${h.party ? ' · ' + esc(h.party) : ''}${h.photo ? ' · 📷' : ''}<br><small class="mut">${h.items.slice(0, 8).map(i => esc(i.name) + ': ' + i.qty).join('; ')}${h.items.length > 8 ? ' …' : ''}</small></div>`).join('')) : '');
@@ -355,6 +355,8 @@
     $('#mvGo').onclick = async e => {
       const items = added.map(a => ({ art: a, qty: qty(a) })).filter(i => i.qty > 0);
       if (!items.length) { $('#mvE').textContent = 'Добавьте товары и укажите количество'; return; }
+      if (mv.type === 'dmg' && !(mv.party || '').trim()) { $('#mvE').textContent = 'Напишите, что случилось с товаром'; $('#mvP').focus(); return; }
+      if (mv.type === 'dmg' && !$('#mvPh').files[0]) { $('#mvE').textContent = 'Для брака нужно фото'; return; }
       const empty = added.filter(a => !qty(a)); if (empty.length && !confirm(`У ${empty.length} поз. не указано количество — они не уйдут. Отправить остальные?`)) return;
       e.target.disabled = true; e.target.textContent = 'Отправляю…';
       try {
@@ -406,39 +408,66 @@
     flush(null);
     return { nums: out, skip: SKIPW.test(norm) };
   }
+  // 🔊 the phone reads the name of the next item aloud, then listens for the number — the store keeper need not look at the screen.
+  // While it speaks the microphone is off (it would hear itself). «повтори» / «qaytar» — say the name again.
+  const TTS = typeof window.speechSynthesis !== 'undefined' && typeof window.SpeechSynthesisUtterance !== 'undefined';
+  const talkOn = () => TTS && store.get('mital_talk') !== false;
+  // «Mitanol 4L» → «Mitanol 4 литра», «OF-00202» → «OF 00202»: what a speech voice reads well
+  const sayable = (name, uz) => String(name || '').replace(/(\d+(?:[.,]\d+)?)\s*(?:LTR|LT|L|Л|ЛИТР|ЛИТРА)(?![A-ZА-ЯЁa-zа-яё])/gi, (m, n) => n.replace('.', ',') + (uz ? ' litr' : ' литра')).replace(/[-_/]+/g, ' ').replace(/\s+/g, ' ').trim();
   function voiceCount(body, list, sel, recalc) {
     const btn = $('#scMic'), stat = $('#scV'); if (!btn) return;
-    let on = false, rec = null, cur = null;
+    let on = false, rec = null, cur = null, speaking = false, sayT = null;
     body.addEventListener('focusin', e => { const r = e.target.closest && e.target.closest('.sc-row'); if (r) mark(r.dataset.r); });
     const visibleRows = () => [...body.querySelectorAll('.sc-row')].filter(r => r.style.display !== 'none');
     const mark = a => { body.querySelectorAll('.sc-cur').forEach(r => r.classList.remove('sc-cur')); cur = a; const r = a && sel('r', a); if (r) r.classList.add('sc-cur'); };
-    const nextRow = () => { const R = visibleRows(), k = R.findIndex(r => r.dataset.r === cur), after = R.slice(k + 1).concat(R.slice(0, k + 1)); const r = after.find(x => { const p = sel('p', x.dataset.r); return p && p.value === '' && !(sel('b', x.dataset.r)?.value); }) || R[k + 1]; mark(r ? r.dataset.r : null); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+    const isEmpty = a => { const p = sel('p', a); return p && p.value === '' && !(sel('b', a)?.value); };
+    const nextRow = () => { const R = visibleRows(), k = R.findIndex(r => r.dataset.r === cur), after = R.slice(k + 1).concat(R.slice(0, k + 1)); const r = after.find(x => isEmpty(x.dataset.r)) || (k >= 0 ? null : R[0]); mark(r ? r.dataset.r : null); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' }); };
     const target = () => { if (!cur || !sel('r', cur) || sel('r', cur).style.display === 'none') nextRow(); return cur; };
+    const listen = () => { if (on && !speaking) start(); };
+    // say a phrase, then listen again; a phone that never reports the end of speech still gets the microphone back after a pause
+    const say = text => {
+      if (!on || !talkOn() || !text) return listen();
+      speaking = true; try { rec && rec.abort(); } catch { /* not listening */ }
+      const uz = vLang() === 'uz', u = new SpeechSynthesisUtterance(text), want = uz ? 'uz' : 'ru', voices = speechSynthesis.getVoices();
+      const v = voices.find(x => x.lang && x.lang.toLowerCase().startsWith(want)) || voices.find(x => x.lang && x.lang.toLowerCase().startsWith('ru'));
+      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = uz ? 'uz-UZ' : 'ru-RU';
+      u.rate = 1.05;
+      const done = () => { clearTimeout(sayT); if (!speaking) return; speaking = false; setTimeout(listen, 150); };
+      u.onend = done; u.onerror = done; clearTimeout(sayT); sayT = setTimeout(done, 1500 + text.length * 110);
+      try { speechSynthesis.cancel(); speechSynthesis.speak(u); } catch { done(); }
+    };
+    const sayCur = () => { const i = cur && list.find(x => x.art === cur); if (!i) { stat.textContent = '✓ Все товары посчитаны'; say(vLang() === 'uz' ? 'Hammasi sanaldi' : 'Все товары посчитаны'); stop(); return; } say(sayable(i.name, vLang() === 'uz')); };
     const apply = text => {
-      const a = target(); if (!a) { stat.textContent = 'Все товары посчитаны'; return; }
+      const a = target(); if (!a) { stat.textContent = '✓ Все товары посчитаны'; stop(); return; }
       const H = hearNums(text), i = list.find(x => x.art === a), pk = packOf(i), bI = sel('b', a), pI = sel('p', a);
-      if (H.skip && !H.nums.length) { stat.textContent = '⏭ пропущено: ' + i.name; nextRow(); return; }
-      if (!H.nums.length) { stat.textContent = `Не понял «${text}» — скажите число`; return; }
+      if (/повтор|еще раз|ещё раз|qaytar|yana bir|кайтар/.test(voiceNorm(text)) && !H.nums.length) { stat.textContent = '🔊 ' + i.name; sayCur(); return; }
+      if (H.skip && !H.nums.length) { stat.textContent = '⏭ пропущено: ' + i.name; nextRow(); sayCur(); return; }
+      if (!H.nums.length) { stat.textContent = `Не понял «${text}» — скажите число`; listen(); return; }
       let b = null, p = null; for (const x of H.nums) { if (x.unit === 'b' && b === null) b = x.n; else if (x.unit === 'p' && p === null) p = x.n; else if (pk > 1 && b === null && x.unit === null && p === null) b = x.n; else if (p === null) p = x.n; }
       if (!bI && b !== null) { p = (p || 0) + b * pk; b = null; }
       if (bI) bI.value = b !== null ? b : ''; pI.value = p !== null ? p : (b !== null ? '' : '0');
       recalc(a); const v = (Number(bI?.value) || 0) * pk + (Number(pI.value) || 0);
       stat.textContent = `✓ ${i.name}: ${b !== null && bI ? b + ' кор. ' : ''}${p !== null ? p + ' шт ' : ''}= ${v}`;
       try { TGA?.HapticFeedback?.impactOccurred('light'); } catch { /* not in Telegram */ }
-      nextRow();
+      nextRow(); sayCur();
     };
     const start = () => {
+      if (!on || speaking) return;
       rec = new SR(); rec.lang = vLang() === 'uz' ? 'uz-UZ' : 'ru-RU'; rec.interimResults = false; rec.maxAlternatives = 5; rec.continuous = false;
       rec.onresult = e => { const alts = [...e.results[e.results.length - 1]].map(r => r.transcript), t = alts.find(x => hearNums(x).nums.length) || alts[0]; apply(t); };
-      rec.onerror = e => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { on = false; btn.textContent = '🎤'; stat.textContent = 'Разрешите доступ к микрофону в настройках браузера'; } };
-      rec.onend = () => { if (on) setTimeout(() => { if (on) start(); }, 250); }; // a new recogniser each time: picks up a changed voice language
+      rec.onerror = e => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { stop(); stat.textContent = 'Разрешите доступ к микрофону в настройках браузера'; } };
+      rec.onend = () => { if (on && !speaking) setTimeout(() => { if (on && !speaking) start(); }, 250); }; // a new recogniser each time: picks up a changed voice language
       try { rec.start(); } catch { /* already started */ }
     };
-    const vl = $('#scVl'); if (vl) vl.onclick = () => { const v = vLang() === 'uz' ? 'ru' : 'uz'; store.set('mital_vlang', v); vl.textContent = v.toUpperCase(); stat.textContent = v === 'uz' ? '🎤 Ovoz: oʻzbekcha (sonlarni oʻzbekcha ayting)' : '🎤 Голос: по-русски (числа говорите по-русски)'; if (on) { try { rec && rec.abort(); } catch { /* stopped */ } } };
+    const stop = () => { on = false; speaking = false; clearTimeout(sayT); btn.textContent = '🎤'; btn.classList.remove('sc-live'); try { rec && rec.abort(); } catch { /* stopped */ } };
+    const vl = $('#scVl'); if (vl) vl.onclick = () => { const v = vLang() === 'uz' ? 'ru' : 'uz'; store.set('mital_vlang', v); vl.textContent = v.toUpperCase(); stat.textContent = v === 'uz' ? '🎤 Ovoz: oʻzbekcha (sonlarni oʻzbekcha ayting)' : '🎤 Голос: по-русски (числа говорите по-русски)'; if (on && !speaking) { try { rec && rec.abort(); } catch { /* stopped */ } } };
+    const tk = $('#scTk'); if (tk) tk.onclick = () => { const v = !talkOn(); store.set('mital_talk', v); tk.textContent = v ? '🔊' : '🔇'; stat.textContent = v ? '🔊 Буду называть товары вслух' : '🔇 Названия вслух выключены'; if (!v) try { speechSynthesis.cancel(); } catch { /* none */ } };
     btn.onclick = () => {
-      on = !on; btn.textContent = on ? '⏹' : '🎤'; btn.classList.toggle('sc-live', on);
-      if (on) { target(); const r = cur && sel('r', cur); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' }); stat.textContent = '🔴 Слушаю: называйте количество по порядку («5 коробок 3 штуки», «ноль», «дальше»)'; start(); }
-      else { try { rec && rec.stop(); } catch { /* stopped */ } stat.textContent = ''; mark(null); }
+      if (on) { stop(); try { TTS && speechSynthesis.cancel(); } catch { /* none */ } stat.textContent = ''; mark(null); return; }
+      on = true; btn.textContent = '⏹'; btn.classList.add('sc-live');
+      target(); const r = cur && sel('r', cur); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      stat.textContent = talkOn() ? '🔊 Называю товар — вы говорите количество («5 коробок 3 штуки», «ноль», «дальше», «повтори»)' : '🔴 Слушаю: называйте количество по порядку («5 коробок 3 штуки», «ноль», «дальше»)';
+      if (talkOn()) sayCur(); else start();
     };
   }
 
@@ -489,7 +518,7 @@
         <div class="sc-in">${pk > 1 ? `<input type="number" inputmode="numeric" min="0" step="1" placeholder="кор." aria-label="Коробок" data-b="${a}" value="${st.box[i.art] ?? ''}"><span class="mut">× ${pk} +</span>` : ''}<input type="number" inputmode="numeric" min="0" step="1" placeholder="шт" aria-label="Штук" data-p="${a}" value="${st.pcs[i.art] ?? (pk > 1 ? '' : v ?? '')}">
           <b class="sc-sum" data-s="${a}">${v !== undefined ? '= ' + v : ''}</b><span class="spacer" style="flex:1"></span><button class="btn gray sm" type="button" data-z="${a}" title="Товара нет">0</button></div>
         <small class="sc-w" data-w="${a}">${w !== null ? `⚠ Проверьте: в прошлый раз вы насчитали ${w}` : ''}</small></div>`; };
-    body.innerHTML = `<div class="bar" style="position:sticky;top:52px;z-index:4;background:var(--bg,#eef2f5);padding:8px 0"><input id="scQ" type="search" placeholder="Поиск товара" value="${esc(q)}" style="flex:1;min-width:0">${SR ? `<button class="btn gray" id="scMic" type="button" aria-label="Считать голосом" title="Считать голосом">🎤</button><button class="btn gray sm" id="scVl" type="button" title="Язык голоса">${vLang() === 'uz' ? 'UZ' : 'RU'}</button>` : ''}<b id="scN">${filled} / ${list.length}</b><small id="scV" class="mut" role="status" style="flex-basis:100%"></small></div>
+    body.innerHTML = `<div class="bar" style="position:sticky;top:52px;z-index:4;background:var(--bg,#eef2f5);padding:8px 0"><input id="scQ" type="search" placeholder="Поиск товара" value="${esc(q)}" style="flex:1;min-width:0">${SR ? `<button class="btn gray" id="scMic" type="button" aria-label="Считать голосом" title="Считать голосом">🎤</button><button class="btn gray sm" id="scVl" type="button" title="Язык голоса">${vLang() === 'uz' ? 'UZ' : 'RU'}</button>${TTS ? `<button class="btn gray sm" id="scTk" type="button" title="Называть товары вслух">${talkOn() ? '🔊' : '🔇'}</button>` : ''}` : ''}<b id="scN">${filled} / ${list.length}</b><small id="scV" class="mut" role="status" style="flex-basis:100%"></small></div>
       <div class="bar"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="scOnly"> только непосчитанные</label><span class="spacer"></span>${rec ? '' : `<button class="btn gray sm" id="scOrd">⇅ Порядок полок</button>`}</div>
       ${panel(rec ? 'Пересчёт' : want ? 'Короткая сверка' : 'Пересчитайте товары', [...groups].map(([g, L]) => `<div class="sc-g">${g ? `<h4 style="margin:14px 0 6px">${esc(g)}</h4>` : ''}${L.map(row).join('')}</div>`).join(''), 'Коробки — в «кор.», россыпь — в «шт», приложение сложит. Товара нет — нажмите «0».' + (SR ? ' 🎤 — считать голосом: называйте количество по порядку. Одно число у товара в коробках — это коробки; со словом «штук» — штуки.' : ' Можно диктовать: микрофон на клавиатуре телефона.'))}
       ${panel('Отправить', `<div class="form"><label style="grid-column:1/-1">Комментарий (необязательно)<textarea id="scC" rows="2" maxlength="500" placeholder="например: 2 коробки повреждены"></textarea></label><label style="grid-column:1/-1">Фото (необязательно)<input id="scP" type="file" accept="image/*" capture="environment"></label></div>

@@ -520,7 +520,7 @@ function cntProp_(k, v) {
 // Приход / отгрузка / возврат from the store keeper's cabinet: what physically came in or went out, with a photo of the waybill.
 // Saved to inbox/ (act 'whmove') for the CRM, the supervisor gets a message with the LINKO stock of these goods at this minute (so he
 // sees whether LINKO already has the movement). The store keeper's own last 20 records (no LINKO numbers) — cntmoves_<who>.
-const MOVE_T_ = { in: '📥 Приход', out: '📤 Отгрузка', ret: '↩ Возврат' };
+const MOVE_T_ = { in: '📥 Приход', out: '📤 Отгрузка', ret: '↩ Возврат', dmg: '🗑 Брак' }; // брак: photo and reason required
 function moveAct_(p, snap) {
   if (snap.role !== 'store') return { error: 'Это не кабинет склада' };
   const type = MOVE_T_[p.type] ? p.type : null; if (!type) return { error: 'Выберите: приход, отгрузка или возврат' };
@@ -528,6 +528,7 @@ function moveAct_(p, snap) {
   const items = (Array.isArray(p.items) ? p.items : []).slice(0, 150).map(i => ({ art: String(i.art || '').slice(0, 80), qty: Math.max(0, Math.round(n_(i.qty))) })).filter(i => i.art && i.qty > 0)
     .map(i => ({ art: i.art, name: (I[i.art] || {}).name || String((p.names || {})[i.art] || i.art).slice(0, 120), qty: i.qty, linko: I[i.art] ? I[i.art].total || 0 : null }));
   if (!items.length) return { error: 'Добавьте товары и количество' };
+  if (type === 'dmg' && (!p.photo || !String(p.party || '').trim())) return { error: 'Для брака нужны фото и что случилось' };
   const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8), at = new Date().toISOString();
   let photo = '';
   if (p.photo && /^[A-Za-z0-9+/=]+$/.test(p.photo) && p.photo.length < 2800000) { photo = 'inbox/photos/' + uid + '.jpg'; saveB64ToGithub_(photo, p.photo, 'Склад: накладная'); }
