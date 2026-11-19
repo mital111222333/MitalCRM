@@ -78,6 +78,8 @@ const INVO = {
           for (const x of p.data || []) if (reg[x.region_id]) for (const n of [x.linko_name, x.full_name]) if (n) m.set(INVO.akey(n), reg[x.region_id]);
         }
       } catch { /* no accounts: the form's cities only */ }
+      // read before sign-in (or offline) the list is empty: don't keep it, ask again next time, otherwise every agent gets the default city
+      if (!m.size) INVO._reg = null;
       INVO.regions = m; return m;
     })();
     return INVO._reg;
@@ -219,7 +221,7 @@ const INVO = {
     m.el.classList.add('wide');
     // the agent's region comes from the accounts a moment later: fill it in unless the field was already changed
     const cityAuto = () => INVO.cityOf({ ...r, x: { ...x, city: '' } }), C = $('#ivCity', m.el);
-    if (!INVO.regions) { const was = C.value; INVO.loadRegions().then(() => { if (C.value === was && !x.city) C.value = cityAuto(); }); }
+    if (!INVO.regions?.size) { const was = C.value; INVO.loadRegions().then(() => { if (C.value === was && !x.city) C.value = cityAuto(); }); }
     const T = $('#ivT', m.el), S = () => Math.max(0, Math.round((Number($('#ivSum', m.el).value) || 0) * 100) / 100);
     const biView = () => {
       const id = $('#ivBi', m.el).value, o = id && cand.find(c => c.id === id);
@@ -354,8 +356,11 @@ const INVO = {
     const fit = doc.querySelector('.d-fit'); if (!fit) return;
     fit.style.cssText = ''; doc.style.height = '';
     if (fit.offsetHeight <= INVO.HALF) return;
-    let k = 1;
-    for (let i = 0; i < 5; i++) { fit.style.cssText = `width:${100 / k}%;transform:scale(${k});transform-origin:0 0`; const h = fit.offsetHeight * k; if (h <= INVO.HALF + 1) break; k *= INVO.HALF / h * 0.995; }
+    // the largest scale at which the whole contract still fits above the cut line (binary search: a wider text block reflows into fewer lines)
+    const tall = k => { fit.style.cssText = `width:${100 / k}%;transform:scale(${k});transform-origin:0 0`; return fit.offsetHeight * k > INVO.HALF; };
+    let lo = 0.15, hi = 1;
+    for (let i = 0; i < 14; i++) { const m = (lo + hi) / 2; if (tall(m)) hi = m; else lo = m; }
+    const k = lo; tall(k);
     doc.style.height = Math.min(INVO.HALF, Math.ceil(fit.offsetHeight * k)) + 'px';
   },
   // print: A4 sheets with two halves each; `two` — each contract twice (a copy for the client and one for us), otherwise the contracts follow each other
@@ -364,8 +369,10 @@ const INVO = {
     const sheets = []; for (let i = 0; i < items.length; i += 2) sheets.push(items.slice(i, i + 2));
     const fr = document.createElement('iframe'); fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'; document.body.appendChild(fr);
     const d = fr.contentDocument; d.open();
-    d.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Договор-спецпредложение</title><style>@page{size:A4;margin:8mm 10mm}*{box-sizing:border-box}body{margin:0;background:#fff}
-      .sheet{height:281mm;page-break-after:always;overflow:hidden}.sheet:last-child{page-break-after:auto}.half{height:140mm;position:relative}.half+.half{border-top:1px dashed #888}.half+.half::before{content:"✂";position:absolute;left:-1mm;top:-3.4mm;font-size:9px;color:#888;background:#fff}${INVO.css()}</style></head><body>${sheets.map(s => `<div class="sheet">${s.map(h => `<div class="half">${h}</div>`).join('')}</div>`).join('')}</body></html>`);
+    d.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Договор-спецпредложение</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}html,body{margin:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      .sheet{width:210mm;height:296mm;position:relative;page-break-after:always;break-after:page;overflow:hidden}.sheet:last-child{page-break-after:auto;break-after:auto}
+      .half{position:absolute;left:10mm;width:190mm;height:138.5mm;overflow:hidden}.half.h1{top:6mm}.half.h2{top:154.5mm}
+      .cut{position:absolute;left:0;right:0;top:148.5mm;height:0;border-top:1px dashed #444}.cut::before{content:"✂";position:absolute;left:4mm;top:-2.6mm;font-size:11px;line-height:1;color:#444;background:#fff;padding:0 1mm}${INVO.css()}</style></head><body>${sheets.map(s => `<div class="sheet">${s.map((h, i) => `<div class="half h${i + 1}">${h}</div>`).join('')}<div class="cut"></div></div>`).join('')}</body></html>`);
     d.close();
     setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch { toast('Не удалось открыть печать — скачайте картинкой'); } }, 350);
     setTimeout(() => fr.remove(), 120000);
