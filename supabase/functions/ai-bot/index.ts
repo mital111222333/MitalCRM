@@ -1807,16 +1807,6 @@ export function pcmToWav(pcm: Uint8Array, rate: number) {
   h.setUint32(24, rate, true); h.setUint32(28, rate * 2, true); h.setUint16(32, 2, true); h.setUint16(34, 16, true); w(36, 'data'); h.setUint32(40, pcm.length, true);
   const out = new Uint8Array(44 + pcm.length); out.set(new Uint8Array(h.buffer)); out.set(pcm, 44); return out;
 }
-// MP3 — Telegram shows it as a voice message (WAV it would show only as a file)
-export async function pcmToMp3(pcm: Uint8Array, rate: number) {
-  const { Mp3Encoder } = await import('npm:@breezystack/lamejs@1.2.7');
-  const even = pcm.length & ~1, samples = new Int16Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + even));
-  const enc = new Mp3Encoder(1, rate, 64), chunks: Uint8Array[] = [];
-  for (let i = 0; i < samples.length; i += 1152) { const c = enc.encodeBuffer(samples.subarray(i, i + 1152)); if (c.length) chunks.push(new Uint8Array(c)); }
-  const end = enc.flush(); if (end.length) chunks.push(new Uint8Array(end));
-  const out = new Uint8Array(chunks.reduce((s, c) => s + c.length, 0)); let p = 0; for (const c of chunks) { out.set(c, p); p += c.length; }
-  return out;
-}
 const unb64 = (s: string) => { const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
 async function tts(text: string) {
   const model = env('GEMINI_TTS_MODEL', 'gemini-2.5-flash-preview-tts');
@@ -1841,10 +1831,12 @@ async function sayVoice(chatId: number, text: string) {
   try {
     await tg('sendChatAction', { chat_id: chatId, action: 'record_voice' });
     const { pcm, rate } = await tts(s);
+    // WAV as an audio message: no encoding at all. MP3 in JavaScript took 1–2 s of CPU for 40 s of speech and
+    // Supabase stops a function after ~2 s of CPU («CPU Time exceeded») — the voice never arrived.
     const fd = new FormData(); fd.append('chat_id', String(chatId));
-    try { fd.append('voice', new File([await pcmToMp3(pcm, rate)], 'jumavoy.mp3', { type: 'audio/mpeg' })); }
-    catch (e) { console.warn('mp3', (e as Error).message); fd.append('audio', new File([pcmToWav(pcm, rate)], 'jumavoy.wav', { type: 'audio/wav' })); fd.append('title', CFG.name); }
-    const r = await fetch(`https://api.telegram.org/bot${CFG.tg()}/${fd.has('voice') ? 'sendVoice' : 'sendAudio'}`, { method: 'POST', body: fd });
+    fd.append('audio', new File([pcmToWav(pcm, rate)], 'jumavoy.wav', { type: 'audio/wav' }));
+    fd.append('title', '🎙 Ответ'); fd.append('performer', CFG.name); fd.append('duration', String(Math.round(pcm.length / 2 / rate)));
+    const r = await fetch(`https://api.telegram.org/bot${CFG.tg()}/sendAudio`, { method: 'POST', body: fd });
     if (!r.ok) throw new Error('Telegram не принял голосовое: ' + (await r.text()).slice(0, 200));
   } catch (e) {
     console.warn('voice', (e as Error).message);

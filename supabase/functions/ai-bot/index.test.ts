@@ -541,9 +541,13 @@ D.test('voice replies: auto on a voice message, /voice off and on, «ответ�
   const wav = M.pcmToWav(new Uint8Array(10), 24000); eq(new TextDecoder().decode(wav.subarray(0, 4)), 'RIFF', 'wav header'); eq(wav.length, 54, 'wav size');
 });
 
-D.test('mp3 encoder (downloads the npm package once)', async () => {
-  const mp3 = await M.pcmToMp3(sine(), 24000);
-  assert(mp3.length > 1000 && mp3[0] === 0xff && (mp3[1] & 0xe0) === 0xe0, 'MP3 frame sync, size ' + mp3.length);
+D.test('voice file: WAV built without heavy CPU (Supabase stops a function after ~2 s of CPU)', () => {
+  const pcm = new Uint8Array(24000 * 2 * 40), t = performance.now(); // 40 s of speech
+  const wav = M.pcmToWav(pcm, 24000), ms = performance.now() - t;
+  eq([wav.length, new DataView(wav.buffer).getUint32(24, true)], [pcm.length + 44, 24000], 'size and sample rate in the header');
+  assert(ms < 200, 'fast: ' + Math.round(ms) + ' ms');
+  const last = SENT.filter(s => s.method === 'sendAudio').at(-1)!;
+  assert(last && last.body.performer === 'JUMAVOY' && Number(last.body.duration) >= 0, 'sent as an audio message with the bot name');
 });
 
 D.test('actions: draft → «Отправить» → the CRM bot writes the agent; double tap, cancel, task, note, client link', async () => {
