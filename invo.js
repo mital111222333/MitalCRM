@@ -106,6 +106,13 @@ const INVO = {
     if (pl.length === 1) return pl[0].d === r.d ? '<b>сразу</b>' : `<b>${UI.dm(pl[0].d)}</b> <span class="mut">(${INVO.days(r.d, pl[0].d)} дн.)</span>`;
     return pl.map(p => `${UI.dm(p.d)} · ${INVO.money(p.s)}`).join('<br>');
   },
+  // the table cell: «8 × $263,88» and «25.11 → 13.01»; the full schedule opens on click
+  termShort(r) {
+    const x = r.x, pl = INVO.planOf(r);
+    if (x.free || !x.plan && !x.days || pl.length <= 2) return INVO.termText(r);
+    const same = pl.every(p => Math.abs(p.s - pl[0].s) < 0.01), t0 = UI.localDate(Date.now()), nx = pl.find(p => p.d >= t0);
+    return `<details class="iv-term"><summary><b>${pl.length} × ${same ? INVO.money(pl[0].s) : INVO.money(r.s / pl.length) + '≈'}</b><div class="ct-sub">${UI.dm(pl[0].d)} → ${UI.dm(pl.at(-1).d)}${nx ? ` · след. <b>${UI.dm(nx.d)}</b>` : ''}</div></summary>${pl.map(p => `<div${p === nx ? ' class="nx"' : ''}>${UI.dm(p.d)} · ${INVO.money(p.s)}</div>`).join('')}</details>`;
+  },
   days: (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 864e5),
   // «15.12-500, 15.01.2027-500» or one per line; a date without a year is the first such date not earlier than the invoice
   parse(text, from) {
@@ -467,14 +474,14 @@ EXT_PAGES.invo = async el => {
   const pay = r => { const o = paid.get(r.id); if (!o) return st ? '<span class="pill good">оплачена ✓</span>' : '<span class="mut">—</span>'; return `${o.late > 0.5 ? `<span class="pill crit">просрочено ${f(o.late)}</span><br>` : o.today > 0.5 ? `<span class="pill warn">сегодня ${f(o.today)}</span><br>` : ''}<small>оплачено ${f(o.paid)} · осталось <b>${f(o.left)}</b></small>`; };
   const stTag = r => ({ new: '<span class="pill warn">проверить</span>', ok: '<span class="pill good">✓ срок задан</span>', stored: '<span class="pill info">📁 сдан</span>' }[INVO.status(r)]);
   const dval = r => r.x.disc ?? r.disc;
-  const table = () => rows.length ? `<div class="scroll"><table><thead><tr><th><input type="checkbox" id="ivAll" title="выбрать все для печати"></th><th>Дата</th><th>№</th><th>Клиент</th><th>Агент</th><th class="num">Сумма</th><th class="num">Скидка</th><th>Бонусы / условия</th><th>Срок оплаты</th><th>Оплата</th><th>Статус</th><th></th></tr></thead><tbody>
+  const table = () => rows.length ? `<div class="scroll"><table><thead><tr><th><input type="checkbox" id="ivAll" title="выбрать все для печати"></th><th>Дата · №</th><th>Клиент · агент</th><th class="num">Сумма</th><th class="num">Скидка</th><th>Бонусы / условия</th><th>Срок оплаты</th><th>Оплата</th><th>Статус</th><th></th></tr></thead><tbody>
       ${rows.map(r => { const sp = INVO.isSpec(r), b = [r.x.bonusInv ? `🎁 №${r.x.bonusInv} бесплатно` : '', String(r.x.bonus ?? r.bonusItems.join(', ')).trim()].filter(Boolean).join('\n'), s0 = r.s0 ?? r.s; return `<tr data-id="${esc(r.id)}">
-        <td><input type="checkbox" data-sel="${esc(r.id)}" ${INVO.sel.has(r.id) ? 'checked' : ''}></td><td>${UI.dm(r.d)}</td><td>${esc(r.id)}</td>
-        <td>${esc(r.client)}${sp ? ' <span class="pill warn">спец</span>' : ''}${r.x.free ? ' <span class="pill info">🎁 бонус</span>' : ''}</td><td>${esc(r.agent)}</td><td class="num"><b>${f(r.s)}</b>${Math.abs(s0 - r.s) > 0.005 ? `<br><small class="mut"><s>${f(s0)}</s></small>` : ''}</td>
+        <td><input type="checkbox" data-sel="${esc(r.id)}" ${INVO.sel.has(r.id) ? 'checked' : ''}></td><td style="white-space:nowrap">${UI.dm(r.d)}<div class="ct-sub">№${esc(r.id)}</div></td>
+        <td style="min-width:170px"><b>${esc(r.client)}</b>${sp ? ' <span class="pill warn">спец</span>' : ''}${r.x.free ? ' <span class="pill info">🎁 бонус</span>' : ''}<div class="ct-sub">${esc(r.agent)}</div></td><td class="num"><b>${f(r.s)}</b>${Math.abs(s0 - r.s) > 0.005 ? `<br><small class="mut"><s>${f(s0)}</s></small>` : ''}</td>
         <td class="num ${Math.abs(dval(r) - (F.std ?? 10)) > 0.6 ? 'neg' : ''}">${dval(r) > 0.05 ? (Math.round(dval(r) * 10) / 10) + '%' : '—'}</td>
-        <td style="max-width:220px;white-space:normal"><small>${esc(b).replace(/\n/g, '<br>')}${r.x.cond ? `${b ? '<br>' : ''}<i>${esc(r.x.cond)}</i>` : ''}</small></td>
-        <td>${INVO.termText(r)}</td><td>${pay(r)}</td><td>${stTag(r)}</td>
-        <td style="white-space:nowrap">${INVO.status(r) === 'new' && !sp ? `<button class="btn gray sm" data-okstd="${esc(r.id)}" type="button" title="Оставить стандартный срок">✓</button> ` : ''}<button class="btn gray sm" data-ed="${esc(r.id)}" type="button">Срок / условия</button>${sp ? ` <button class="btn gray sm" data-pr="${esc(r.id)}" type="button" title="Печать договора">🖨</button>${INVO.status(r) !== 'new' ? ` <button class="btn gray sm" data-st="${esc(r.id)}" type="button" title="${r.x.stored ? 'Сдан на хранение ' + UI.dateRu(r.x.stored) + ' — нажмите, чтобы снять отметку' : 'Подписан и сдан на хранение'}">${r.x.stored ? '📁✓' : '📁'}</button>` : ''}` : ''}</td></tr>`; }).join('')}
+        <td class="iv-bon">${b || r.x.cond ? `<div class="iv-clamp" title="${esc([b, r.x.cond].filter(Boolean).join('\n'))}">${esc(b).replace(/\n/g, '<br>')}${r.x.cond ? `${b ? '<br>' : ''}<i>${esc(r.x.cond)}</i>` : ''}</div>` : '<span class="mut">—</span>'}</td>
+        <td style="white-space:nowrap">${INVO.termShort(r)}</td><td style="min-width:150px">${pay(r)}</td><td>${stTag(r)}</td>
+        <td class="ct-act">${INVO.status(r) === 'new' && !sp ? `<button class="btn gray sm" data-okstd="${esc(r.id)}" type="button" title="Оставить стандартный срок">✓</button> ` : ''}<button class="btn gray sm" data-ed="${esc(r.id)}" type="button" title="Срок оплаты и условия">✏️ Условия</button>${sp ? ` <button class="btn gray sm" data-pr="${esc(r.id)}" type="button" title="Печать договора">🖨</button>${INVO.status(r) !== 'new' ? ` <button class="btn gray sm" data-st="${esc(r.id)}" type="button" title="${r.x.stored ? 'Сдан на хранение ' + UI.dateRu(r.x.stored) + ' — нажмите, чтобы снять отметку' : 'Подписан и сдан на хранение'}">${r.x.stored ? '📁✓' : '📁'}</button>` : ''}` : ''}</td></tr>`; }).join('')}
     </tbody></table></div>` : UI.empty(INVO.tab === 'new' ? 'Новых накладных нет — у всех срок задан 👍' : 'Пусто', '');
   const formView = () => `<div class="grid">${UI.panel('Форма договора-спецпредложения', `<div class="form">
       <label>Название компании (Поставщик)<input id="ifC" value="${esc(F.company || '')}"></label>
@@ -502,6 +509,7 @@ EXT_PAGES.invo = async el => {
   const q = $('#ivQ', body); if (q) q.onchange = () => { INVO.q = q.value.trim(); re(); };
   body.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => INVO.dialog(byId(b.dataset.ed), el));
   body.querySelectorAll('[data-pr]').forEach(b => b.onclick = () => INVO.preview([byId(b.dataset.pr)]));
+  body.querySelectorAll('.iv-clamp').forEach(d => d.onclick = () => d.classList.toggle('open'));
   body.querySelectorAll('[data-okstd]').forEach(b => b.onclick = () => { const r = byId(b.dataset.okstd); INVO.save(r, { disc: r.disc, spec: false }); re(); });
   body.querySelectorAll('[data-st]').forEach(b => b.onclick = () => { const x = c.orders[b.dataset.st]; if (!x) return; if (x.stored) delete x.stored; else x.stored = UI.localDate(Date.now()); CRMLocal.touch(); re(); });
   body.querySelectorAll('[data-sel]').forEach(b => b.onchange = () => { if (b.checked) INVO.sel.add(b.dataset.sel); else INVO.sel.delete(b.dataset.sel); });
