@@ -184,6 +184,7 @@ const AC = {
     AC.publish().catch(e => console.warn('agent cabinets', e));
     AC.publishDb().catch(e => console.warn('agent cabinets (database)', e));
     if (typeof WC !== 'undefined' && WC.publishSb) WC.publishSb().catch(e => console.warn('store keepers (database)', e)); // завсклад with his own login
+    if (typeof WC !== 'undefined' && WC.publish && Object.keys(WC.cfg().stores).length) WC.publish().catch(e => console.warn('store keepers (Telegram)', e)); // «Заканчивается», rating
   }, 20000); };
   addEventListener('crm:login', later); // signed in on an open page: the agents get their cabinets without waiting for new data
   for (const k of ['importSnap', 'importFast', 'put']) { const orig = LX[k]; if (typeof orig === 'function') LX[k] = function (...a) { const r = orig.apply(this, a); later(); return r; }; }

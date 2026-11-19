@@ -365,6 +365,13 @@ function doPost(e) {
     const snap = JSON.parse(f.text);
     if (p.act === 'load') return json_(snap.role === 'store' ? storeLive_(snap) : live_(snap)); // открыть кабинет (вход по логину)
     if (p.act === 'count_start' || p.act === 'count') return json_(countAct_(p, snap)); // сверка склада
+    if (p.act === 'move') return json_(moveAct_(p, snap));
+    if (p.act === 'lowask') { // «Попросить завезти» from the store keeper's «Заканчивается» — the supervisor gets the list
+      if (snap.role !== 'store') return json_({ error: 'Это не кабинет склада' });
+      const L = (Array.isArray(p.items) ? p.items : []).map(x => String(x).slice(0, 120)).filter(Boolean).slice(0, 80); if (!L.length) return json_({ error: 'Отметьте товары' });
+      notify_('📨 ' + snap.warehouse + ' (' + snap.name + ') просит завезти ' + L.length + ' поз.:\n' + L.map(x => '• ' + x).join('\n'));
+      return json_({ ok: true, n: L.length });
+    }                             // приход / отгрузка / возврат от завсклада
     if (p.act === 'order') return json_(cntOrder_(p, snap));                            // порядок товаров как на полках
     if (p.act === 'collect') return json_(collectAct_(p, snap));                        // очередь сбора: результат контакта с должником
     if (p.act === 'absreq') return json_(absReq_(p, snap));                             // заявка агента на отсутствие (Дисциплина)
@@ -510,6 +517,30 @@ function cntProp_(k, v) {
   try { const t = JSON.stringify(v); if (t.length < 8800) P.setProperty(k, t); else Logger.log('Сверка: ' + k + ' слишком большой (' + t.length + ')'); } catch (e) { Logger.log('Сверка: ' + mask_(e.message || e)); }
   return v;
 }
+// Приход / отгрузка / возврат from the store keeper's cabinet: what physically came in or went out, with a photo of the waybill.
+// Saved to inbox/ (act 'whmove') for the CRM, the supervisor gets a message with the LINKO stock of these goods at this minute (so he
+// sees whether LINKO already has the movement). The store keeper's own last 20 records (no LINKO numbers) — cntmoves_<who>.
+const MOVE_T_ = { in: '📥 Приход', out: '📤 Отгрузка', ret: '↩ Возврат' };
+function moveAct_(p, snap) {
+  if (snap.role !== 'store') return { error: 'Это не кабинет склада' };
+  const type = MOVE_T_[p.type] ? p.type : null; if (!type) return { error: 'Выберите: приход, отгрузка или возврат' };
+  const now = snap.branch ? storeStock_(snap) : null, I = (now && now.items) || {};
+  const items = (Array.isArray(p.items) ? p.items : []).slice(0, 150).map(i => ({ art: String(i.art || '').slice(0, 80), qty: Math.max(0, Math.round(n_(i.qty))) })).filter(i => i.art && i.qty > 0)
+    .map(i => ({ art: i.art, name: (I[i.art] || {}).name || String((p.names || {})[i.art] || i.art).slice(0, 120), qty: i.qty, linko: I[i.art] ? I[i.art].total || 0 : null }));
+  if (!items.length) return { error: 'Добавьте товары и количество' };
+  const stamp = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8), at = new Date().toISOString();
+  let photo = '';
+  if (p.photo && /^[A-Za-z0-9+/=]+$/.test(p.photo) && p.photo.length < 2800000) { photo = 'inbox/photos/' + uid + '.jpg'; saveB64ToGithub_(photo, p.photo, 'Склад: накладная'); }
+  const rec = { act: 'whmove', id: uid, at: at, who: snap.who, name: snap.name, warehouse: snap.warehouse, type: type, party: String(p.party || '').slice(0, 120), items: items, comment: String(p.comment || '').slice(0, 500), photo: photo, linko_at: now ? now.at : null };
+  saveB64ToGithub_('inbox/' + stamp + '/' + uid + '.json', Utilities.base64Encode(JSON.stringify(rec), Utilities.Charset.UTF_8), 'Склад: ' + MOVE_T_[type] + ' ' + snap.warehouse);
+  const mine = cntProp_('cntmoves_' + snap.who) || [];
+  mine.unshift({ id: uid, at: at, type: type, party: rec.party, items: items.map(i => ({ name: i.name, qty: i.qty })), photo: !!photo });
+  let keep = mine.slice(0, 20); while (keep.length > 1 && JSON.stringify(keep).length > 8000) keep = keep.slice(0, keep.length - 1);
+  cntProp_('cntmoves_' + snap.who, keep);
+  const units = items.reduce((t, i) => t + i.qty, 0);
+  notify_(MOVE_T_[type] + ' · ' + snap.warehouse + ' (' + snap.name + ')' + (rec.party ? ' — ' + rec.party : '') + '\n' + items.slice(0, 15).map(i => '• ' + i.name + ': ' + i.qty + ' шт' + (i.linko !== null ? ' (в LINKO сейчас ' + i.linko + ')' : '')).join('\n') + (items.length > 15 ? '\n…и ещё ' + (items.length - 15) : '') + '\nВсего: ' + items.length + ' поз., ' + units + ' шт' + (photo ? '\n📷 есть фото накладной' : '') + (rec.comment ? '\n💬 ' + rec.comment : ''));
+  return { ok: true, id: uid, at: at, n: items.length, units: units };
+}
 // the order of the goods as they stand on the shelves (set by the store keeper once): a list of articles
 function cntOrder_(p, snap) {
   if (snap.role !== 'store') return { error: 'Это не кабинет склада' };
@@ -553,6 +584,7 @@ function storeLive_(snap) {
   // today's plan (full / short list), the shelf order, and the store keeper's OWN last counts (to catch typos — never the LINKO numbers)
   try { if (snap.items && snap.items.length) { const pl = S0 && cntPlan_(snap, day, S0); if (pl) snap.plan = { short: pl.short, list: pl.list, total: pl.total }; } } catch (e) { Logger.log('Сверка, план: ' + mask_(e.message || e)); }
   snap.order = cntProp_('cntorder_' + snap.who) || [];
+  snap.moves = cntProp_('cntmoves_' + snap.who) || []; // his own приход / отгрузка records
   snap.last = (cntProp_('cntlast_' + snap.who) || {}).f || {};
   return snap;
 }

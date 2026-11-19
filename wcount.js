@@ -54,6 +54,43 @@ const WC = {
     return { rows, diff, moved: rows.filter(i => i.moved), known: rows.filter(i => i.k && !i.dd), short, plus, shortSum: short.reduce((s, i) => s + -i.dd * i.cost, 0), plusSum: plus.reduce((s, i) => s + i.dd * i.cost, 0), charged };
   },
 
+  // the store keeper's rating: per day the last full count (a recount is already merged into it); month = this calendar month.
+  // rank — place among all store keepers by the share of clean days this month (then fewer late ones)
+  stats(who) {
+    const c = WC.cfg(), dl = c.deadline || '10:00', m0 = UI.localDate(Date.now()).slice(0, 7), by = new Map();
+    for (const s of c.subs) if (!s.partial) { if (!by.has(s.who)) by.set(s.who, new Map()); by.get(s.who).set(s.day, s); }
+    const calc = w => {
+      const rows = [...(by.get(w) || new Map()).values()].sort((a, b) => (a.day < b.day ? -1 : 1)).map(s => { const v = WC.view(s); return { d: s.day, ok: !v.diff.length, n: v.diff.length, late: WC.hm(s.at) > dl, ch: Math.round(v.charged * 100) / 100 }; });
+      let streak = 0; for (let k = rows.length - 1; k >= 0 && rows[k].ok; k--) streak++;
+      let best = 0, run = 0; for (const r of rows) { run = r.ok ? run + 1 : 0; best = Math.max(best, run); }
+      const mon = rows.filter(r => r.d.startsWith(m0));
+      return { days: rows.slice(-30), streak, best, month: { cnt: mon.length, clean: mon.filter(r => r.ok).length, onTime: mon.filter(r => !r.late).length, charged: Math.round(mon.reduce((t, r) => t + r.ch, 0) * 100) / 100 } };
+    };
+    const all = [...by.keys()].map(w => ({ w, m: calc(w).month })).filter(x => x.m.cnt).sort((a, b) => b.m.clean / b.m.cnt - a.m.clean / a.m.cnt || (a.m.cnt - a.m.onTime) - (b.m.cnt - b.m.onTime));
+    const me = calc(who), k = all.findIndex(x => x.w === who);
+    return { ...me, rank: k >= 0 ? k + 1 : null, of: all.length, deadline: dl };
+  },
+  // «что заканчивается» on this warehouse (names and a status only — the count stays blind): from the warehouse low-stock report
+  // (WC._low, fetched before publishing); «from» — another warehouse that has plenty
+  lowFor(wh) {
+    const L = WC._low; if (!L || !Array.isArray(L.items)) return null;
+    const S = CRMLocal.engine.getState(), ever = new Map();
+    for (const u of S.wh.uploads || []) if (u.warehouse === wh) for (const r of u.rows || []) ever.set(String(r.art), Math.max(ever.get(String(r.art)) || 0, Number(r.total) || 0));
+    const out = [];
+    for (const i of L.items) {
+      if (WC.skipped(i)) continue;
+      const cell = (i.cells || []).find(x => x.wh === wh), tot = cell ? Number(cell.total) || 0 : 0, av = cell ? Number(cell.available) || 0 : 0;
+      const st = tot <= 0 ? ((ever.get(String(i.art)) || 0) > 0 ? 'out' : null) : av <= 0 ? 'blocked' : av <= (Number(i.min) || 0) ? 'low' : null;
+      if (st) out.push({ art: String(i.art), name: i.name, s: st, ...(i.move_from && i.move_from.wh !== wh ? { from: i.move_from.wh } : {}) });
+    }
+    const o = { out: 0, blocked: 1, low: 2 }; out.sort((a, b) => o[a.s] - o[b.s] || String(a.name).localeCompare(String(b.name)));
+    return { at: L.window?.to || null, items: out.slice(0, 150) };
+  },
+  async prep() { try { WC._low = await CRMLocal.request('GET', '/api/wh/low'); } catch { WC._low = null; } },
+  // after a new count arrives: refresh the store keepers' files (rating) a little later, once
+  later() { clearTimeout(WC._lt); WC._lt = setTimeout(() => { WC.publish().catch(() => {}); WC.publishSb().catch(() => {}); }, 15000); },
+  MOVE: { in: '📥 Приход', out: '📤 Отгрузка', ret: '↩ Возврат' },
+
   // a count from inbox/: a full count is a new record; a recount updates the items of that warehouse's last count of the day
   apply(m) {
     const c = WC.cfg(), day = WC.day(m.at);
@@ -76,7 +113,7 @@ const WC = {
     const S = CRMLocal.engine.getState(), up = (S.wh.uploads || []).filter(u => u.warehouse === wh).sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1))[0];
     const items = (up?.rows || []).filter(r => !WC.skipped(r)).map(r => ({ art: String(r.art), name: r.name, brand: r.brand || '' }));
     const K = WC.known(wh), known = {}; for (const a in K) if (Number(K[a].d)) known[a] = Number(K[a].d);
-    return { v: 1, role: 'store', who, name, warehouse: wh, skip: WC.skipList(), known, again: c.again?.[who] || null, branch: WC.branchOf(wh), deadline: c.deadline || '10:00', boss: AC.boss() || null, bot: bot || null, chat: typeof CHAT !== 'undefined' && CHAT.url ? CHAT.url() : null, at: new Date().toISOString(), recount: recount.map(a => ({ art: a, name: last.items.find(i => i.art === a)?.name || a })), items,
+    return { v: 1, role: 'store', who, name, warehouse: wh, skip: WC.skipList(), known, again: c.again?.[who] || null, stats: WC.stats(who), low: WC.lowFor(wh), branch: WC.branchOf(wh), deadline: c.deadline || '10:00', boss: AC.boss() || null, bot: bot || null, chat: typeof CHAT !== 'undefined' && CHAT.url ? CHAT.url() : null, at: new Date().toISOString(), recount: recount.map(a => ({ art: a, name: last.items.find(i => i.art === a)?.name || a })), items,
       mode: c.mode || 'full', fullDay: Number(c.fullDay || 1), extra: Number(c.extra ?? 8), packs: c.packs || {} };
   },
   // store keepers with their own CRM login (Пользователи → role «Завсклад», «Имя в LINKO» = his warehouse): the same file as
@@ -87,6 +124,7 @@ const WC = {
     if (!sb || !me || ['agent', 'store'].includes(me.role) || window.CLOUD?.gate?.() || !cl || !web || WC._busySb) return 0;
     WC._busySb = true;
     try {
+      await WC.prep();
       const { data, error } = await sb.from('profiles').select('id, full_name, linko_name, is_active').eq('role', 'store');
       if (error) throw error;
       let n = 0; WC._lastSb ||= {};
@@ -104,13 +142,18 @@ const WC = {
   // the store keepers' cabinets + stores.json for the reminder
   async publish() {
     const c = WC.cfg(), cl = typeof AC !== 'undefined' ? AC.cloud() : null; if (!cl) return 0;
+    await WC.prep();
     const on = Object.entries(c.stores).filter(([, s]) => s.on && s.wh);
     const bot = CRMLocal.ext().tg?.token ? await AC.bot() : '';
+    WC._lastTg ||= {};
     for (const [who, s] of on) {
-      const file = WC.file(who, s.name, s.wh, bot);
+      const file = WC.file(who, s.name, s.wh, bot), key = JSON.stringify({ ...file, at: '' });
+      if (WC._lastTg[who] === key) continue; // nothing changed since the last publish in this session
       await AC.gh(cl, 'PUT', 'agents/tg/' + who + '.json', { message: 'CRM: кабинет склада', content: AC.b64(JSON.stringify(file)) });
+      WC._lastTg[who] = key;
     }
-    await AC.gh(cl, 'PUT', 'stores.json', { message: 'CRM: склады и срок сверки', content: AC.b64(JSON.stringify({ deadline: c.deadline || '10:00', remind: c.remind || '09:00', app: AC.web() ? AC.miniUrl() : '', list: on.map(([who, s]) => ({ who, name: s.name, warehouse: s.wh })) })) });
+    const sj = JSON.stringify({ deadline: c.deadline || '10:00', remind: c.remind || '09:00', app: AC.web() ? AC.miniUrl() : '', list: on.map(([who, s]) => ({ who, name: s.name, warehouse: s.wh })) });
+    if (WC._lastSj !== sj) { await AC.gh(cl, 'PUT', 'stores.json', { message: 'CRM: склады и срок сверки', content: AC.b64(sj) }); WC._lastSj = sj; }
     return on.length;
   },
   async connect(who) {
@@ -123,7 +166,13 @@ const WC = {
     await TG.call('sendMessage', { chat_id: Number(who), parse_mode: 'HTML', text: html, ...(url ? { reply_markup: { inline_keyboard: [[{ text: '📦 Открыть кабинет склада', web_app: { url } }]] } } : {}) });
   },
 };
-INBOX_HANDLERS.count = m => WC.apply(m);
+INBOX_HANDLERS.count = m => { const r = WC.apply(m); WC.later(); return r; };
+// приход / отгрузка / возврат from a store keeper's cabinet (autolinko.gs moveAct_): kept as ext.wcount.moves (last 300)
+INBOX_HANDLERS.whmove = m => {
+  const c = WC.cfg(); c.moves ||= []; if (c.moves.some(x => x.id === m.id)) return true;
+  c.moves.push({ id: m.id, at: m.at, who: m.who, name: m.name, warehouse: m.warehouse, type: m.type, party: m.party || '', items: m.items || [], comment: m.comment || '', photo: m.photo || '', linko_at: m.linko_at || null });
+  c.moves = c.moves.slice(-300); return true;
+};
 
 EXT_PAGES.wcount = async el => {
   await CRMLocal.ready;
@@ -162,6 +211,11 @@ EXT_PAGES.wcount = async el => {
         return `<div class="bar" style="margin-top:10px;${streak >= 2 ? 'padding:10px;border-radius:10px;background:rgba(255,170,0,.12)' : ''}"><span class="${streak >= 2 ? 'neg' : 'mut'}">${streak >= 2 ? `⚠ <b>${streak} сверки подряд с расхождением.</b> ` : ''}${asked ? `🔁 Повторная сверка запрошена в ${WC.hm(c.again[sub.who])} — ждём.` : 'Не верите цифрам? Попросите завсклада пересчитать весь склад заново.'}</span><span class="spacer"></span><button class="btn ${streak >= 2 ? '' : 'gray'}" id="wcAgain">🔁 ${asked ? 'Напомнить ещё раз' : 'Сверить ещё раз'}</button></div>`; })()}
       ${sub.status === 'recount' ? '' : `<div class="bar needs-edit" style="margin-top:10px"><span class="spacer"></span><button class="btn" id="wcOk">${sub.status === 'ok' ? '✓ Сохранить решения' : V.diff.length ? '✓ Принять с решениями' : '✓ Принять сверку'}</button></div>`}`, { cls: 'w12', sub: 'Пересчёт идёт автоматически: при расхождении завсклад получает только названия товаров (без цифр) и пересчитывает их один раз; если снова не сошлось — расхождение фиксируется. По каждому итоговому расхождению выберите решение; «Удержать» — сумма по себестоимости (можно поправить); «Постоянная разница» — товар, который каждый раз расходится на одно и то же число: дальше такая разница считается нормой. «Разница» = факт − LINKO (минус постоянная разница): минус — недостача, плюс — излишек.' }) : UI.empty('Сверок ещё нет', 'Добавьте завскладов ниже и подключите им кабинет склада в Telegram.')}
     <div class="grid">
+    ${(() => { const whos = [...new Set(c.subs.filter(x => x.day.startsWith(t0.slice(0, 7))).map(x => x.who))]; if (!whos.length) return '';
+      const R = whos.map(w => ({ w, s: WC.stats(w), sub: c.subs.filter(x => x.who === w).at(-1) })).sort((a, b) => (a.s.rank || 99) - (b.s.rank || 99));
+      return UI.panel('🏆 Рейтинг завскладов — этот месяц', LX.table(['Место', 'Завсклад', 'Склад', '#Сверок', '#Без расхождений', '#Вовремя', '#Чисто подряд', '#Удержания'], R.map(x => `<tr><td><b>${x.s.rank === 1 ? '🥇' : x.s.rank === 2 ? '🥈' : x.s.rank === 3 ? '🥉' : x.s.rank || '—'}</b></td><td>${esc(x.sub?.name || x.w)}</td><td>${esc(x.sub?.warehouse || '')}</td><td class="n">${f(x.s.month.cnt)}</td><td class="n ${x.s.month.clean === x.s.month.cnt ? 'pos' : ''}"><b>${f(x.s.month.clean)}</b> <small class="mut">${x.s.month.cnt ? Math.round(x.s.month.clean / x.s.month.cnt * 100) + '%' : ''}</small></td><td class="n">${f(x.s.month.onTime)}</td><td class="n">${f(x.s.streak)} <small class="mut">лучший ${f(x.s.best)}</small></td><td class="n">${x.s.month.charged ? $$(x.s.month.charged) : '—'}</td></tr>`)), { cls: 'w12', sub: `Каждый завсклад видит свою строку в кабинете («Мой рейтинг»). Вовремя — до ${esc(c.deadline || '10:00')}.` }); })()}
+    ${(() => { const M = (c.moves || []).filter(x => !WC.hw || x.warehouse === WC.hw).slice().reverse(); if (!M.length) return '';
+      return UI.panel('🚚 Приход и отгрузка от завскладов', LX.table(['Когда', 'Склад · завсклад', 'Что', 'Товары', ''], M.slice(0, 60).map(x => `<tr${x.ok ? ' style="opacity:.6"' : ''}><td>${UI.dateRu(UI.localDate(Date.parse(x.at)))} <small class="mut">${WC.hm(x.at)}</small></td><td>${esc(x.warehouse)}<br><small class="mut">${esc(x.name)}</small></td><td><b>${WC.MOVE[x.type] || esc(x.type)}</b>${x.party ? `<br><small>${esc(x.party)}</small>` : ''}</td><td>${x.items.slice(0, 12).map(i => `${esc(i.name)}: <b>${f(i.qty)}</b>${i.linko !== null && i.linko !== undefined ? ` <small class="mut">(в LINKO было ${f(i.linko)})</small>` : ''}`).join('<br>')}${x.items.length > 12 ? `<br><small class="mut">…и ещё ${x.items.length - 12}</small>` : ''}${x.comment ? `<br>💬 ${esc(x.comment)}` : ''}</td><td>${x.photo ? `<a href="#" data-ph="${esc(x.photo)}">📷 накладная</a><br>` : ''}${x.ok ? '<span class="pos">✓ проверено</span>' : `<button class="btn gray sm needs-edit" data-mok="${esc(x.id)}">✓ Проверено</button>`}</td></tr>`), { max: '520px' }), { cls: 'w12', sub: 'Что завсклад принял или отдал физически. «В LINKO было» — остаток в LINKO в ту минуту: если приход уже проведён, он там учтён. Сверьте с накладной и отметьте «Проверено».' }); })()}
     ${days.length ? UI.panel('По дням', `<div class="tscroll"><table><thead><tr><th>День</th>${stores.map(([, s]) => `<th class="n">${esc(s.wh)}</th>`).join('')}</tr></thead><tbody>${days.map(d => `<tr><td>${UI.dateRu(d)}</td>${stores.map(([who]) => { const s = c.subs.filter(x => x.who === who && x.day === d && !x.partial).at(-1); if (!s) return '<td class="n neg">нет</td>'; const v = WC.view(s); return `<td class="n ${v.diff.length ? 'neg' : 'pos'}">${v.diff.length ? v.diff.length + ' расх.' : '✓'} <small class="mut">${WC.hm(s.at)}</small></td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`, { cls: 'w7', sub: 'Последние 14 дней: расхождения и время отправки' }) : ''}
     ${often.length ? UI.panel('Расходятся постоянно', LX.table(['Склад', 'Товар', '#Раз за 14 дней', '#Чаще всего', ''], often.slice(0, 20).map(e => `<tr><td>${esc(e.wh)}</td><td>${esc(e.name)}</td><td class="n"><b>${e.n}</b></td><td class="n ${e.mode < 0 ? 'neg' : 'pos'}">${e.mode > 0 ? '+' : ''}${f(e.mode)} <small class="mut">×${e.modeN}</small></td><td>${e.modeN >= 2 ? `<button class="btn gray sm needs-edit" data-kn="${esc(e.wh + '|' + e.art)}" data-kd="${e.mode}" data-knm="${esc(e.name)}" title="Дальше разница ${e.mode > 0 ? '+' : ''}${e.mode} по этому товару считается нормой">📌 Учитывать</button>` : ''}</td></tr>`)), { cls: 'w5', sub: 'Товар расходится раз за разом на одно и то же число? «📌 Учитывать» — дальше эта разница считается нормой, и если всё остальное сошлось, сверка зелёная' }) : ''}
     ${knownAll.length ? UI.panel('📌 Учитываемые постоянные разницы', LX.table(['Склад', 'Товар', '#Разница', 'С какого дня', ''], knownAll.map(k => `<tr><td>${esc(k.wh)}</td><td>${esc(k.name || k.art)}<br><small class="mut">${esc(k.art)}</small></td><td class="n ${k.d < 0 ? 'neg' : 'pos'}"><b>${k.d > 0 ? '+' : ''}${f(k.d)}</b></td><td>${k.at ? UI.dateRu(k.at.slice(0, 10)) : '—'}</td><td><button class="btn gray sm needs-edit" data-unk="${esc(k.wh + '|' + k.art)}">Больше не учитывать</button></td></tr>`)), { cls: 'w12', sub: 'Такой факт − LINKO считается «сходится»: завсклад этого не видит (сверка слепая), но и на пересчёт такие товары не уходят. Разберётесь с причиной (исправили в LINKO) — уберите.' }) : ''}
@@ -193,6 +247,7 @@ EXT_PAGES.wcount = async el => {
   { const d = $('#wcAll', el); if (d) d.ontoggle = () => { WC.showAll = d.open; }; }
   { const h = $('#wcHw', el); if (h) h.onchange = e => { WC.hw = e.target.value || null; WC.hn = 30; re(); }; }
   { const m = $('#wcMore', el); if (m) m.onclick = () => { WC.hn = (WC.hn || 30) + 50; re(); }; }
+  el.querySelectorAll('[data-mok]').forEach(b => b.onclick = async () => { const x = (c.moves || []).find(m => m.id === b.dataset.mok); if (!x) return; x.ok = new Date().toISOString(); CRMLocal.touch(); re(); });
   el.querySelectorAll('[data-hs]').forEach(tr => tr.onclick = () => { WC.sel = tr.dataset.hs; re(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
   el.querySelectorAll('[data-kn]').forEach(b => b.onclick = async () => { const [wh, art] = b.dataset.kn.split('|'), d = Number(b.dataset.kd); if (!confirm(`${b.dataset.knm}: дальше разница ${d > 0 ? '+' : ''}${d} на складе ${wh} будет считаться нормой. Учитывать?`)) return; setKnown(wh, art, d, b.dataset.knm); await save(); toast('📌 Учитывается: ' + b.dataset.knm); re(); });
   el.querySelectorAll('[data-unk]').forEach(b => b.onclick = async () => { const [wh, art] = b.dataset.unk.split('|'); setKnown(wh, art, null); await save(); toast('Больше не учитывается'); re(); });
@@ -239,10 +294,10 @@ EXT_PAGES.wcount = async el => {
     if (!WC.branchOf(wh)) toast(`Внимание: для склада ${wh} нет связи со складом LINKO — сверка начнёт сравнивать, когда автозагрузка его узнает`);
     c.stores[who] = { name: name.slice(0, 60), wh, on: true, tgAt: '' }; await save(); re();
   };
-  el.querySelectorAll('[data-tgc]').forEach(b => b.onclick = async () => { const who = b.dataset.tgc; try { await WC.publish(); await WC.connect(who); c.stores[who].tgAt = new Date().toISOString(); CRMLocal.touch(); toast('Готово: у завсклада в боте кнопка «Кабинет склада»'); re(); } catch (e) { toast(e.message); } });
+  el.querySelectorAll('[data-tgc]').forEach(b => b.onclick = async () => { const who = b.dataset.tgc; try { if (WC._lastTg) delete WC._lastTg[who]; WC._lastSj = null; await WC.publish(); await WC.connect(who); c.stores[who].tgAt = new Date().toISOString(); CRMLocal.touch(); toast('Готово: у завсклада в боте кнопка «Кабинет склада»'); re(); } catch (e) { toast(e.message); } });
   el.querySelectorAll('[data-rm]').forEach(b => b.onclick = async () => {
     const who = b.dataset.rm; if (!confirm(`Убрать ${c.stores[who].name} из завскладов? Кабинет склада у него закроется.`)) return;
-    delete c.stores[who];
+    delete c.stores[who]; if (WC._lastTg) delete WC._lastTg[who];
     try { const cl = AC.cloud(); if (cl) await AC.gh(cl, 'DELETE', 'agents/tg/' + who + '.json', { message: 'CRM: кабинет склада закрыт' }); await TG.call('setChatMenuButton', { chat_id: Number(who), menu_button: { type: 'default' } }); } catch { /* already closed */ }
     await save(); re();
   });

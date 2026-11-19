@@ -245,7 +245,16 @@
     .sc-in{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}.sc-in input{width:68px;font-size:18px;text-align:right;padding:8px}
     .sc-sum{min-width:56px;font-size:18px}.sc-w{display:block;color:#b8860b;margin-top:4px}.sc-pk{color:var(--accent,#1a73e8)}
     .sc-ord{display:flex;align-items:center;gap:10px;padding:12px 6px;border-bottom:1px solid var(--line,#dde3e8);cursor:pointer;user-select:none}
-    .sc-ord b{min-width:30px;height:30px;border-radius:15px;display:inline-flex;align-items:center;justify-content:center;background:var(--line,#dde3e8)}.sc-ord.on b{background:var(--accent,#1a73e8);color:#fff}</style>`);
+    .sc-ord b{min-width:30px;height:30px;border-radius:15px;display:inline-flex;align-items:center;justify-content:center;background:var(--line,#dde3e8)}.sc-ord.on b{background:var(--accent,#1a73e8);color:#fff}
+    .sc-tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0 10px;scrollbar-width:none}.sc-tabs button,.sc-seg button{flex:0 0 auto;border:1px solid var(--line,#dde3e8);background:var(--card,#fff);color:inherit;border-radius:20px;padding:9px 14px;font-size:14px;cursor:pointer}
+    .sc-tabs button.on,.sc-seg button.on{background:var(--accent,#1a73e8);border-color:var(--accent,#1a73e8);color:#fff}.sc-seg{display:flex;gap:6px;flex-wrap:wrap}
+    .sc-badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:#d9534f;color:#fff;font-size:12px;line-height:18px}
+    .sc-kps{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}.sc-kp{border:1px solid var(--line,#dde3e8);border-radius:12px;padding:12px}.sc-kp .v{font-size:24px;font-weight:700}.sc-kp .t{font-size:13px}.sc-kp .s{font-size:12px;opacity:.7;margin-top:2px}
+    .sc-kp.good{border-color:#2e9d5b;background:rgba(46,157,91,.08)}.sc-kp.bad{border-color:#d9534f;background:rgba(217,83,79,.07)}
+    .sc-cal{display:flex;flex-wrap:wrap;gap:5px}.sc-cal span{position:relative;width:34px;height:34px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-size:13px;color:#fff}.sc-cal span.ok{background:#2e9d5b}.sc-cal span.bad{background:#d9534f}.sc-cal i{position:absolute;top:-6px;right:-6px;font-size:11px;font-style:normal}
+    .sc-dot{display:inline-block;width:10px;height:10px;border-radius:3px}.sc-dot.ok{background:#2e9d5b}.sc-dot.bad{background:#d9534f}
+    .sc-hit{display:block;width:100%;text-align:left;padding:10px;border:0;border-bottom:1px solid var(--line,#dde3e8);background:var(--card,#fff);color:inherit;font-size:15px;cursor:pointer}
+    .sc-row.sc-cur{background:rgba(26,115,232,.1);border-left:4px solid var(--accent,#1a73e8);padding-left:8px}.sc-live{background:#d9534f!important;color:#fff!important}</style>`);
 
   function drawOrder(body) {
     const all = S.items || [], seq = ordering.seq, idx = a => seq.indexOf(a);
@@ -264,8 +273,156 @@
     };
   }
 
+  // ---------- store keeper's cabinet: tabs — the count, приход / отгрузка, what is running out, his rating ----------
+  let stab = store.get('mital_stab') || 'count';
   function drawStore(body) {
+    if (ordering) return drawOrder(body);
     const nav = document.querySelector('nav.tabs'); if (nav) nav.hidden = true;
+    $('#meName').textContent = 'Склад ' + S.warehouse; $('#meSub').textContent = S.name;
+    const nLow = ((S.low && S.low.items) || []).length;
+    const T = [['count', '📋 Сверка'], ['move', '🚚 Приход / отгрузка'], ['low', '⚠ Заканчивается' + (nLow ? ` <b class="sc-badge">${nLow}</b>` : '')], ['me', '🏆 Мой рейтинг']];
+    if (stab === 'move') drawMove(body); else if (stab === 'low') drawLow(body); else if (stab === 'me') drawMe(body); else drawCount(body);
+    body.insertAdjacentHTML('afterbegin', `<div class="sc-tabs" role="tablist">${T.map(([k, t]) => `<button type="button" role="tab" aria-selected="${k === stab}" class="${k === stab ? 'on' : ''}" data-st="${k}">${t}</button>`).join('')}</div>`);
+    body.querySelectorAll('[data-st]').forEach(b => b.onclick = () => { stab = b.dataset.st; store.set('mital_stab', stab); drawStore(body); window.scrollTo(0, 0); });
+  }
+
+  // ⚠ what is running out on this warehouse: names and a status only (no LINKO numbers — the count stays blind)
+  function drawLow(body) {
+    const L = (S.low && S.low.items) || [], W = { out: ['✕ Закончился', 'neg'], blocked: ['⊘ Всё отложено под заказы', 'neg'], low: ['▼ Осталось мало', ''] };
+    body.innerHTML = panel('⚠ Что заканчивается на складе', !S.low ? '<p class="mut">Данных пока нет — они появятся, когда руководитель обновит остатки складов.</p>'
+      : !L.length ? '<p class="pos" style="font-size:17px"><b>✓ Всё есть — ничего не заканчивается</b></p>'
+      : `<p class="mut">По остаткам${S.low.at ? ' на ' + dRu(S.low.at) : ''}. Отметьте, что нужно завезти, и отправьте руководителю.</p>${['out', 'blocked', 'low'].map(k => { const g = L.filter(i => i.s === k); return g.length ? `<h4 style="margin:14px 0 6px" class="${W[k][1]}">${W[k][0]} — ${g.length}</h4>${g.map(i => `<label class="sc-row" style="display:flex;gap:10px;align-items:center"><input type="checkbox" data-lw="${esc(i.art)}" ${k !== 'low' ? 'checked' : ''} style="width:22px;height:22px"><span>${esc(i.name)}${i.from ? `<br><small class="mut">есть на складе ${esc(i.from)}</small>` : ''}</span></label>`).join('')}` : ''; }).join('')}`)
+      + `<div class="bar">${L.length ? '<button class="btn" id="lwAsk">📨 Попросить завезти</button>' : ''}${chatBtn()}</div><small id="lwE" role="status"></small>`;
+    const b = $('#lwAsk'); if (b) b.onclick = async () => {
+      const arts = [...body.querySelectorAll('[data-lw]:checked')].map(x => x.dataset.lw); if (!arts.length) { $('#lwE').textContent = 'Отметьте товары'; return; }
+      b.disabled = true; try { await storePost({ act: 'lowask', items: arts.map(a => L.find(i => i.art === a)?.name || a) }); $('#lwE').className = 'pos'; $('#lwE').textContent = `✓ Руководитель получил список: ${arts.length} поз.`; } catch (err) { b.disabled = false; $('#lwE').className = 'neg'; $('#lwE').textContent = err.message; }
+    };
+  }
+
+  // 🏆 his own rating and history (counted by the CRM from the accepted counts)
+  function drawMe(body) {
+    const T = S.stats;
+    if (!T || !T.days || !T.days.length) { body.innerHTML = panel('🏆 Мой рейтинг', '<p class="mut">Здесь появятся ваша история сверок и место среди складов — после первых сверок.</p>'); return; }
+    const m = T.month, pct = m.cnt ? Math.round(m.clean / m.cnt * 100) : 0, medal = T.rank === 1 ? '🥇' : T.rank === 2 ? '🥈' : T.rank === 3 ? '🥉' : '🏅';
+    const kp = (v, t, s, tone) => `<div class="sc-kp ${tone || ''}"><div class="v">${v}</div><div class="t">${t}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
+    body.innerHTML = panel('🏆 Мой рейтинг', `<div class="sc-kps">
+        ${kp(T.streak, 'сверок подряд без расхождений', `лучший результат: ${T.best}`, T.streak >= 5 ? 'good' : '')}
+        ${kp(`${m.clean} из ${m.cnt}`, 'в этом месяце без расхождений', pct + '%', pct >= 90 ? 'good' : pct < 60 ? 'bad' : '')}
+        ${kp(`${m.onTime} из ${m.cnt}`, `вовремя — до ${esc(T.deadline || '10:00')}`, '', m.onTime === m.cnt ? 'good' : '')}
+        ${T.rank ? kp(`${medal} ${T.rank}`, `место среди ${T.of} складов`, 'в этом месяце', T.rank === 1 ? 'good' : '') : ''}
+        ${m.charged ? kp('$' + m.charged, 'удержано за недостачу в этом месяце', '', 'bad') : ''}
+      </div>
+      <h4 style="margin:16px 0 6px">Последние ${T.days.length} сверок</h4>
+      <div class="sc-cal">${T.days.map(d => `<span class="${d.ok ? 'ok' : 'bad'}" title="${dRu(d.d)}: ${d.ok ? 'сошлось' : 'расхождений ' + d.n}${d.late ? ', с опозданием' : ''}">${Number(d.d.slice(8, 10))}${d.late ? '<i>⏰</i>' : ''}</span>`).join('')}</div>
+      <p class="mut"><span class="sc-dot ok"></span> сошлось · <span class="sc-dot bad"></span> были расхождения · ⏰ после ${esc(T.deadline || '10:00')}</p>
+      ${T.days.slice().reverse().slice(0, 10).map(d => `<div class="sc-row" style="display:flex;justify-content:space-between;gap:10px"><span>${dRu(d.d)}</span><span class="${d.ok ? 'pos' : 'neg'}">${d.ok ? '✓ сошлось' : '✕ расхождений: ' + d.n}${d.late ? ' · ⏰ опоздание' : ''}${d.ch ? ' · удержано $' + d.ch : ''}</span></div>`).join('')}`);
+  }
+
+  // 🚚 приход / отгрузка / возврат: what physically came in or went out (boxes × pieces like the count), with a photo of the waybill
+  const MV = { get: () => store.get('mital_mv'), set: v => store.set('mital_mv', v) };
+  const MVT = { in: '📥 Приход', out: '📤 Отгрузка', ret: '↩ Возврат' };
+  function drawMove(body) {
+    const mv = MV.get() || { type: 'in', party: '', it: {} }; mv.it ||= {};
+    const byArt = new Map((S.items || []).map(i => [i.art, i])), added = Object.keys(mv.it).filter(a => byArt.has(a));
+    const qty = a => { const x = mv.it[a] || {}; return (Number(x.b) || 0) * packOf(byArt.get(a)) + (Number(x.p) || 0); };
+    const total = () => added.reduce((t, a) => t + qty(a), 0);
+    const row = a => { const i = byArt.get(a), pk = packOf(i), x = mv.it[a] || {};
+      return `<div class="sc-row" data-mr="${esc(a)}"><div>${esc(i.name)}<br><small class="mut">${esc(a)}${pk > 1 ? ` · <span class="sc-pk">📦 1 коробка = ${pk} шт</span>` : ''}</small></div>
+        <div class="sc-in">${pk > 1 ? `<input type="number" inputmode="numeric" min="0" placeholder="кор." aria-label="Коробок" data-mb="${esc(a)}" value="${x.b ?? ''}"><span class="mut">× ${pk} +</span>` : ''}<input type="number" inputmode="numeric" min="0" placeholder="шт" aria-label="Штук" data-mp="${esc(a)}" value="${x.p ?? ''}">
+        <b class="sc-sum" data-ms="${esc(a)}">${qty(a) ? '= ' + qty(a) : ''}</b><span style="flex:1"></span><button class="btn gray sm" type="button" data-mx="${esc(a)}" aria-label="Убрать">✕</button></div></div>`; };
+    const hist = (S.moves || []).slice(0, 15);
+    body.innerHTML = panel('🚚 Приход / отгрузка', `<div class="sc-seg">${Object.entries(MVT).map(([k, t]) => `<button type="button" class="${mv.type === k ? 'on' : ''}" data-mt="${k}">${t}</button>`).join('')}</div>
+      <label class="mut" style="display:block;margin-top:10px">${mv.type === 'in' ? 'Откуда (поставщик, машина, другой склад)' : mv.type === 'out' ? 'Кому (агент, клиент, другой склад)' : 'От кого (клиент, агент)'}<input id="mvP" maxlength="120" value="${esc(mv.party || '')}" style="width:100%;margin-top:4px"></label>
+      <div style="margin-top:12px"><input id="mvQ" type="search" placeholder="🔍 Найти товар и добавить" style="width:100%"><div id="mvR"></div></div>
+      <div id="mvL">${added.length ? added.map(row).join('') : '<p class="mut">Найдите товары поиском — они появятся здесь — и укажите количество (коробки и штуки).</p>'}</div>
+      ${added.length ? `<p style="font-size:17px">Итого: <b id="mvT">${added.length} поз., ${total()} шт</b></p>` : ''}
+      <div class="form"><label style="grid-column:1/-1">Фото накладной (лучше приложить)<input id="mvPh" type="file" accept="image/*" capture="environment"></label><label style="grid-column:1/-1">Комментарий<textarea id="mvC" rows="2" maxlength="500" placeholder="например: 1 коробка помята"></textarea></label></div>
+      <div class="bar"><button class="btn gray" id="mvX" type="button">Очистить</button><span class="spacer"></span><button class="btn" id="mvGo" type="button">Отправить руководителю</button></div><small id="mvE" class="neg" role="alert"></small>`,
+      'Записывайте то, что физически приняли или отдали. Руководитель сверит с накладной и LINKO.')
+      + (hist.length ? panel('Мои записи', hist.map(h => `<div class="sc-row"><b>${MVT[h.type] || esc(h.type)}</b> · ${dRu(new Date(h.at).toLocaleDateString('sv-SE'))} ${new Date(h.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}${h.party ? ' · ' + esc(h.party) : ''}${h.photo ? ' · 📷' : ''}<br><small class="mut">${h.items.slice(0, 8).map(i => esc(i.name) + ': ' + i.qty).join('; ')}${h.items.length > 8 ? ' …' : ''}</small></div>`).join('')) : '');
+    const save = () => MV.set(mv);
+    body.querySelectorAll('[data-mt]').forEach(b => b.onclick = () => { mv.type = b.dataset.mt; save(); drawStore(body); });
+    $('#mvP').oninput = e => { mv.party = e.target.value; save(); };
+    const q = $('#mvQ'), res = $('#mvR');
+    q.oninput = () => { const s = q.value.trim().toLowerCase(); if (s.length < 2) { res.innerHTML = ''; return; }
+      const hits = (S.items || []).filter(i => (i.name + ' ' + i.art).toLowerCase().includes(s)).slice(0, 8);
+      res.innerHTML = hits.length ? hits.map(i => `<button type="button" class="sc-hit" data-ma="${esc(i.art)}">${mv.it[i.art] ? '✓ ' : '＋ '}${esc(i.name)}</button>`).join('') : '<p class="mut">Не найдено</p>';
+      res.querySelectorAll('[data-ma]').forEach(b => b.onclick = () => { const a = b.dataset.ma; mv.it[a] ||= {}; save(); drawStore(body); const inp = document.querySelector(`[data-mb="${CSS.escape(a)}"],[data-mp="${CSS.escape(a)}"]`); if (inp) { inp.scrollIntoView({ block: 'center' }); inp.focus(); } }); };
+    body.querySelectorAll('[data-mb],[data-mp]').forEach(inp => inp.oninput = () => { const a = inp.dataset.mb || inp.dataset.mp, v = inp.value.trim(); mv.it[a] ||= {}; mv.it[a][inp.dataset.mb ? 'b' : 'p'] = v === '' ? undefined : Math.max(0, Math.round(Number(v)) || 0); save();
+      const s = document.querySelector(`[data-ms="${CSS.escape(a)}"]`); if (s) s.textContent = qty(a) ? '= ' + qty(a) : ''; const t = $('#mvT'); if (t) t.textContent = `${added.length} поз., ${total()} шт`; });
+    body.querySelectorAll('[data-mx]').forEach(b => b.onclick = () => { delete mv.it[b.dataset.mx]; save(); drawStore(body); });
+    $('#mvX').onclick = () => { if (added.length && !confirm('Очистить список?')) return; MV.set(null); drawStore(body); };
+    $('#mvGo').onclick = async e => {
+      const items = added.map(a => ({ art: a, qty: qty(a) })).filter(i => i.qty > 0);
+      if (!items.length) { $('#mvE').textContent = 'Добавьте товары и укажите количество'; return; }
+      const empty = added.filter(a => !qty(a)); if (empty.length && !confirm(`У ${empty.length} поз. не указано количество — они не уйдут. Отправить остальные?`)) return;
+      e.target.disabled = true; e.target.textContent = 'Отправляю…';
+      try {
+        const f = $('#mvPh').files[0], photo = f ? await shrink(f) : '', names = {}; items.forEach(i => { names[i.art] = byArt.get(i.art).name; });
+        const j = await storePost({ act: 'move', type: mv.type, party: (mv.party || '').trim(), items, names, comment: $('#mvC').value.trim(), photo });
+        S.moves = [{ id: j.id, at: j.at || new Date().toISOString(), type: mv.type, party: (mv.party || '').trim(), items: items.map(i => ({ name: names[i.art], qty: i.qty })), photo: !!photo }, ...(S.moves || [])];
+        MV.set(null); msg(`✓ ${MVT[mv.type]} отправлен руководителю: ${items.length} поз., ${j.units ?? items.reduce((t, i) => t + i.qty, 0)} шт`); drawStore(body); window.scrollTo(0, 0);
+      } catch (err) { e.target.disabled = false; e.target.textContent = 'Отправить руководителю'; $('#mvE').textContent = err.message || 'Нет связи — попробуйте ещё раз, список сохранён'; }
+    };
+  }
+
+  // 🎤 numbers by voice while counting: «пять коробок три штуки», «двенадцать», «ноль», «дальше» (skip). Russian and Uzbek words,
+  // digits as the phone hears them. One number for an item in boxes = boxes; «штук» after a number = pieces.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const NUMW = { ноль: 0, нуль: 0, один: 1, одна: 1, одну: 1, одно: 1, два: 2, две: 2, три: 3, четыре: 4, пять: 5, шесть: 6, семь: 7, восемь: 8, девять: 9, десять: 10, одиннадцать: 11, двенадцать: 12, тринадцать: 13, четырнадцать: 14, пятнадцать: 15, шестнадцать: 16, семнадцать: 17, восемнадцать: 18, девятнадцать: 19, двадцать: 20, тридцать: 30, сорок: 40, пятьдесят: 50, шестьдесят: 60, семьдесят: 70, восемьдесят: 80, девяносто: 90, сто: 100, двести: 200, триста: 300, четыреста: 400, пятьсот: 500, шестьсот: 600, семьсот: 700, восемьсот: 800, девятьсот: 900,
+    nol: 0, bir: 1, ikki: 2, uch: 3, tort: 4, besh: 5, olti: 6, yetti: 7, sakkiz: 8, toqqiz: 9, on: 10, yigirma: 20, ottiz: 30, qirq: 40, ellik: 50, oltmish: 60, yetmish: 70, sakson: 80, toqson: 90, yuz: 100 };
+  function hearNums(text) {
+    const toks = String(text).toLowerCase().replace(/ё/g, 'е').replace(/[ʻ'`’‘]/g, '').replace(/(\d)\s+(?=\d{3}\b)/g, '$1').split(/[^a-zа-я0-9]+/).filter(Boolean), out = [];
+    let cur = null;
+    const flush = unit => { if (cur !== null) { out.push({ n: cur, unit }); cur = null; } };
+    for (let k = 0; k < toks.length; k++) {
+      const t = toks[k], next = toks[k + 1] || '';
+      let v = /^\d+$/.test(t) ? Number(t) : t in NUMW ? NUMW[t] : /^тысяч|^ming$/.test(t) ? 'k' : /^(нет|нету|yoq|yuq)$/.test(t) ? 0 : null;
+      if (v === 'k') { cur = (cur || 1) * 1000; continue; }
+      if (v !== null) { if (/^\d+$/.test(t) && cur !== null) flush(null); cur = (cur || 0) + v; }
+      else if (/^(кор|короб|quti|yashik|ящик)/.test(t)) flush('b');
+      else if (/^(шт|штук|штуки|штука|дона|dona|ta)$/.test(t)) flush('p');
+      else flush(null);
+      if (!next) flush(null);
+    }
+    return { nums: out, skip: /дальше|пропус|следующ|keyingi|otkaz/.test(String(text).toLowerCase().replace(/[ʻ'`’‘]/g, '')) };
+  }
+  function voiceCount(body, list, sel, recalc) {
+    const btn = $('#scMic'), stat = $('#scV'); if (!btn) return;
+    let on = false, rec = null, cur = null;
+    body.addEventListener('focusin', e => { const r = e.target.closest && e.target.closest('.sc-row'); if (r) mark(r.dataset.r); });
+    const visibleRows = () => [...body.querySelectorAll('.sc-row')].filter(r => r.style.display !== 'none');
+    const mark = a => { body.querySelectorAll('.sc-cur').forEach(r => r.classList.remove('sc-cur')); cur = a; const r = a && sel('r', a); if (r) r.classList.add('sc-cur'); };
+    const nextRow = () => { const R = visibleRows(), k = R.findIndex(r => r.dataset.r === cur), after = R.slice(k + 1).concat(R.slice(0, k + 1)); const r = after.find(x => { const p = sel('p', x.dataset.r); return p && p.value === '' && !(sel('b', x.dataset.r)?.value); }) || R[k + 1]; mark(r ? r.dataset.r : null); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+    const target = () => { if (!cur || !sel('r', cur) || sel('r', cur).style.display === 'none') nextRow(); return cur; };
+    const apply = text => {
+      const a = target(); if (!a) { stat.textContent = 'Все товары посчитаны'; return; }
+      const H = hearNums(text), i = list.find(x => x.art === a), pk = packOf(i), bI = sel('b', a), pI = sel('p', a);
+      if (H.skip && !H.nums.length) { stat.textContent = '⏭ пропущено: ' + i.name; nextRow(); return; }
+      if (!H.nums.length) { stat.textContent = `Не понял «${text}» — скажите число`; return; }
+      let b = null, p = null; for (const x of H.nums) { if (x.unit === 'b' && b === null) b = x.n; else if (x.unit === 'p' && p === null) p = x.n; else if (pk > 1 && b === null && x.unit === null && p === null) b = x.n; else if (p === null) p = x.n; }
+      if (!bI && b !== null) { p = (p || 0) + b * pk; b = null; }
+      if (bI) bI.value = b !== null ? b : ''; pI.value = p !== null ? p : (b !== null ? '' : '0');
+      recalc(a); const v = (Number(bI?.value) || 0) * pk + (Number(pI.value) || 0);
+      stat.textContent = `✓ ${i.name}: ${b !== null && bI ? b + ' кор. ' : ''}${p !== null ? p + ' шт ' : ''}= ${v}`;
+      try { TGA?.HapticFeedback?.impactOccurred('light'); } catch { /* not in Telegram */ }
+      nextRow();
+    };
+    const start = () => {
+      rec = new SR(); rec.lang = lang === 'uz' ? 'uz-UZ' : 'ru-RU'; rec.interimResults = false; rec.maxAlternatives = 3; rec.continuous = false;
+      rec.onresult = e => { const alts = [...e.results[e.results.length - 1]].map(r => r.transcript), t = alts.find(x => hearNums(x).nums.length) || alts[0]; apply(t); };
+      rec.onerror = e => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { on = false; btn.textContent = '🎤'; stat.textContent = 'Разрешите доступ к микрофону в настройках браузера'; } };
+      rec.onend = () => { if (on) setTimeout(() => { if (on) try { rec.start(); } catch { /* already started */ } }, 250); };
+      try { rec.start(); } catch { /* already started */ }
+    };
+    btn.onclick = () => {
+      on = !on; btn.textContent = on ? '⏹' : '🎤'; btn.classList.toggle('sc-live', on);
+      if (on) { target(); const r = cur && sel('r', cur); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' }); stat.textContent = '🔴 Слушаю: называйте количество по порядку («5 коробок 3 штуки», «ноль», «дальше»)'; start(); }
+      else { try { rec && rec.stop(); } catch { /* stopped */ } stat.textContent = ''; mark(null); }
+    };
+  }
+
+  function drawCount(body) {
     if (ordering) return drawOrder(body);
     const t0 = new Date().toLocaleDateString('sv-SE'), hm = iso => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
     const rec = S.recount && S.recount.length ? S.recount : null;
@@ -312,9 +469,9 @@
         <div class="sc-in">${pk > 1 ? `<input type="number" inputmode="numeric" min="0" step="1" placeholder="кор." aria-label="Коробок" data-b="${a}" value="${st.box[i.art] ?? ''}"><span class="mut">× ${pk} +</span>` : ''}<input type="number" inputmode="numeric" min="0" step="1" placeholder="шт" aria-label="Штук" data-p="${a}" value="${st.pcs[i.art] ?? (pk > 1 ? '' : v ?? '')}">
           <b class="sc-sum" data-s="${a}">${v !== undefined ? '= ' + v : ''}</b><span class="spacer" style="flex:1"></span><button class="btn gray sm" type="button" data-z="${a}" title="Товара нет">0</button></div>
         <small class="sc-w" data-w="${a}">${w !== null ? `⚠ Проверьте: в прошлый раз вы насчитали ${w}` : ''}</small></div>`; };
-    body.innerHTML = `<div class="bar" style="position:sticky;top:52px;z-index:4;background:var(--bg,#eef2f5);padding:8px 0"><input id="scQ" type="search" placeholder="Поиск товара" value="${esc(q)}" style="flex:1;min-width:0"><b id="scN">${filled} / ${list.length}</b></div>
+    body.innerHTML = `<div class="bar" style="position:sticky;top:52px;z-index:4;background:var(--bg,#eef2f5);padding:8px 0"><input id="scQ" type="search" placeholder="Поиск товара" value="${esc(q)}" style="flex:1;min-width:0">${SR ? '<button class="btn gray" id="scMic" type="button" aria-label="Считать голосом" title="Считать голосом">🎤</button>' : ''}<b id="scN">${filled} / ${list.length}</b><small id="scV" class="mut" role="status" style="flex-basis:100%"></small></div>
       <div class="bar"><label class="mut" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="scOnly"> только непосчитанные</label><span class="spacer"></span>${rec ? '' : `<button class="btn gray sm" id="scOrd">⇅ Порядок полок</button>`}</div>
-      ${panel(rec ? 'Пересчёт' : want ? 'Короткая сверка' : 'Пересчитайте товары', [...groups].map(([g, L]) => `<div class="sc-g">${g ? `<h4 style="margin:14px 0 6px">${esc(g)}</h4>` : ''}${L.map(row).join('')}</div>`).join(''), 'Коробки — в «кор.», россыпь — в «шт», приложение сложит. Товара нет — нажмите «0».')}
+      ${panel(rec ? 'Пересчёт' : want ? 'Короткая сверка' : 'Пересчитайте товары', [...groups].map(([g, L]) => `<div class="sc-g">${g ? `<h4 style="margin:14px 0 6px">${esc(g)}</h4>` : ''}${L.map(row).join('')}</div>`).join(''), 'Коробки — в «кор.», россыпь — в «шт», приложение сложит. Товара нет — нажмите «0».' + (SR ? ' 🎤 — считать голосом: называйте количество по порядку. Одно число у товара в коробках — это коробки; со словом «штук» — штуки.' : ' Можно диктовать: микрофон на клавиатуре телефона.'))}
       ${panel('Отправить', `<div class="form"><label style="grid-column:1/-1">Комментарий (необязательно)<textarea id="scC" rows="2" maxlength="500" placeholder="например: 2 коробки повреждены"></textarea></label><label style="grid-column:1/-1">Фото (необязательно)<input id="scP" type="file" accept="image/*" capture="environment"></label></div>
         <div class="bar"><button class="btn gray" id="scX">Отменить</button><span class="spacer"></span><button class="btn" id="scGo">Отправить сверку</button></div><small id="scE" class="neg" role="alert"></small>`)}`;
     const upd = () => { $('#scN').textContent = list.filter(i => has(i.art)).length + ' / ' + list.length; };
@@ -333,6 +490,7 @@
     body.querySelectorAll('[data-z]').forEach(bt => bt.onclick = () => { const a = bt.dataset.z, bI = sel('b', a); if (bI) bI.value = ''; sel('p', a).value = '0'; recalc(a); });
     $('#scQ').oninput = e => { q = e.target.value; filter(); };
     $('#scOnly').onchange = filter; filter();
+    voiceCount(body, list, sel, recalc);
     const ob = $('#scOrd'); if (ob) ob.onclick = () => { ordering = { seq: shelfOrder().slice() }; drawStore(body); window.scrollTo(0, 0); };
     $('#scX').onclick = () => { if (!confirm('Отменить сверку? Введённые цифры удалятся.')) return; CNT.set(null); drawStore(body); };
     $('#scGo').onclick = async e => {
