@@ -95,7 +95,7 @@ const AC = {
     const got = new Map((st?.contracts || []).map(k => [k.id, k]));
     const long = cfg.contracts.filter(k => k.start && ((k.agent || '') === agent || (!k.agent && mine(k.accounts?.[0] || k.title)))).map(k => {
       const P = INST.planOf(k), s = got.get(k.id);
-      return { title: k.title, client: k.accounts?.[0] || k.title, start: k.start, months: P.map((plan, i) => { const w = CAL.ctMonth(k.start, i), paid = s?.list?.[i]?.paid ?? null; return { from: w.from, to: w.to, plan: r2(plan), paid: paid == null ? null : r2(paid), st: paid != null && paid >= plan - 0.5 ? 'paid' : w.to < t0 ? 'late' : 'wait' }; }) };
+      return { title: k.title, client: k.accounts?.[0] || k.title, start: k.start, months: P.map((plan, i) => { const w = CAL.ctMonth(k.start, i), due = INST.dueOf(k, i), paid = s?.list?.[i]?.paid ?? null; return { from: w.from, to: due, plan: r2(plan), paid: paid == null ? null : r2(paid), st: paid != null && paid >= plan - 0.5 ? 'paid' : due < t0 ? 'late' : 'wait' }; }) };
     });
     return { cal, contracts: { once: once.sort((a, b) => String(b.d).localeCompare(String(a.d))).slice(0, 120), long } };
   },

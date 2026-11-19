@@ -49,9 +49,9 @@ const CAL = {
       const P = INST.planOf(k), s = got.get(k.id), name = k.accounts?.[0] || k.title;
       P.forEach((plan, i) => {
         if (!(plan > 0)) return;
-        const w = CAL.ctMonth(k.start, i), paid = s?.list?.[i]?.paid ?? null;
-        out.push({ d: w.to, s: plan, client: name, title: k.title, agent: k.agent || agentOf(name), kind: 'ct',
-          st: paid != null && paid >= plan - 0.5 ? 'paid' : w.to < t0 ? 'late' : 'wait',
+        const w = CAL.ctMonth(k.start, i), due = INST.dueOf(k, i), paid = s?.list?.[i]?.paid ?? null;
+        out.push({ d: due, s: plan, client: name, title: k.title, agent: k.agent || agentOf(name), kind: 'ct',
+          st: paid != null && paid >= plan - 0.5 ? 'paid' : due < t0 ? 'late' : 'wait',
           why: `Договор на ${P.length} мес. · платёж за месяц ${i + 1} из ${P.length} (${UI.dm(w.from)}–${UI.dm(w.to)})${paid != null ? ` · уже оплатил ${CAL.money(paid)}` : ''}` });
       });
     }

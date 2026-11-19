@@ -162,6 +162,8 @@ const INST = {
           <div id="icAcc" style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0"></div><input id="icA" list="icNames" placeholder="начните вводить название клиента"></label>
         <label>Срок, месяцев<input id="icN" type="number" min="1" max="60" list="icTerms" value="${x.months}"><datalist id="icTerms">${[3, 6, 12, 13, 18, 20, 24].map(n => `<option value="${n}">`).join('')}</datalist></label>
         <label>Начало<input id="icS" type="date" value="${esc(x.start)}"></label>
+        <label>День оплаты каждого месяца<input id="icPd" type="number" min="1" max="31" value="${x.payDay || ''}" placeholder="конец месяца договора"></label>
+        <div class="mut" style="display:flex;align-items:end;font-size:13px">Например 30 — клиент платит 30-го числа каждый месяц весь срок (в феврале — последний день). Даты видны под месяцами.</div>
         <label>Обычная сумма в месяц, $<input id="icM" type="number" min="0" step="50" value="${x.monthly}"></label>
         <div style="display:flex;align-items:end;gap:6px;flex-wrap:wrap"><button class="btn gray sm" id="icAll" type="button">Всем месяцам эту сумму</button><button class="btn gray sm" id="icStep" type="button">↗ Нарастающая…</button></div>
         <div style="grid-column:1/-1"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap"><b>План по месяцам, $</b><span id="icSum" class="mut"></span></div>
@@ -210,7 +212,7 @@ const INST = {
       const n = Math.max(1, Math.min(60, Number($('#icN', m.el).value) || 1)), def = Number($('#icM', m.el).value) || 0, start = $('#icS', m.el).value || UI.localDate(Date.now());
       for (let i = 0; i < n; i++) if (!hand.has(i) || plan[i] == null) plan[i] = def;
       plan.length = n;
-      $('#icPlan', m.el).innerHTML = plan.map((v, i) => `<label style="font-size:12px;margin:0">${i + 1}. ${esc(INST.monthName(start, i))}<input data-pm="${i}" type="number" min="0" step="50" value="${v}" style="width:100%;min-width:0;box-sizing:border-box;${hand.has(i) && v !== def ? 'border-color:var(--c4,#e9a23b)' : ''}"></label>`).join('');
+      $('#icPlan', m.el).innerHTML = plan.map((v, i) => `<label style="font-size:12px;margin:0">${i + 1}. ${esc(INST.monthName(start, i))} <span class="mut">до ${UI.dm(INST.dueOf({ start, payDay: $('#icPd', m.el).value }, i))}</span><input data-pm="${i}" type="number" min="0" step="50" value="${v}" style="width:100%;min-width:0;box-sizing:border-box;${hand.has(i) && v !== def ? 'border-color:var(--c4,#e9a23b)' : ''}"></label>`).join('');
       sums();
       m.el.querySelectorAll('[data-pm]').forEach(e => e.oninput = () => { const i = +e.dataset.pm; plan[i] = Number(e.value) || 0; hand.add(i); sums(); });
     };
@@ -225,7 +227,7 @@ const INST = {
       plan.forEach((v, i) => { plan[i] = i === n - 1 ? Math.round((t - each * (n - 1)) * 100) / 100 : each; hand.add(i); });
       $('#icM', m.el).value = each; drawPlan();
     };
-    $('#icN', m.el).oninput = drawPlan; $('#icS', m.el).oninput = drawPlan; $('#icM', m.el).oninput = drawPlan;
+    $('#icN', m.el).oninput = drawPlan; $('#icS', m.el).oninput = drawPlan; $('#icPd', m.el).oninput = drawPlan; $('#icM', m.el).oninput = drawPlan;
     $('#icAll', m.el).onclick = () => { hand.clear(); drawPlan(); };
     // 2 months by 1000, 2 by 1250, 2 by 1500…: how many months per step and how much more each step
     $('#icStep', m.el).onclick = () => {
@@ -244,9 +246,9 @@ const INST = {
     if (!isNew) $('#icDel', m.el).onclick = () => { if (!confirm('Удалить договор «' + (x.title || '') + '»?')) return; c.contracts = c.contracts.filter(k => k.id !== x.id); m.close(); INST.changed('Договор удалён'); route(); };
     const save = andPrint => {
       if (inp.value.trim()) add(inp.value);
-      const d = Number($('#icD', m.el).value), p = Number($('#icP', m.el).value), v = id => $(id, m.el).value.trim();
+      const d = Number($('#icD', m.el).value), p = Number($('#icP', m.el).value), pd = Number($('#icPd', m.el).value), v = id => $(id, m.el).value.trim();
       const doc = { no: v('#idNo'), date: v('#idDt'), shop: v('#idShop'), fio: v('#idFio'), city: v('#idCity'), disc: v('#idDisc'), goods: v('#idGoods'), note: v('#idNote'), reward: v('#idRew'), w1: v('#idW1'), w2: v('#idW2') };
-      const y = { id: x.id, title: $('#icT', m.el).value.trim(), accounts: acc, monthly: Number($('#icM', m.el).value) || 0, months: plan.length, plan: plan.slice(), start: $('#icS', m.el).value, agent: $('#icG', m.el).value.trim(), ...(d ? { days: d } : {}), ...(p ? { parts: p } : {}), ...(x.files?.length ? { files: x.files } : {}), doc };
+      const y = { id: x.id, title: $('#icT', m.el).value.trim(), accounts: acc, monthly: Number($('#icM', m.el).value) || 0, months: plan.length, plan: plan.slice(), start: $('#icS', m.el).value, agent: $('#icG', m.el).value.trim(), ...(pd >= 1 && pd <= 31 ? { payDay: Math.round(pd) } : {}), ...(d ? { days: d } : {}), ...(p ? { parts: p } : {}), ...(x.files?.length ? { files: x.files } : {}), doc };
       if (!y.accounts.length || !y.plan.some(v => v > 0) || !y.start) { toast('Заполните карточки клиента, план по месяцам и дату начала'); return; }
       const i = c.contracts.findIndex(k => k.id === y.id); if (i >= 0) c.contracts[i] = y; else c.contracts.push(y);
       m.close(); INST.changed('Договор сохранён — автозагрузка посчитает закупки за 5 минут'); route();
@@ -257,6 +259,16 @@ const INST = {
   },
   // the plan of each month of a contract; contracts saved before the per-month plan have one sum for every month
   planOf: k => Array.from({ length: Math.max(1, Number(k.months) || 1) }, (_, i) => (Array.isArray(k.plan) && k.plan[i] != null ? Number(k.plan[i]) : Number(k.monthly) || 0)),
+  // the payment date of contract month i. With k.payDay (the day the client pays every month, chosen on the contract) it is
+  // that day of the month, the first one after the month starts (30 → 28/29 in February); without it — the last day of the
+  // contract month (start 01.11 → 30.11, 31.12…), as before
+  dueOf(k, i) {
+    const s = String(k.start || ''), y = +s.slice(0, 4), m0 = +s.slice(5, 7) - 1, d = +s.slice(8, 10);
+    const at = (mm, dd) => { const last = new Date(Date.UTC(y, mm + 1, 0)).getUTCDate(); return new Date(Date.UTC(y, mm, Math.min(dd, last))).toISOString().slice(0, 10); };
+    const from = at(m0 + i, d), pd = Math.round(Number(k.payDay) || 0);
+    if (pd >= 1 && pd <= 31) { const a = at(m0 + i, pd); return a > from ? a : at(m0 + i + 1, pd); }
+    const next = at(m0 + i + 1, d); return new Date(Date.parse(next + 'T12:00:00Z') - 864e5).toISOString().slice(0, 10);
+  },
   monthName(start, i) { const d = new Date(Number(start.slice(0, 4)), Number(start.slice(5, 7)) - 1 + i, 1); return d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' }).replace(' г.', ''); },
   // ---------- the paper contract (шартнома), exactly like the printed MITAL form: one A4 sheet ----------
   ctKey: k => [k.title, k.agent, k.doc?.no, k.doc?.fio, k.doc?.shop, ...(k.accounts || [])].join(' ').toLowerCase(),
@@ -303,7 +315,7 @@ const INST = {
 .kdoc .k-pl tr.k-tot>td{font-weight:700}`,
   ctDoc(k) {
     const D = INST.docOf(k), P = INST.planOf(k), tot = P.reduce((a, v) => a + v, 0), parts = Number(k.parts || INST.cfg().parts) || 4;
-    const dt = s => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(2, 4)}` : ''), due = i => INVO.addMonths(k.start, i + 1), n = v => String(Math.round(v * 100) / 100);
+    const dt = s => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(2, 4)}` : ''), due = i => (k.payDay ? INST.dueOf(k, i) : INVO.addMonths(k.start, i + 1)), n = v => String(Math.round(v * 100) / 100);
     const u = (v, w) => `<span class="k-u" style="min-width:${w}">${esc(v || '') || '&nbsp;'}</span>`;
     const goods = String(D.goods || '').split('\n').map(s => s.trim()).filter(Boolean), disc = String(D.disc || '').trim().replace(/^-/, '').replace('.', ',');
     const empty = Math.max(2, 16 - P.length), blank = '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>';
