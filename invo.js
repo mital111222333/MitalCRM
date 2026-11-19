@@ -64,6 +64,30 @@ const INVO = {
   // the sum to pay: a free (bonus) invoice is 0, a sum corrected by hand wins over the LINKO sum
   sumOf: (x, s0) => (x.free ? 0 : x.sum != null && x.sum !== '' ? Number(x.sum) : s0),
   find: id => INVO.list().find(o => o.id === String(id)),
+  // the city of the contract: set on the invoice → «Город по агентам» of the form → the agent's region (Пользователи) → the form's city
+  regions: null,
+  loadRegions() {
+    if (INVO._reg) return INVO._reg;
+    const sb = window.AUTH?.sb;
+    INVO._reg = (async () => {
+      const m = new Map();
+      try {
+        if (sb) {
+          const [p, g] = await Promise.all([sb.from('profiles').select('linko_name, full_name, region_id'), sb.from('regions').select('id, name')]);
+          const reg = Object.fromEntries((g.data || []).map(x => [x.id, x.name]));
+          for (const x of p.data || []) if (reg[x.region_id]) for (const n of [x.linko_name, x.full_name]) if (n) m.set(LX.norm(n), reg[x.region_id]);
+        }
+      } catch { /* no accounts: the form's cities only */ }
+      INVO.regions = m; return m;
+    })();
+    return INVO._reg;
+  },
+  cityOf(r) {
+    const F = INVO.cfg().form, a = LX.norm(r.agent || ''), own = {};
+    for (const l of String(F.cities || '').split('\n')) { const i = l.indexOf('='); if (i > 0 && l.slice(i + 1).trim()) own[LX.norm(l.slice(0, i))] = l.slice(i + 1).trim(); }
+    const c = r.x?.city || (a && own[a]) || (a && INVO.regions?.get(a)) || F.city || '';
+    return String(c).trim().replace(/^./, s => s.toUpperCase());
+  },
   // what is in the invoice (LINKO order product rows of the loaded period, or of an older order opened on «Заказы по дням»)
   lines(id) { const same = l => String(l.order) === String(id), L = LX.model().lines.filter(same); return (L.length ? L : (LX.ordX?.lines || []).filter(same)).filter(l => l.qty - l.ret > 0.0001); },
   qty: l => Math.round((l.qty - l.ret) * 100) / 100,
@@ -100,7 +124,7 @@ const INVO = {
 
   save(r, v) {
     const c = INVO.cfg(), x = { ...(c.orders[r.id] || {}) }, prev = x.bonusInv, s0 = r.s0 ?? r.s, today = UI.localDate(Date.now());
-    for (const k of ['plan', 'days', 'sum', 'bonusInv']) delete x[k];
+    for (const k of ['plan', 'days', 'sum', 'bonusInv', 'city']) delete x[k];
     Object.assign(x, v);
     x.snap = { c: r.client, a: r.agent, d: r.d, s: INVO.sumOf(x, s0), s0 };
     if (!x.ok) x.ok = today;
@@ -128,7 +152,7 @@ const INVO = {
   dlgCss: `<style>.ivd{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px 18px}
 .ivd .ivh{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 5px;display:flex;gap:6px;align-items:center}
 .ivd .ivh .spacer{flex:1}.ivd .ivh .btn{text-transform:none;letter-spacing:0;font-weight:600}
-.ivd .ivtop{grid-column:1/-1;display:grid;grid-template-columns:150px 110px minmax(0,1fr);gap:10px}
+.ivd .ivtop{grid-column:1/-1;display:grid;grid-template-columns:140px 90px 130px minmax(0,1fr);gap:10px}
 .ivd label.f{display:flex;flex-direction:column;gap:3px;font-size:12px;font-weight:600;color:var(--text-2);margin:0}
 .ivd label.f small{font-weight:400;color:var(--muted)}
 .ivd input,.ivd select,.ivd textarea{width:100%;box-sizing:border-box;font-family:inherit}
@@ -175,6 +199,7 @@ const INVO = {
         <div class="ivtop">
           <label class="f">Сумма к оплате, $<input id="ivSum" type="number" min="0" step="0.01" value="${r.s}"><small id="ivSum0">в LINKO ${INVO.money2(s0)}</small></label>
           <label class="f">Скидка, %<input id="ivD" type="number" min="0" max="100" step="0.5" value="${Math.round((x.disc ?? r.disc) * 10) / 10}"></label>
+          <label class="f">Город договора<input id="ivCity" value="${esc(INVO.cityOf(r))}"><small>по агенту</small></label>
           <label class="f">🎁 Бонусная накладная — бесплатно<select id="ivBi"><option value="">— нет —</option>${cand.map(o => `<option value="${esc(o.id)}" ${o.id === x.bonusInv ? 'selected' : ''}>№${esc(o.id)} от ${UI.dm(o.d)} · ${INVO.money2(o.s0 ?? o.s)}</option>`).join('')}</select><small>${cand.length ? 'вторая накладная по акции станет $0' : 'других накладных этого клиента рядом нет'}</small></label>
         </div>
         <div><div class="ivh">Что заказал клиент</div><div class="ivit">${INVO.itemsTable(INVO.lines(r.id))}</div><div id="ivBiL"></div></div>
@@ -190,6 +215,9 @@ const INVO = {
       </div>
       <div class="bar" style="margin-top:12px;flex-wrap:wrap;gap:8px"><label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="ivS" ${INVO.isSpec(r) || x.bonusInv ? 'checked' : ''}> Спецпредложение — договор</label><span class="spacer"></span><button class="btn gray" id="ivX" type="button">Отмена</button><button class="btn" id="ivOk" type="button">Сохранить</button><button class="btn" id="ivPr" type="button">Сохранить и 🖨 договор</button></div>`);
     m.el.classList.add('wide');
+    // the agent's region comes from the accounts a moment later: fill it in unless the field was already changed
+    const cityAuto = () => INVO.cityOf({ ...r, x: { ...x, city: '' } }), C = $('#ivCity', m.el);
+    if (!INVO.regions) { const was = C.value; INVO.loadRegions().then(() => { if (C.value === was && !x.city) C.value = cityAuto(); }); }
     const T = $('#ivT', m.el), S = () => Math.max(0, Math.round((Number($('#ivSum', m.el).value) || 0) * 100) / 100);
     const biView = () => {
       const id = $('#ivBi', m.el).value, o = id && cand.find(c => c.id === id);
@@ -224,8 +252,8 @@ const INVO = {
     const collect = () => {
       const res = T.value.trim() ? INVO.parse(T.value, r.d) : { ok: [], bad: [] };
       if (res.bad.length) return null;
-      const sum = S(), bi = $('#ivBi', m.el).value;
-      return { ...(res.ok.length ? { plan: res.ok } : {}), ...(Math.abs(sum - s0) > 0.005 ? { sum } : {}), ...(bi ? { bonusInv: bi } : {}), disc: Number($('#ivD', m.el).value) || 0, bonus: $('#ivB', m.el).value.trim(), cond: $('#ivC', m.el).value.trim(), spec: $('#ivS', m.el).checked || !!bi, ok: UI.localDate(Date.now()), ...(x.stored ? { stored: x.stored } : {}) };
+      const sum = S(), bi = $('#ivBi', m.el).value, city = C.value.trim();
+      return { ...(res.ok.length ? { plan: res.ok } : {}), ...(city && LX.norm(city) !== LX.norm(cityAuto()) ? { city } : {}), ...(Math.abs(sum - s0) > 0.005 ? { sum } : {}), ...(bi ? { bonusInv: bi } : {}), disc: Number($('#ivD', m.el).value) || 0, bonus: $('#ivB', m.el).value.trim(), cond: $('#ivC', m.el).value.trim(), spec: $('#ivS', m.el).checked || !!bi, ok: UI.localDate(Date.now()), ...(x.stored ? { stored: x.stored } : {}) };
     };
     $('#ivOk', m.el).onclick = () => { const v = collect(); if (!v) return; INVO.save(r, v); m.close(); EXT_PAGES.invo(el); };
     $('#ivPr', m.el).onclick = () => { const v = collect(); if (!v) return; v.spec = true; INVO.save(r, v); m.close(); EXT_PAGES.invo(el); const nx = INVO.cfg().orders[r.id]; INVO.preview([{ ...r, s: INVO.sumOf(nx, s0), s0, x: nx }]); };
@@ -280,7 +308,7 @@ const INVO = {
   doc(r) {
     const F = INVO.cfg().form, x = r.x || {}, pl = INVO.planOf(r), tot = pl.reduce((a, p) => a + p.s, 0);
     const bonus = String(x.bonus ?? r.bonusItems.join('\n')).trim(), disc = Math.round((x.disc ?? r.disc) * 10) / 10, sg = (F.signers || []).filter(Boolean);
-    const city = F.city ? String(F.city).trim().replace(/^./, c => c.toUpperCase()) : '';
+    const city = INVO.cityOf(r);
     const term = pl.length === 1 ? `${UI.dateRu(pl[0].d)}${pl[0].d === r.d ? ' (сразу)' : ` (${INVO.days(r.d, pl[0].d)} дн.)`}` : `${pl.length} платежей, до ${UI.dateRu(pl.at(-1).d)}`;
     const bLines = bonus ? bonus.split('\n').map(t => t.trim()).filter(Boolean) : [];
     // the goods of the invoice and of its free bonus invoice: short lines in 1–3 columns, so the contract stays on half a sheet
@@ -353,9 +381,10 @@ const INVO = {
   },
   fileName: r => ('Договор-' + r.id + '-' + String(r.client || '').replace(/[^\p{L}\p{N}]+/gu, '_').slice(0, 30) + '.png').replace(/_\.png$/, '.png'),
   // the preview: every contract on the screen as it will be printed, with the buttons: print, picture, send, copy
-  preview(rows) {
+  async preview(rows) {
     rows = (rows || []).filter(Boolean);
     if (!rows.length) return toast('Нечего печатать');
+    await INVO.loadRegions();
     const canShare = !!(navigator.canShare && navigator.share);
     const m = modal(`<h3 style="margin:0 0 8px">📄 Договор-спецпредложение</h3>
       <style>${INVO.css()}</style>
@@ -414,7 +443,7 @@ const INVO = {
 };
 
 EXT_PAGES.invo = async el => {
-  await CRMLocal.ready; await LX.load();
+  await CRMLocal.ready; await LX.load(); INVO.loadRegions();
   const c = INVO.cfg(), F = c.form, f = INVO.money;
   el.innerHTML = `<div class="page-head"><div><h2>🧾 Накладные: сроки оплаты</h2><div class="sub">Каждая накладная клиента без договора — свой срок оплаты и условия; спецпредложение — разовый договор на печать. Напоминания: за день, в день срока и каждый день при просрочке.</div></div></div><div id="ivBody"><p class="mut">Загружаю…</p></div>`;
   const body = $('#ivBody', el);
@@ -440,9 +469,10 @@ EXT_PAGES.invo = async el => {
     </tbody></table></div>` : UI.empty(INVO.tab === 'new' ? 'Новых накладных нет — у всех срок задан 👍' : 'Пусто', '');
   const formView = () => `<div class="grid">${UI.panel('Форма договора-спецпредложения', `<div class="form">
       <label>Название компании (Поставщик)<input id="ifC" value="${esc(F.company || '')}"></label>
-      <label>Город<input id="ifT" value="${esc(F.city || '')}" placeholder="например: Фергана"></label>
+      <label>Город (если у агента не указан)<input id="ifT" value="${esc(F.city || '')}" placeholder="например: Фергана"></label>
       <label>Стандартная скидка, %<input id="ifS" type="number" min="0" max="100" step="0.5" value="${F.std ?? 10}"></label>
       <div class="mut" style="display:flex;align-items:end;font-size:13px">Накладная с другой скидкой или с бонусным товаром сама помечается «спец».</div>
+      <label style="grid-column:1/-1">Город по агентам — по строке «Агент = Город» <span class="mut">(без строки — регион агента из «Пользователи», иначе город выше)</span><textarea id="ifA" rows="3" style="width:100%;box-sizing:border-box;font-family:inherit" placeholder="Adxamjon Umarov = Наманган">${esc(F.cities || '')}</textarea></label>
       <label style="grid-column:1/-1">Кто подписывает — по строке на подпись<textarea id="ifG" rows="4" style="width:100%;box-sizing:border-box;font-family:inherit">${esc((F.signers || []).join('\n'))}</textarea></label></div>
       <div class="bar"><button class="btn" id="ifSave" type="button">Сохранить</button><button class="btn gray" id="ifDemo" type="button">🖨 Пример договора</button></div>`, { cls: 'w6' })}
     ${UI.panel('Как это работает', `<ol class="steps"><li>Новая накладная из LINKO сама появляется во вкладке «Новые». По умолчанию у неё стандартный срок: ${INST.cfg().parts || 4} части за ${INST.cfg().days || 30} дн.</li>
@@ -469,6 +499,6 @@ EXT_PAGES.invo = async el => {
   const allBox = $('#ivAll', body); if (allBox) allBox.onchange = () => { body.querySelectorAll('[data-sel]').forEach(b => { b.checked = allBox.checked; if (b.checked) INVO.sel.add(b.dataset.sel); else INVO.sel.delete(b.dataset.sel); }); };
   const ps = $('#ivPrSel', body); if (ps) ps.onclick = () => { const l = all.filter(r => INVO.sel.has(r.id)); if (!l.length) return toast('Отметьте накладные галочкой слева'); INVO.preview(l); };
   const sa = $('#ivStdAll', body); if (sa) sa.onclick = () => { if (!confirm(`Оставить стандартный срок у ${newStd.length} обычных накладных?`)) return; const d = UI.localDate(Date.now()); for (const r of newStd) c.orders[r.id] = { ...(c.orders[r.id] || {}), disc: r.disc, spec: false, ok: d, snap: { c: r.client, a: r.agent, d: r.d, s: r.s } }; INVO.prune(); INST.changed('Стандартный срок подтверждён: ' + newStd.length); re(); };
-  const fs = $('#ifSave', body); if (fs) fs.onclick = () => { Object.assign(F, { company: $('#ifC', body).value.trim(), city: $('#ifT', body).value.trim(), std: Number($('#ifS', body).value) || 0, signers: $('#ifG', body).value.split('\n').map(s => s.trim()).filter(Boolean) }); CRMLocal.touch(); toast('Форма сохранена'); re(); };
+  const fs = $('#ifSave', body); if (fs) fs.onclick = () => { Object.assign(F, { company: $('#ifC', body).value.trim(), city: $('#ifT', body).value.trim(), cities: $('#ifA', body).value.trim(), std: Number($('#ifS', body).value) || 0, signers: $('#ifG', body).value.split('\n').map(s => s.trim()).filter(Boolean) }); CRMLocal.touch(); toast('Форма сохранена'); re(); };
   const dm = $('#ifDemo', body); if (dm) dm.onclick = () => { const d = UI.localDate(Date.now()); INVO.preview([{ id: '12345', d, client: 'Пример клиента', agent: 'Агент', s: 1500, disc: 15, bonusItems: ['Сервисная книжка × 10', 'Масло Mitanol 5W-30 4 л × 2'], x: { plan: [{ d: INVO.addMonths(d, 1), s: 750 }, { d: INVO.addMonths(d, 2), s: 750 }], cond: 'акция «2+1»' } }]); };
 };
