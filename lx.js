@@ -319,6 +319,7 @@ LX.payDay = (body, P, M, days) => {
 
 // ---------- Заказы по дням: who ordered what today ----------
 LX.dead = s => /cancel|reject|отмен|отклон/i.test(String(s));
+LX.qnorm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
 LX.ORD_MAX = 3000; // rows drawn in the orders table at once; the Excel file has them all
 EXT_PAGES.lxday = async el => {
   const body = await LX.shell(el, 'lxday', '<button class="btn gray" id="lxCsv">⬇ Excel</button>'); if (!body) return;
@@ -330,7 +331,10 @@ EXT_PAGES.lxday = async el => {
   const IL = typeof INVO !== 'undefined' ? new Map(INVO.list().map(x => [x.id, x])) : null;
   // period for the orders table: today (default), yesterday, all orders, or a from–to range
   // «today» / «yesterday» are kept as words, not dates, so the page left open over midnight moves to the new day
-  const P0 = LX.ordPer || { mode: 't' }, P = P0.mode === 't' ? { from: t0, to: t0 } : P0.mode === 'y' ? { from: y0, to: y0 } : P0, pFrom = P.from || '', pTo = P.to || '';
+  // search by invoice number or client name: always over ALL orders (the whole LINKO history), whatever period is chosen
+  const Q = String(LX.ordQ || '').trim(), qn = LX.qnorm(Q), qNum = qn.replace(/^№\s*/, '');
+  const hit = o => !qn || (/^\d+$/.test(qNum) && String(o.id).includes(qNum)) || LX.qnorm(o.client).includes(qn) || LX.qnorm(o.agent).includes(qn);
+  const P0 = LX.ordPer || { mode: 't' }, P = Q ? {} : P0.mode === 't' ? { from: t0, to: t0 } : P0.mode === 'y' ? { from: y0, to: y0 } : P0, pFrom = P.from || '', pTo = P.to || '';
   const inPer = o => (!pFrom || o.date >= pFrom) && (!pTo || o.date <= pTo);
   const isAll = !pFrom && !pTo, isT = pFrom === t0 && pTo === t0, isY = pFrom === y0 && pTo === y0;
   // the CRM keeps orders only from the start of the plan period; anything earlier is taken from LINKO when asked for
@@ -345,8 +349,8 @@ EXT_PAGES.lxday = async el => {
   const allP = xOrds.concat(M.ords).filter(o => (!LX.agent || o.agent === LX.agent) && !LX.dead(o.status)), linesP = xLines.concat(M.lines);
   const S0 = CRMLocal.engine.getState(), agentsAll = [...new Set([...LX.agentsOf(M.ords), ...LX.agentsOf(xOrds), ...Object.values(S0.ag.clients || {}).map(c => c.agent).filter(Boolean)])].sort((a, b) => a.localeCompare(b));
   const perLbl = isAll ? 'все' : isT ? 'сегодня' : isY ? 'вчера' : pFrom === pTo ? UI.dateRu(pFrom) : `${pFrom ? 'с ' + UI.dateRu(pFrom) : ''}${pTo ? ' по ' + UI.dateRu(pTo) : ''}`.trim();
-  const perCap = perLbl.charAt(0).toUpperCase() + perLbl.slice(1);
-  const shown = allP.filter(inPer).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const perCap = Q ? `Найдено по «${esc(Q)}»` : perLbl.charAt(0).toUpperCase() + perLbl.slice(1);
+  const shown = allP.filter(o => inPer(o) && hit(o)).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
   const multiDay = new Set(shown.map(o => o.date)).size > 1;
   const items = new Map(); for (const l of linesP) { if (!items.has(l.order)) items.set(l.order, []); items.get(l.order).push(l); }
   const xNote = !needX ? '' : X?.busy ? '<p class="mut" style="margin:6px 0">⏳ Загружаю заказы из LINKO за ' + (isAll ? 'всё время' : 'этот период') + '… Это может занять до минуты.</p>' : X?.err ? `<p class="neg" style="margin:6px 0">⚠ ${esc(X.err)} Показаны только заказы с ${UI.dateRu(base)}.</p>` : '';
@@ -355,9 +359,10 @@ EXT_PAGES.lxday = async el => {
   const brandsPer = LX.sumBy(linesP.filter(l => (!LX.agent || l.agent === LX.agent) && shownIds.has(l.order)), 'brand');
   const clientsToday = new Set(today.map(o => o.client)).size;
   const perBar = `<div class="dp-seg" role="group" aria-label="Период">
-      <button type="button" data-per="t" class="${isT ? 'on' : ''}">Сегодня</button><button type="button" data-per="y" class="${isY ? 'on' : ''}">Вчера</button><button type="button" data-per="all" class="${isAll ? 'on' : ''}">Все заказы</button>
+      <button type="button" data-per="t" class="${isT && !Q ? 'on' : ''}">Сегодня</button><button type="button" data-per="y" class="${isY && !Q ? 'on' : ''}">Вчера</button><button type="button" data-per="all" class="${isAll && !Q ? 'on' : ''}">Все заказы</button>
     </div>
-    <span class="lx-per${!isAll && !isT && !isY ? ' on' : ''}" style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">
+    <input id="lxQ" type="search" placeholder="🔍 Накладная № или клиент — по всем заказам" value="${esc(Q)}" aria-label="Найти заказ по номеру накладной или клиенту" style="min-width:240px;flex:1 1 240px;max-width:420px">
+    <span class="lx-per${!Q && !isAll && !isT && !isY ? ' on' : ''}" style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">
       <small class="mut">Период:</small><input type="date" id="lxFrom" value="${pFrom}" max="${t0}" aria-label="С даты"><small class="mut">—</small><input type="date" id="lxTo" value="${pTo}" max="${t0}" aria-label="По дату">
     </span>`;
   body.innerHTML = `<div class="bar">${LX.agentSel(agentsAll)}${perBar}</div>${xNote}
@@ -366,11 +371,11 @@ EXT_PAGES.lxday = async el => {
     ${UI.panel('Заказано по дням', days.length > 1 ? CH.columns(days.slice(-31).map(d => ({ label: UI.dm(d), values: [sum(onDay(d))] })), [{ name: 'Заказы', color: 'var(--c1)' }], { fmt: f, height: 230 }) : '<p class="mut">Мало дней для графика.</p>', { cls: 'w12' })}
     ${UI.panel(`${perCap} по агентам`, shown.length ? CH.hbars(LX.sumBy(shown, 'agent').map(([label, value]) => ({ label: `${label} (${shown.filter(o => o.agent === label).length})`, value })), { unit: LX.u(M.cur), fmt: f }) : '<p class="mut">За этот период заказов нет.</p>', { cls: 'w6' })}
     ${UI.panel(`${perCap} по брендам`, brandsPer.length ? CH.hbars(brandsPer.map(([label, value]) => ({ label, value })), { unit: LX.u(M.cur), fmt: f, share: true }) : '<p class="mut">Нет товаров в заказах за этот период.</p>', { cls: 'w6' })}
-    ${UI.panel(`${isAll ? 'Все заказы' : 'Заказы ' + perLbl} (${shown.length}) · ${$$(sum(shown))}`, shown.length ? LX.table(['Накладная', 'Клиент / агент', '#Сумма', 'Что входит', 'Когда оплатить', 'Напоминание', ''], shown.slice(0, LX.ORD_MAX).map(o => { const r = IL ? INVO.rowOf(o, IL) : null, c = r ? r.x : {}, on = typeof INST !== 'undefined' && INST.cfg().on, pl = r ? INVO.planOf(r) : [], agreed = !!(c.plan || c.days); return `<tr data-oid="${esc(o.id)}" style="cursor:pointer"><td><b>№${esc(o.id)}</b><br><small class="mut">${multiDay ? esc(UI.dm(o.date)) + ' · ' : ''}${esc(o.time || '—')}</small></td><td>${LX.cl(o.client)}<br><small class="mut">${esc(o.agent)}</small></td><td class="n"><b>${f(o.sum)}</b>${r && r.disc > 0.05 ? `<br><small class="mut">скидка ${Math.round(r.disc * 10) / 10}%</small>` : ''}</td><td><small>${what(o)}</small></td><td style="white-space:nowrap">${pl.length ? pl.map(p => `${UI.dm(p.d)} · $${f(p.s)}`).join('<br>') : '—'}<br><small class="${agreed ? 'pos' : 'mut'}">${agreed ? '🤝 как договорились' : 'стандартный график'}</small></td><td><small>${on ? (pl.length ? '🔔 ' + pl.slice(0, 4).map(p => p.d > t0 ? `${UI.dm(INVO.addDays(p.d, -1))} и ${UI.dm(p.d)}` : '—').join('<br>🔔 ') + (pl.length > 4 ? '<br>…' : '') : '—') : '<span class="neg">выключены</span>'}</small></td><td><button class="btn gray sm" data-ocard="${esc(o.id)}" type="button">Открыть</button></td></tr>`; }), { max: '560px' }) : X?.busy ? '<p class="mut">⏳ Загружаю из LINKO…</p>' : '<p class="mut">Заказов за этот период нет.</p>', { cls: 'w12', sub: 'Нажмите на заказ: состав, срок оплаты, напоминания, «Договор» (печать и картинка)' + (shown.length > LX.ORD_MAX ? ` · показаны последние ${f(LX.ORD_MAX)} из ${f(shown.length)} — все есть в «⬇ Excel», или выберите период короче` : '') })}
+    ${UI.panel(`${Q ? perCap + ' — по всем заказам' : isAll ? 'Все заказы' : 'Заказы ' + perLbl} (${shown.length}) · ${$$(sum(shown))}`, shown.length ? LX.table(['Накладная', 'Клиент / агент', '#Сумма', 'Что входит', 'Когда оплатить', 'Напоминание', ''], shown.slice(0, LX.ORD_MAX).map(o => { const r = IL ? INVO.rowOf(o, IL) : null, c = r ? r.x : {}, on = typeof INST !== 'undefined' && INST.cfg().on, pl = r ? INVO.planOf(r) : [], agreed = !!(c.plan || c.days); return `<tr data-oid="${esc(o.id)}" style="cursor:pointer"><td><b>№${esc(o.id)}</b><br><small class="mut">${multiDay ? esc(UI.dm(o.date)) + ' · ' : ''}${esc(o.time || '—')}</small></td><td>${LX.cl(o.client)}<br><small class="mut">${esc(o.agent)}</small></td><td class="n"><b>${f(o.sum)}</b>${r && r.disc > 0.05 ? `<br><small class="mut">скидка ${Math.round(r.disc * 10) / 10}%</small>` : ''}</td><td><small>${what(o)}</small></td><td style="white-space:nowrap">${pl.length ? pl.map(p => `${UI.dm(p.d)} · $${f(p.s)}`).join('<br>') : '—'}<br><small class="${agreed ? 'pos' : 'mut'}">${agreed ? '🤝 как договорились' : 'стандартный график'}</small></td><td><small>${on ? (pl.length ? '🔔 ' + pl.slice(0, 4).map(p => p.d > t0 ? `${UI.dm(INVO.addDays(p.d, -1))} и ${UI.dm(p.d)}` : '—').join('<br>🔔 ') + (pl.length > 4 ? '<br>…' : '') : '—') : '<span class="neg">выключены</span>'}</small></td><td><button class="btn gray sm" data-ocard="${esc(o.id)}" type="button">Открыть</button></td></tr>`; }), { max: '560px' }) : X?.busy ? '<p class="mut">⏳ Загружаю из LINKO…</p>' : Q ? `<p class="mut">По «${esc(Q)}» ничего не найдено. Номер накладной — цифрами (например 20145), клиента — частью имени.</p>` : '<p class="mut">Заказов за этот период нет.</p>', { cls: 'w12', sub: 'Нажмите на заказ: состав, срок оплаты, напоминания, «Договор» (печать и картинка)' + (shown.length > LX.ORD_MAX ? ` · показаны последние ${f(LX.ORD_MAX)} из ${f(shown.length)} — все есть в «⬇ Excel», или выберите период короче` : '') })}
     ${UI.panel('Таблица: дни × агенты', LX.table(['День', ...agents.map(a => '#' + a), '#Всего', '#Заказов'], days.slice().reverse().map(d => { const D = onDay(d), m = new Map(LX.sumBy(D, 'agent')); return `<tr><td>${UI.dateRu(d)}</td>${agents.map(a => `<td class="n">${m.get(a) ? f(m.get(a)) : '<span class="mut">—</span>'}</td>`).join('')}<td class="n"><b>${f(sum(D))}</b></td><td class="n">${D.length}</td></tr>`; }), { max: '420px' }), { cls: 'w12' })}
     </div>`;
   LX.bindAgent(body);
-  const setPer = (from, to, mode) => { LX.ordPer = mode ? { mode } : { from, to }; if (LX.ordX?.err) LX.ordX = null; EXT_PAGES.lxday(el); }; // a failed LINKO load is tried again on the next click
+  const setPer = (from, to, mode) => { LX.ordPer = mode ? { mode } : { from, to }; LX.ordQ = ''; if (LX.ordX?.err) LX.ordX = null; EXT_PAGES.lxday(el); }; // a failed LINKO load is tried again on the next click
   body.querySelectorAll('[data-per]').forEach(b => b.onclick = () => { const v = b.dataset.per; v === 'all' ? setPer('', '') : setPer('', '', v === 'y' ? 'y' : 't'); });
   const fIn = $('#lxFrom', body), tIn = $('#lxTo', body);
   const onRange = () => { let a = fIn.value, z = tIn.value; if (a && z && a > z) [a, z] = [z, a]; setPer(a, z); };
@@ -378,7 +383,12 @@ EXT_PAGES.lxday = async el => {
   const openOrd = id => { if (typeof INVO === 'undefined') return toast('Раздел «Накладные» не загружен — откройте его один раз'); const o = shown.find(x => String(x.id) === String(id)); if (o) INVO.orderCard(INVO.rowOf(o, IL), () => EXT_PAGES.lxday(el)); };
   body.querySelectorAll('[data-oid]').forEach(tr => tr.onclick = e => { if (e.target.closest('a,button,input,select')) return; openOrd(tr.dataset.oid); });
   body.querySelectorAll('[data-ocard]').forEach(b => b.onclick = () => openOrd(b.dataset.ocard));
-  $('#lxCsv', el).onclick = () => UI.csv('заказы-' + (isAll ? 'все' : (pFrom || '') + '_' + (pTo || t0)), [['Дата', 'Время', 'Клиент', 'Агент', 'Сумма', 'Статус', 'Товары', 'Доставка', 'Адрес'], ...shown.map(o => [o.date, o.time, o.client, o.agent, o.sum, LX.st2(o.status), (items.get(o.id) || []).map(l => `${l.product} x${l.qty - l.ret}`).join('; '), o.deliver, o.address])]);
+  const qIn = $('#lxQ', body);
+  if (qIn) {
+    if (LX._qFocus) { LX._qFocus = false; qIn.focus(); qIn.setSelectionRange(qIn.value.length, qIn.value.length); }
+    qIn.oninput = () => { clearTimeout(LX._qT); LX._qT = setTimeout(() => { LX.ordQ = qIn.value; LX._qFocus = true; if (LX.ordX?.err) LX.ordX = null; EXT_PAGES.lxday(el); }, 400); };
+  }
+  $('#lxCsv', el).onclick = () => UI.csv('заказы-' + (Q ? 'поиск-' + Q : isAll ? 'все' : (pFrom || '') + '_' + (pTo || t0)), [['Дата', 'Время', 'Клиент', 'Агент', 'Сумма', 'Статус', 'Товары', 'Доставка', 'Адрес'], ...shown.map(o => [o.date, o.time, o.client, o.agent, o.sum, LX.st2(o.status), (items.get(o.id) || []).map(l => `${l.product} x${l.qty - l.ret}`).join('; '), o.deliver, o.address])]);
 };
 
 
