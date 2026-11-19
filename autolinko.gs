@@ -276,9 +276,12 @@ function live_(snap) {
     const F = read('linko-fast.json'), norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
     if (F && F.data && F.data.debtors) {
       const debt = {};
-      F.data.debtors.forEach(d => { const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(x => /usd|\$|долл/i.test(x.name || ''))[0] || cs[0] || {}; debt[norm(d['client.name'])] = Math.round(Math.abs(n_(c.debt_total))); });
+      F.data.debtors.forEach(d => { const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(x => /usd|\$|долл/i.test(x.name || ''))[0] || cs[0] || {}; debt[norm(d['client.name'])] = Math.round(Math.abs(n_(c.debt_total)) * 100) / 100; }); // до цента, как в LINKO
       let sum = 0, cnt = 0;
       (snap.clients || []).forEach(c => { const k = norm(c.name); c.debt = k in debt ? debt[k] : 0; sum += c.debt; if (c.debt > 0) cnt++; });
+      sum = Math.round(sum * 100) / 100;
+      // очередь «Сбор» — с теми же свежими долгами, что и «Мои клиенты» (раньше там оставались цифры из расчёта CRM)
+      (snap.queue || []).forEach(q => { const k = norm(q.name); if (k in debt) q.debt = debt[k]; });
       (snap.clients || []).sort((a, b) => b.debt - a.debt || a.name.localeCompare(b.name));
       snap.kpi.debt = sum; snap.kpi.debtors = cnt; live.debt = F.at;
     }

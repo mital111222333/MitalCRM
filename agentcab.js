@@ -33,7 +33,9 @@ const AC = {
       .map((x, i) => ({ place: i + 1, agent: x.agent, sold: x.sold, paid: x.paid, me: x.agent === agent }));
     const prom = typeof NOTES !== 'undefined' ? NOTES.promises(d).filter(p => p.agent === agent && p.status !== 'kept') : [];
     const promBy = new Map(prom.map(p => [p.client, p]));
-    const clients = d.clients.filter(c => c.agent === agent).map(c => ({ name: c.name, debt: Math.round(c.debt || 0), sold: Math.round(c.sold || 0), paid: Math.round(c.paid || 0), plan: Math.round(c.plan || 0), pool: Math.round(c.pool || 0), lastPay: c.lastPay || null, lastBuy: c.lastBuy || null, buyDays: c.buyDays ?? null, phone: c.phone || '', landmark: c.landmark || '', promise: promBy.get(c.name) ? { date: promBy.get(c.name).date, sum: promBy.get(c.name).sum } : null }))
+    // money to the cent, as in LINKO (the cabinet shows cents; totals are the sums of these very numbers)
+    const r2 = v => Math.round((Number(v) || 0) * 100) / 100;
+    const clients = d.clients.filter(c => c.agent === agent).map(c => ({ name: c.name, debt: r2(c.debt), sold: r2(c.sold), paid: r2(c.paid), plan: r2(c.plan), pool: r2(c.pool), lastPay: c.lastPay || null, lastBuy: c.lastBuy || null, buyDays: c.buyDays ?? null, phone: c.phone || '', landmark: c.landmark || '', promise: promBy.get(c.name) ? { date: promBy.get(c.name).date, sum: promBy.get(c.name).sum } : null }))
       .sort((x, y) => y.debt - x.debt || x.name.localeCompare(y.name));
     const r = disc?.rows.find(x => x.agent === agent), t0 = UI.localDate(Date.now()), today = disc ? DS.cfg().days[t0]?.[agent] || null : null;
     const days = disc ? disc.days.map(dd => { const x = DS.cfg().days[dd]?.[agent], e = DS.eff(dd, agent, x); return { day: dd, ...(x || {}), st: e.st, auto: e.auto }; }).filter(x => x.first || x.plan || DS.away(x.st) || DS.half(x.st)).map(x => ({ day: x.day, first: x.first || '', late: x.first ? DS.lateFor(x.day, agent, x.first, disc.start) : 0, early: DS.earlyMin(x.day, agent, x), plan: x.plan || 0, done: x.done || 0, st: x.st && x.st !== 'free' ? DS.ST[x.st].t + (x.auto ? ' (авто)' : '') : '', note: DS.cfg().notes[x.day]?.[agent] || '' })) : [];
@@ -49,8 +51,9 @@ const AC = {
       // chat: the address of the Telegram chat worker (worker.js), for the chat tab of the cabinet — the agent signs in there with Telegram itself
       chat: typeof CHAT !== 'undefined' && CHAT.url ? CHAT.url() : null,
       v: 1, agent, boss: AC.boss() || null, bot: (CRMLocal.ext().tg?.token ? await AC.bot() : '') || null, at: new Date().toISOString(), data_at: d.upload.taken_at, period: { from: d.upload.period_from, to: d.forecast?.period_end || d.upload.period_to, days_left: d.forecast?.days_left ?? null },
-      kpi: { sold: Math.round(a.sold), plan: Math.round(a.plan || 0), paid: Math.round(a.paid), pool: Math.round(a.pool || 0), debt: Math.round(a.debt), debtors: a.debtors || 0, akb: a.akb, okb: a.okb },
-      queue: typeof MY !== 'undefined' ? await MY.queueFor(agent).catch(() => []) : [], day: { sell: Math.round(a.need_sell_day || 0), collect: Math.round(a.need_collect_day || 0) },
+      // debt and debtors from the same client list the agent sees (before: «должников 25» on the tile, 22 in the list)
+      kpi: { sold: r2(a.sold), plan: r2(a.plan), paid: r2(a.paid), pool: r2(a.pool), debt: r2(clients.reduce((t, c) => t + (c.debt > 0 ? c.debt : 0), 0)), debtors: clients.filter(c => c.debt > 0).length, akb: a.akb, okb: a.okb },
+      queue: typeof MY !== 'undefined' ? await MY.queueFor(agent).catch(() => []) : [], day: { sell: r2(a.need_sell_day), collect: r2(a.need_collect_day) },
       board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [],
       // the pay slip of the last closed month (pay.js «Закрыть месяц»)
       pay: CRMLocal.ext().pay?.slips?.[agent] || null,

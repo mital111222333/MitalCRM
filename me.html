@@ -32,6 +32,44 @@
   .chat-msg img { max-width: 100%; border-radius: 10px; display: block; margin-bottom: 4px; }
   .chat-send { display: flex; gap: 8px; align-items: flex-end; margin-top: 10px; }
   .chat-send textarea { flex: 1; min-width: 0; resize: none; }
+  /* cards instead of wide tables: clients, stock, «что сделать сегодня» */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .ccard { background: var(--card, #fff); border: 1px solid var(--line, #e2e7ec); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+  .ccard .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+  .ccard .top b:first-child { overflow-wrap: anywhere; }
+  .ccard .amt { white-space: nowrap; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .ccard .meta { color: var(--muted, #7a8794); font-size: 13px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .ccard .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 10px; }
+  .chips button { white-space: nowrap; border: 1px solid var(--line-2, #d3dae1); background: var(--card, #fff); border-radius: 99px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; color: inherit; }
+  .chips button.on { background: #0e2433; color: #fff; border-color: #0e2433; }
+  .bar2 { height: 8px; border-radius: 4px; background: var(--line, #e2e7ec); position: relative; overflow: hidden; margin: 8px 0 2px; }
+  .bar2 i { position: absolute; inset: 0 auto 0 0; background: #2f9e62; border-radius: 4px; }
+  .bar2 u { position: absolute; top: 0; bottom: 0; width: 2px; background: #0e2433; }
+  .todo { margin: 0; padding: 0; } .todo li { padding: 8px 0; border-bottom: 1px solid var(--line, #e2e7ec); list-style: none; } .todo li:last-child { border: 0; }
+  .me-tabs .ic { margin-right: 4px; }
+  @media (max-width: 700px) {
+    .me-wrap { padding: 12px 12px calc(84px + env(safe-area-inset-bottom)); }
+    .me-wrap h2 { font-size: 20px; }
+    .me-top { padding: 10px 12px; } .me-top b { font-size: 16px; }
+    .me-wrap nav.me-tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; margin: 0; display: grid; grid-template-columns: repeat(6, 1fr); gap: 0;
+      background: var(--card, #fff); border-top: 1px solid var(--line-2, #d3dae1); border-bottom: 0; padding: 4px 2px calc(4px + env(safe-area-inset-bottom)); overflow: visible; }
+    .me-tabs a { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 0; font-size: 10.5px; border: 0; margin: 0; border-radius: 10px; min-height: 48px; justify-content: center; position: relative; }
+    .me-tabs a .ic { font-size: 20px; margin: 0; line-height: 1.1; }
+    .me-tabs a.on { background: #0e243312; border: 0; }
+    .me-tabs a [id] { position: absolute; top: 2px; right: 4px; font-size: 10px; background: #e0564a; color: #fff; border-radius: 99px; padding: 0 5px; line-height: 16px; }
+    .me-tabs a [id]:empty { display: none; }
+    .me-tabs .wide { display: none; }
+    .me-wrap .me-tabs a { color: #5b6b78; } .me-wrap .me-tabs a.on { color: #0e2433; font-weight: 700; }
+    html[data-theme="dark"] .me-wrap .me-tabs a { color: #9fb0bd; } html[data-theme="dark"] .me-wrap .me-tabs a.on { color: #fff; background: #ffffff1a; }
+    .kpis { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .tile { padding: 10px 12px; } .tile .tv { font-size: 20px; } .tile .tl { font-size: 12px; } .tile .ts { font-size: 11px; }
+    .panel { padding: 12px 14px; }
+    input, select, textarea { font-size: 16px; } /* iOS: no zoom on focus */
+    button.btn.sm, a.btn.sm { min-height: 38px; padding: 6px 12px; }
+    .cards { grid-template-columns: 1fr; }
+    .me-wrap .sub { font-size: 12px; }
+  }
 </style>
 </head>
 <body>
@@ -39,11 +77,11 @@
 <main class="me-wrap">
   <div class="page-head"><div><h2 id="meName">Мой кабинет</h2><div class="sub" id="meSub"></div></div></div>
   <p id="meMsg" class="mut" role="status" hidden></p>
-  <nav class="tabs" aria-label="Разделы"><a href="#" data-tab="main" class="on">Главное</a><a href="#" data-tab="collect">💰 Сбор <span id="meCqN"></span></a><a href="#" data-tab="tasks">✅ Задания <span id="meTaskN"></span></a><a href="#" data-tab="chat">💬 Чат</a><a href="#" data-tab="clients">Мои клиенты</a><a href="#" data-tab="stock">Склад</a><a href="#" data-tab="disc">Дисциплина</a><a href="https://mital111222333.github.io/academy/" target="_blank" rel="noopener">🎓 Академия</a></nav>
+  <nav class="tabs me-tabs" aria-label="Разделы"><a href="#" data-tab="main" class="on"><span class="ic" aria-hidden="true">🏠</span>Главное</a><a href="#" data-tab="collect"><span class="ic" aria-hidden="true">💰</span>Сбор <span id="meCqN"></span></a><a href="#" data-tab="tasks"><span class="ic" aria-hidden="true">✅</span>Задания <span id="meTaskN"></span></a><a href="#" data-tab="clients"><span class="ic" aria-hidden="true">👥</span>Клиенты</a><a href="#" data-tab="stock"><span class="ic" aria-hidden="true">📦</span>Склад</a><a href="#" data-tab="disc"><span class="ic" aria-hidden="true">⏰</span>Дисциплина</a><a href="#" data-tab="chat" class="wide"><span class="ic" aria-hidden="true">💬</span>Чат</a><a class="wide" href="https://mital111222333.github.io/academy/" target="_blank" rel="noopener"><span class="ic" aria-hidden="true">🎓</span>Академия</a></nav>
   <div id="meBody"></div>
 </main>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
-<script src="me.js?v=202611172210"></script>
+<script src="me.js?v=202611191800"></script>
 </body>
 </html>

@@ -39,18 +39,30 @@ const ATK = {
         const f = await fetch(ATK.api(c, 'contents/' + path) + '?t=' + Date.now(), { headers: ATK.head(c, 'application/vnd.github.raw'), cache: 'no-store' });
         if (!f.ok) continue;
         const m = await f.json().catch(() => null);
-        if (m && m.act === 'done') {
-          const done = { at: m.at, comment: m.comment || '', photo: m.photo || '' };
-          if (m.src === 'x') { const t = ATK.all().find(x => String(x.id) === String(m.id) && x.agent === m.agent); if (t && t.status !== 'closed') { t.status = 'done'; t.done = done; n++; } }
-          if (m.src === 'ag') { await CRMLocal.request('POST', '/api/ag/tasks', { id: Number(m.id), agent_done: true }).catch(() => {}); ATK.marks()[m.id] = done; n++; }
-        } else if (m && window.INBOX_HANDLERS?.[m.act]) { if (await INBOX_HANDLERS[m.act](m)) n++; } // e.g. «count» — stock counts (wcount.js)
+        if (m && await ATK.applyMark(m)) n++;
         seen[path] = 1;
       }
       if (fresh.length) CRMLocal.autoTouch(); // marks pulled from the cabinets — not an edit of yours
       return n;
     } finally { ATK._busy = false; }
   },
+  // one mark of an agent — from inbox/ (Google auto-loader) or from the database (agent signed in with his login, botinbox.js)
+  async applyMark(m) {
+    if (m.act === 'done') {
+      const done = { at: m.at, comment: m.comment || '', photo: m.photo || '' };
+      if (m.src === 'x') { const t = ATK.all().find(x => String(x.id) === String(m.id) && x.agent === m.agent); if (t && t.status !== 'closed') { t.status = 'done'; t.done = done; return true; } return false; }
+      if (m.src === 'ag') { await CRMLocal.request('POST', '/api/ag/tasks', { id: Number(m.id), agent_done: true }).catch(() => {}); ATK.marks()[m.id] = done; return true; }
+      return false;
+    }
+    return window.INBOX_HANDLERS?.[m.act] ? !!(await INBOX_HANDLERS[m.act](m)) : false; // collect (my.js), absreq (disc.js), count (wcount.js)
+  },
   async photo(path) {
+    // a photo sent from the cabinet signed in with the agent's login: MITAL database storage, bucket agent-inbox
+    if (String(path).startsWith('sb:')) {
+      const { data, error } = await AUTH.sb.storage.from('agent-inbox').download(path.slice(3));
+      if (error) throw new Error('Фото не получено: ' + error.message);
+      return URL.createObjectURL(data);
+    }
     const c = ATK.cloud(); if (!c) throw new Error('Синхронизация не настроена');
     const r = await fetch(ATK.api(c, 'contents/' + path), { headers: ATK.head(c, 'application/vnd.github.raw'), cache: 'no-store' });
     if (!r.ok) throw new Error('Фото не получено: ' + r.status);
@@ -62,7 +74,10 @@ const ATK = {
     const week = UI.localDate(Date.now() - 7 * 864e5), t0 = UI.localDate(Date.now()), marks = ATK.marks();
     const own = ATK.all().filter(t => t.agent === agent && (t.status !== 'closed' || (t.closedAt || '').slice(0, 10) >= week)).map(t => ({
       src: 'x', id: t.id, kind: t.kind, title: (t.kind === 'academy' ? '🎓 ' : '') + t.title, text: t.text || '', link: t.link || '', due: t.due || '', status: t.status, overdue: t.status === 'open' && !!t.due && t.due < t0, back: t.back?.comment || '' }));
-    const client = (d.tasks || []).filter(t => t.agent === agent && (t.status !== 'done' || (marks[t.id]?.at || '').slice(0, 10) >= week)).map(t => ({
+    // a client task of a closed period is not shown: its «fact» is counted in the current period, so the agent saw «$0 из $1 500»
+    // and «просрочено» on October tasks in November (the supervisor still has them in the CRM)
+    const from = d.upload?.period_from || '';
+    const client = (d.tasks || []).filter(t => t.agent === agent && !(from && t.due && t.due < from) && (t.status !== 'done' || (marks[t.id]?.at || '').slice(0, 10) >= week)).map(t => ({
       src: 'ag', id: t.id, kind: 'client', title: `${t.kind} — ${t.client}`, text: t.text || '', link: '', due: t.due || '', status: t.status === 'done' ? (t.agent_done && !(t.pct >= 1) ? 'done' : 'closed') : 'open', overdue: t.status === 'overdue',
       progress: t.target > 0 && t.fact !== null ? `$${UI.fmt0(t.fact)} из $${UI.fmt0(t.target)}` : '' }));
     return [...own, ...client].sort((a, b) => (a.status === 'open' || a.status === 'returned' ? 0 : 1) - (b.status === 'open' || b.status === 'returned' ? 0 : 1) || (a.due || '9').localeCompare(b.due || '9'));

@@ -22,7 +22,7 @@ const MY = {
   // the agent's queue for his cabinet (agentcab.js → me.js «Сбор»)
   async queueFor(agent, n = 30) {
     const D = await MY.cached(); if (D.empty) return [];
-    return D.rows.filter(c => c.agent === agent).slice(0, n).map(c => ({ name: c.name, debt: Math.round(c.debt), why: MY.whyText(c), phone: c.phone || '', last: c.last ? { d: c.last.d, r: c.last.r, ...(c.last.pd ? { pd: c.last.pd } : {}), ...(c.last.s ? { s: c.last.s } : {}) } : null }));
+    return D.rows.filter(c => c.agent === agent).slice(0, n).map(c => ({ name: c.name, debt: Math.round((c.debt || 0) * 100) / 100, why: MY.whyText(c), phone: c.phone || '', last: c.last ? { d: c.last.d, r: c.last.r, ...(c.last.pd ? { pd: c.last.pd } : {}), ...(c.last.s ? { s: c.last.s } : {}) } : null }));
   },
   // a mark made by the agent in his cabinet (inbox/, act «collect») — the same record as the supervisor's own mark
   apply(m) {

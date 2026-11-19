@@ -7,7 +7,11 @@
   const $ = s => document.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const f0 = n => Math.round(Number(n) || 0).toLocaleString('ru-RU');
-  const $$ = n => '$' + f0(n);
+  // dollars to the cent, as LINKO shows them: $5 692 or $5 692,40 (never a rounded-off cent)
+  const $$ = n => { const v = Math.round((Number(n) || 0) * 100) / 100; return (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString('ru-RU', { minimumFractionDigits: Math.abs(v) % 1 ? 2 : 0, maximumFractionDigits: 2 }); };
+  const pctT = v => (v == null ? '—' : (v > 0 && v < 10 ? (Math.round(v * 10) / 10).toLocaleString('ru-RU') : Math.round(v)) + '%'); // 0,4% — not «0%» when $123 of $35 000 is collected
+  const pctV = (a, b) => (b > 0 ? a / b * 100 : null);
+  const tashToday = () => new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);
   const dRu = d => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : '—');
   const dm = d => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}` : '');
   const pct = (a, b) => (b > 0 ? Math.round(a / b * 100) : null);
@@ -30,7 +34,7 @@
   const SB = !link && sbUid && window.supabase?.createClient ? window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'crm_auth' } }) : null;
   const DATA_KEY = SB ? 'mital_me_data:' + sbUid : 'mital_me_data'; // a shared phone never shows the previous agent's cabinet
   const NO_ACT = 'Это отмечается в кабинете Telegram: кнопка «📱 Мой кабинет» в боте вашего руководителя.';
-  let tab = 'main', q = '', S = store.get(DATA_KEY), loading = false, doing = null;
+  let tab = 'main', q = '', cf = 'all', S = store.get(DATA_KEY), loading = false, doing = null;
   // chat tab: the agent's conversation with the bot through the chat worker (/agent/*), signed in by Telegram's initData
   const CH = { msgs: [], last: 0, timer: null, sending: false };
   const chatUrl = p => S?.chat ? S.chat.replace(/\/+$/, '') + p : '';
@@ -66,10 +70,10 @@
     try {
       const { data: { session } } = await SB.auth.getSession();
       if (!session) { location.replace('./'); return; } // signed out: back to the sign-in page
-      const { data, error } = await SB.from('agent_cabinets').select('data, updated_at').eq('agent_id', session.user.id).maybeSingle();
+      const { data, error } = await SB.from('agent_cabinets').select('data, updated_at, updated_by').eq('agent_id', session.user.id).maybeSingle();
       if (error) throw error;
       if (!data) msg('Кабинет ещё не готов: ваш руководитель должен открыть свою CRM — кабинет появится через минуту.', true);
-      else { S = data.data; store.set(DATA_KEY, S); msg(''); }
+      else { S = data.data; S._owner = data.updated_by; store.set(DATA_KEY, S); msg(''); keepMarks(S); }
     } catch (e) {
       // the server refused the sign-in (expired, password changed, account blocked): sign in again; otherwise there is no connection
       if (/jwt|token|auth|session|401|PGRST30/i.test(`${e?.code || ''} ${e?.message || ''} ${e?.status || ''}`)) {
@@ -88,7 +92,7 @@
       const r = await fetch(link.u + (link.u.includes('?') ? '&' : '?') + (link.tg ? 'tg=' + encodeURIComponent(link.tg) : 'agent=' + encodeURIComponent(link.k)) + '&t=' + Date.now(), { cache: 'no-store' });
       const j = await r.json();
       if (j.error) { msg(j.error, true); if (/закрыт|устарел|неверн/.test(j.error)) { S = null; store.set(DATA_KEY, null); } }
-      else { S = j; store.set(DATA_KEY, j); msg(''); const m = marks(), keep = {}; for (const t of j.tasks || []) if (m[markKey(t)] && (t.status === 'open' || t.status === 'returned')) keep[markKey(t)] = m[markKey(t)]; store.set('mital_me_marks', keep); }
+      else { S = j; store.set(DATA_KEY, j); msg(''); keepMarks(j); }
     } catch { msg(S ? 'Нет интернета — показаны последние сохранённые данные' : 'Нет интернета. Откройте страницу, когда появится связь.', !S); }
     loading = false; $('#meUpd').disabled = false; $('#meUpd').textContent = '🔄 Обновить';
     draw();
@@ -101,7 +105,29 @@
     for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
     return btoa(s);
   }
+  // a task marked «sent» stays so only until the supervisor's CRM has seen it (then the task comes back as «на проверке»)
+  function keepMarks(j) { const m = marks(), keep = {}; for (const t of j.tasks || []) if (m[markKey(t)] && (t.status === 'open' || t.status === 'returned')) keep[markKey(t)] = m[markKey(t)]; store.set('mital_me_marks', keep); }
+  // signed in with his own login: the mark goes to the MITAL database (crm_inbox), the supervisor's CRM applies it (botinbox.js).
+  // The database accepts it only as this agent and only for the supervisor who published this cabinet.
+  async function sbAct(body, file) {
+    const { data: { session } } = await SB.auth.getSession();
+    if (!session) { location.replace('./'); throw new Error('Войдите снова'); }
+    if (!S?._owner) { await loadSb(); if (!S?._owner) throw new Error('Кабинет ещё не готов — обновите через минуту'); }
+    const uid = Date.now() + '-' + Math.random().toString(36).slice(2, 8), at = new Date().toISOString();
+    let photo = '';
+    if (file) {
+      const b64 = await shrink(file), bin = atob(b64), u8 = Uint8Array.from(bin, c => c.charCodeAt(0)), path = `${session.user.id}/${tashToday()}/${uid}.jpg`;
+      const { error } = await SB.storage.from('agent-inbox').upload(path, new Blob([u8], { type: 'image/jpeg' }), { contentType: 'image/jpeg' });
+      if (error) throw new Error('Фото не отправилось: ' + error.message);
+      photo = 'sb:' + path;
+    }
+    const payload = { ...body, ...(photo ? { photo } : {}), agent: S.agent, agent_id: session.user.id, at, day: tashToday(), uid };
+    const { error } = await SB.from('crm_inbox').insert({ owner_id: S._owner, kind: 'agent', payload });
+    if (error) throw new Error(/row-level|policy/i.test(error.message) ? 'Нет доступа — обновите кабинет и попробуйте ещё раз' : 'Не отправилось: ' + error.message);
+    return { ok: true };
+  }
   async function sendDone(t, comment, file) {
+    if (SB) { await sbAct({ act: 'done', src: t.src, id: t.id, title: t.title || '', comment }, file); const m = marks(); m[markKey(t)] = new Date().toISOString(); store.set('mital_me_marks', m); return; }
     if (!link) throw new Error(NO_ACT);
     const photo = file ? await shrink(file) : '';
     const body = JSON.stringify({ ...(link.tg ? { tg: link.tg } : { k: link.k }), act: 'done', src: t.src, id: t.id, comment, photo });
@@ -124,6 +150,10 @@
   // Before sending, numbers far from the store keeper's OWN last count are asked once more (typos like 400 instead of 40).
   const CNT = { get: () => store.get('mital_cnt'), set: v => store.set('mital_cnt', v) };
   async function storePost(body) {
+    if (SB && (body.act === 'collect' || body.act === 'absreq')) {
+      if (body.act === 'collect' && body.r === 'promise' && (!body.pd || body.pd < tashToday() || !body.s)) throw new Error('Укажите дату и сумму обещания');
+      return sbAct(body);
+    }
     if (!link) throw new Error(NO_ACT);
     const r = await fetch(link.u, { method: 'POST', body: JSON.stringify({ ...(link.tg ? { tg: link.tg } : { k: link.k }), ...body }) });
     const j = await r.json(); if (j.error) throw new Error(j.error); return j;
@@ -274,9 +304,13 @@
     if (!link && !SB) { body.innerHTML = '<div class="empty-state"><h3>Откройте кабинет из Telegram</h3><p>Нажмите кнопку «Мой кабинет» в боте MITAL — или откройте ссылку, которую прислал руководитель.</p></div>'; return; }
     if (S && S.role === 'store') return drawStore(body);
     if (!S) { body.innerHTML = loading ? '<p class="mut">Загружаю…</p>' : '<div class="empty-state"><h3>Нет данных</h3><p>Причина — в сообщении выше. Если доступ закрыт, попросите руководителя прислать новую ссылку.</p></div>'; return; }
-    const k = S.kpi, sp = pct(k.sold, k.plan), cp = pct(k.paid, k.pool), me = S.board.find(b => b.me);
+    const k = S.kpi, sp = pctV(k.sold, k.plan), cp = pctV(k.paid, k.pool), me = S.board.find(b => b.me);
+    // the collection queue with the same debts as «Мои клиенты» (fresh debts from LINKO replace the CRM's); a debt that is paid off
+    // leaves the queue unless the agent marked the client today
+    { const by = new Map(S.clients.map(c => [c.name, c])), today = new Date().toLocaleDateString('sv-SE'), mine = store.get('mital_me_cq');
+      S.queue = (S.queue || []).map(x => (by.has(x.name) ? { ...x, debt: by.get(x.name).debt } : x)).filter(x => x.debt > 0 || (mine?.day === today && mine.m?.[x.name])); }
     $('#meName').textContent = S.agent;
-    $('#meSub').textContent = `Период ${dRu(S.period.from)} — ${dRu(S.period.to)}${S.period.days_left != null ? ` · осталось ${S.period.days_left} дн.` : ''} · план и рейтинг на ${hhmm(S.at)}${S.live?.debt ? ` · долги на ${hhmm(S.live.debt)}` : ''}${S.live?.stock ? ` · остатки на ${hhmm(S.live.stock)}` : ''}`;
+    $('#meSub').innerHTML = `Период ${dm(S.period.from)} — ${dm(S.period.to)}${S.period.days_left != null ? ` · осталось <b>${S.period.days_left} дн.</b>` : ''}<br><span style="opacity:.75">Обновлено: план ${esc(hhmm(S.at))}${S.live?.debt ? ` · долги ${esc(hhmm(S.live.debt))}` : ''}${S.live?.stock ? ` · склад ${esc(hhmm(S.live.stock))}` : ''}</span>`;
     document.querySelectorAll('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
     const openN = (S.tasks || []).filter(isOpen).length; $('#meTaskN').textContent = openN ? `(${openN})` : '';
     if (tab !== 'chat') chatStop();
@@ -325,20 +359,42 @@
       return;
     }
     if (tab === 'main') {
-      const t = S.disc?.today, top = S.clients.filter(c => c.debt > 0 && (c.promise || c.pool > c.paid)).slice(0, 10);
-      body.innerHTML = `<section class="panel w12" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><div style="font-size:32px" aria-hidden="true">🎓</div><div style="flex:1;min-width:200px"><h4 style="margin:0">MITAL Akademiya</h4><div class="sub">Курсы для агентов: продажи, работа с клиентами и долгами, товары</div></div><a class="btn" style="padding:10px 18px;white-space:nowrap;line-height:1.2" href="${ACADEMY}" target="_blank" rel="noopener">Перейти к курсам →</a></section>
-        ${(S.tasks || []).filter(isOpen).length || chatBtn() ? `<div class="bar" style="margin-bottom:12px">${(S.tasks || []).filter(isOpen).length ? `<a class="btn" href="#" data-go="tasks">✅ Задания: ${(S.tasks || []).filter(isOpen).length} открыто</a>` : ''}${chatBtn()}</div>` : ''}
+      const t = S.disc?.today, top = S.clients.filter(c => c.debt > 0 && (c.promise || c.pool > c.paid)).slice(0, 10), t0 = tashToday();
+      // the pace of the period: how much of the plan should be done by today (days passed / days in the period)
+      const total = S.period.from && S.period.to ? Math.round((Date.parse(S.period.to) - Date.parse(S.period.from)) / 864e5) + 1 : 0;
+      const passed = total && S.period.days_left != null ? Math.min(total, Math.max(1, total - S.period.days_left)) : 0, pace = total ? passed / total : null;
+      const paceRow = (label, fact, goal, perDay, verb) => { if (!goal) return ''; const p = fact / goal * 100, should = pace != null ? goal * pace : null, diff = should != null ? fact - should : 0;
+        return `<div style="margin:10px 0 4px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>${label}: ${$$(fact)} из ${$$(goal)}</b><b>${pctT(p)}</b></div>
+          <div class="bar2" role="img" aria-label="${label}: ${pctT(p)} плана"><i style="width:${Math.min(100, p)}%;${should != null && fact < should ? 'background:#e9a23b' : ''}"></i>${pace != null ? `<u style="left:${Math.min(100, pace * 100)}%"></u>` : ''}</div>
+          <div class="mut" style="font-size:13px">${should != null ? (diff >= 0 ? `✓ по темпу впереди на ${$$(diff)}` : `по темпу должно быть ${$$(should)} — не хватает <b class="neg">${$$(-diff)}</b>`) + ' · ' : ''}${perDay ? `сегодня ${verb} <b>${$$(perDay)}</b>` : ''}</div></div>`; };
+      // what to do today: promises due, the collection queue, tasks, clients who stopped buying
+      const due = S.clients.filter(c => c.promise && c.promise.date <= t0 && c.debt > 0).sort((a, b) => a.promise.date.localeCompare(b.promise.date));
+      const sleep = S.clients.filter(c => c.lastBuy && c.buyDays != null && c.buyDays >= 21 && c.buyDays <= 120).sort((a, b) => a.buyDays - b.buyDays).slice(0, 6);
+      const openT = (S.tasks || []).filter(isOpen), cqLeft = (S.queue || []).length;
+      const todo = [
+        ...due.map(c => `<li>🤝 <b>${esc(c.name)}</b> обещал${c.promise.date < t0 ? ` <b class="neg">${dm(c.promise.date)} — просрочено</b>` : ' сегодня'}${c.promise.sum ? ` ${$$(c.promise.sum)}` : ''} · долг ${$$(c.debt)}${c.phone ? ` · <a href="tel:${esc(c.phone)}">📞 позвонить</a>` : ''}</li>`),
+        cqLeft ? `<li>💰 Очередь сбора: <b>${cqLeft}</b> должников — <a href="#" data-go="collect">открыть и отметить результат</a></li>` : '',
+        openT.length ? `<li>✅ Открытых заданий: <b>${openT.length}</b>${openT.some(x => x.overdue) ? ' <b class="neg">есть просроченные</b>' : ''} — <a href="#" data-go="tasks">открыть</a></li>` : '',
+        S.disc && !t?.first && !t?.st && !S.disc.skip && !S.disc.free ? `<li>⏰ Первый фотоотчёт в LINKO — до <b>${esc(S.disc.start)}</b>, иначе штраф ${f0(S.disc.rate)} сум за минуту</li>` : '',
+      ].filter(Boolean);
+      // the next place in the leaderboard: the gap in % of the plan, in dollars of sales
+      const prev = me && me.place > 1 ? S.board.find(b => b.place === me.place - 1) : null, gap = prev ? ((prev.sold ?? 0) + (prev.paid ?? 0)) - ((me.sold ?? 0) + (me.paid ?? 0)) : 0;
+      body.innerHTML = `${S.day && (k.plan || k.pool) ? panel('📈 Темп периода', paceRow('Продажи', k.sold, k.plan, S.day.sell, 'продать') + paceRow('Сбор', k.paid, k.pool, S.day.collect, 'собрать'), pace != null ? `Прошло ${passed} из ${total} дн. Чёрная черта — где нужно быть сегодня, чтобы закрыть план к ${dm(S.period.to)}.` : '') : ''}
+        ${todo.length ? panel('📋 Что сделать сегодня', `<ul class="todo">${todo.join('')}</ul>`) : ''}
+        ${chatBtn() ? `<div class="bar" style="margin-bottom:12px">${chatBtn()}</div>` : ''}
         <div class="kpis">
-        ${tile('Продано', $$(k.sold), k.plan ? `план ${$$(k.plan)} · ${sp}%` : 'план не задан', sp === null ? '' : sp >= 100 ? 'good' : '')}
-        ${tile('Собрано', $$(k.paid), k.pool ? `пул ${$$(k.pool)} · ${cp}% · осталось ${$$(Math.max(0, k.pool - k.paid))}` : 'пул не задан', cp === null ? '' : cp >= 100 ? 'good' : '')}
+        ${tile('Продано', $$(k.sold), k.plan ? `план ${$$(k.plan)} · ${pctT(sp)}` : 'план не задан', sp === null ? '' : sp >= 100 ? 'good' : '')}
+        ${tile('Собрано', $$(k.paid), k.pool ? `пул ${$$(k.pool)} · ${pctT(cp)} · осталось ${$$(Math.max(0, k.pool - k.paid))}` : 'пул не задан', cp === null ? '' : cp >= 100 ? 'good' : '')}
         ${tile('Долг ваших клиентов', $$(k.debt), `должников ${f0(k.debtors)}`, k.debt ? 'warn' : '')}
-        ${tile('Место в рейтинге', me ? `${me.place} из ${S.board.length}` : '—', 'по % плана продаж и сбора')}
+        ${tile('Место в рейтинге', me ? `${me.place} из ${S.board.length}` : '—', prev ? `до ${prev.place}-го места: +${Math.max(1, Math.ceil(gap))} п.п.${k.plan ? ` (≈ ${$$(Math.max(1, Math.ceil(gap)) * k.plan / 100)} продаж)` : ''}` : me?.place === 1 ? 'вы лидер — держите темп 💪' : 'по % плана продаж и сбора', me?.place === 1 ? 'good' : '')}
         ${S.disc ? tile('Сегодня', t?.first ? `отчёт в ${esc(t.first)}` : t?.st ? esc(t.st) : 'нет отчёта', t?.late ? `опоздание ${t.late} мин · штраф ${f0(t.late * S.disc.rate)} сум` : t?.st ? (t.st === 'Невыход' ? 'отмечен невыход на работу' : 'без штрафа за опоздание') : t?.first ? 'вовремя ✓' : `первый фотоотчёт до ${esc(S.disc.start)}`, t?.late || t?.st === 'Невыход' ? 'bad' : t?.first || t?.st ? 'good' : 'warn') : ''}
         ${S.disc ? tile('Штрафы за период', f0(S.disc.fine) + ' сум', `опозданий ${S.disc.late} · ${S.disc.minutes} мин`, S.disc.fine ? 'bad' : 'good') : ''}
         ${tile('АКБ / ОКБ', `${k.akb} / ${k.okb}`, 'активные / все клиенты')}</div>
         ${S.pay ? panel(`💰 Зарплата за ${esc(S.pay.label)}`, `<table style="width:100%">${S.pay.lines.map(([a, b]) => `<tr><td>${esc(a)}</td><td class="n" style="white-space:nowrap">${esc(b)}</td></tr>`).join('')}<tr><td><b>К выплате</b></td><td class="n"><b>${f0(S.pay.total)} сум</b></td></tr></table>${S.pay.voucher ? `<p class="pos" style="margin:8px 0 0">🎁 Ваучер в ресторан на ${f0(S.pay.voucher)} сум — поздравляем!</p>` : ''}`, 'Расчёт руководителя за закрытый месяц') : ''}
         ${panel('Рейтинг агентов', `<div class="tscroll"><table><thead><tr><th class="n">#</th><th>Агент</th><th class="n">План продаж</th><th class="n">Сбор пула</th></tr></thead><tbody>${S.board.map(b => `<tr${b.me ? ' style="font-weight:700"' : ''}><td class="n">${b.place}</td><td>${esc(b.agent)}${b.me ? ' — вы' : ''}</td><td class="n">${b.sold != null ? b.sold + '%' : '—'}</td><td class="n">${b.paid != null ? b.paid + '%' : '—'}</td></tr>`).join('')}</tbody></table></div>`, 'Место — по сумме % плана продаж и % сбора пула')}
-        ${top.length ? panel('Кому собрать в первую очередь', `<div class="tscroll"><table><thead><tr><th>Клиент</th><th class="n">Долг</th><th class="n">Осталось по пулу</th><th>Обещал</th></tr></thead><tbody>${top.map(c => `<tr><td>${esc(c.name)}</td><td class="n">${$$(c.debt)}</td><td class="n">${c.pool ? $$(Math.max(0, c.pool - c.paid)) : '—'}</td><td>${c.promise ? `${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>`) : ''}`;
+        ${top.length ? panel('Кому собрать в первую очередь', `<div class="cards">${top.map(c => `<div class="ccard"><div class="top"><b>${esc(c.name)}</b><span class="amt neg">${$$(c.debt)}</span></div><div class="meta">${c.pool ? `<span>по пулу осталось ${$$(Math.max(0, c.pool - c.paid))}</span>` : ''}${c.promise ? `<span>🤝 обещал ${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}</span>` : ''}${c.lastPay ? `<span>посл. оплата ${dm(c.lastPay)}</span>` : ''}</div>${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`) : ''}
+        ${sleep.length ? panel('🛒 Давно не покупали — предложите заказ', `<div class="cards">${sleep.map(c => `<div class="ccard"><div class="top"><b>${esc(c.name)}</b><span class="amt">${c.buyDays} дн.</span></div><div class="meta">${c.lastBuy ? `<span>посл. покупка ${dm(c.lastBuy)}</span>` : ''}${c.debt > 0 ? `<span class="neg">долг ${$$(c.debt)}</span>` : '<span class="pos">долга нет</span>'}${c.landmark ? `<span>${esc(c.landmark)}</span>` : ''}</div>${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`, 'Эти клиенты брали товар, но перестали — каждый вернувшийся клиент поднимает и продажи, и АКБ.') : ''}
+        <section class="panel w12" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><div style="font-size:32px" aria-hidden="true">🎓</div><div style="flex:1;min-width:200px"><h4 style="margin:0">MITAL Akademiya</h4><div class="sub">Курсы для агентов: продажи, работа с клиентами и долгами, товары</div></div><a class="btn" style="padding:10px 18px;white-space:nowrap;line-height:1.2" href="${ACADEMY}" target="_blank" rel="noopener">Перейти к курсам →</a></section>`;
     }
     // ---------- Сбор: the queue of debtors from the supervisor's CRM; every contact is marked in one tap ----------
     const cqDay = new Date().toLocaleDateString('sv-SE'), cqMine = (() => { const x = store.get('mital_me_cq'); return x && x.day === cqDay ? x.m : {}; })();
@@ -357,7 +413,7 @@
         const box = b.closest('[data-cq]'), c = (S.queue || []).find(x => x.name === box.dataset.cq), k = b.dataset.cqr, f = box.querySelector('[data-cqf]'); if (!c) return;
         if (k === 'noanswer') return send(c, { r: k }, b);
         const tm = new Date(Date.now() + 864e5).toLocaleDateString('sv-SE');
-        f.innerHTML = `<div style="display:grid;gap:8px;margin-top:10px">${k === 'promise' ? `<label>Когда заплатит<input type="date" data-pd value="${tm}" min="${cqDay}" style="width:100%"></label><label>Сколько, $<input type="number" data-s min="1" step="1" value="${c.debt}" style="width:100%"></label>` : k === 'paid' ? '<label>Сколько заплатил, $<input type="number" data-s min="0" step="1" style="width:100%"></label>' : ''}
+        f.innerHTML = `<div style="display:grid;gap:8px;margin-top:10px">${k === 'promise' ? `<label>Когда заплатит<input type="date" data-pd value="${tm}" min="${cqDay}" style="width:100%"></label><label>Сколько, $<input type="number" inputmode="decimal" data-s min="0.01" step="0.01" value="${c.debt}" style="width:100%"></label>` : k === 'paid' ? '<label>Сколько заплатил, $<input type="number" inputmode="decimal" data-s min="0" step="0.01" style="width:100%"></label>' : ''}
           <label>${k === 'refuse' ? 'Причина отказа' : 'Заметка'}<input data-note style="width:100%" placeholder="${k === 'refuse' ? 'что сказал клиент' : 'необязательно'}"></label><button class="btn" type="button" data-cqgo>${CQ[k][0]} Отправить: ${CQ[k][1]}</button></div>`;
         f.querySelector("[data-cqgo]").onclick = e => {
           const s = Number(f.querySelector('[data-s]')?.value) || 0, pd = f.querySelector('[data-pd]')?.value || '', note = f.querySelector('[data-note]').value.trim();
@@ -368,16 +424,23 @@
       });
     }
     if (tab === 'clients') {
-      const L = S.clients.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()));
+      const F = { all: ['Все', () => true], debt: ['Должники', c => c.debt > 0], prom: ['Обещали', c => !!c.promise], sleep: ['Не покупали 21+ дн.', c => !!c.lastBuy && c.buyDays >= 21], never: ['Ещё не покупали', c => !c.lastBuy], buy: ['Купили в периоде', c => c.sold > 0] };
+      const f = F[cf] ? cf : 'all', base = S.clients.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase())), L = base.filter(F[f][1]);
+      const sum = (A, kk) => A.reduce((t, c) => t + (c[kk] > 0 ? c[kk] : 0), 0);
       body.innerHTML = `<div class="bar"><input id="meQ" type="search" placeholder="Поиск клиента" value="${esc(q)}" style="flex:1;min-width:0"></div>
-        ${panel(`Мои клиенты (${f0(L.length)})`, `<div class="tscroll"><table><thead><tr><th>Клиент</th><th class="n">Долг</th><th class="n">Купил</th><th class="n">Оплатил</th><th class="n">Пул, осталось</th><th class="n">Посл. оплата</th><th class="n">Без покупок</th><th>Обещал</th></tr></thead><tbody>${L.map(c => `<tr><td>${esc(c.name)}${c.landmark ? `<br><small class="mut">${esc(c.landmark)}</small>` : ''}${c.phone ? `<br><a href="tel:${esc(c.phone)}"><small>${esc(c.phone)}</small></a>` : ''}</td><td class="n ${c.debt ? 'neg' : ''}">${c.debt ? $$(c.debt) : '—'}</td><td class="n">${$$(c.sold)}</td><td class="n">${$$(c.paid)}</td><td class="n">${c.pool ? $$(Math.max(0, c.pool - c.paid)) : '—'}</td><td class="n">${c.lastPay ? dm(c.lastPay) : '—'}</td><td class="n ${c.buyDays > 30 ? 'neg' : ''}">${c.buyDays != null ? c.buyDays + ' дн.' : '—'}</td><td>${c.promise ? `${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}` : ''}</td></tr>`).join('')}</tbody></table></div>`, 'Сверху — самые большие долги')}`;
+        <div class="chips" role="tablist">${Object.entries(F).map(([kk, [tt, fn]]) => `<button type="button" data-cf="${kk}" class="${kk === f ? 'on' : ''}">${tt} · ${base.filter(fn).length}</button>`).join('')}</div>
+        ${panel(`Мои клиенты (${f0(L.length)})`, L.length ? `<div class="cards">${L.map(c => `<div class="ccard"><div class="top"><b>${esc(c.name)}</b><span class="amt ${c.debt > 0 ? 'neg' : 'mut'}">${c.debt > 0 ? $$(c.debt) : 'долга нет'}</span></div>
+          <div class="meta"><span>купил ${$$(c.sold)}</span><span>оплатил ${$$(c.paid)}</span>${c.pool ? `<span>по пулу осталось ${$$(Math.max(0, c.pool - c.paid))}</span>` : ''}<span>посл. оплата ${c.lastPay ? dm(c.lastPay) : '—'}</span>${c.lastBuy ? `<span class="${c.buyDays > 30 ? 'neg' : ''}">посл. покупка ${dm(c.lastBuy)} (${c.buyDays} дн.)</span>` : '<span>покупок не было</span>'}${c.promise ? `<span>🤝 обещал ${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}</span>` : ''}${c.landmark ? `<span>📍 ${esc(c.landmark)}</span>` : ''}</div>
+          ${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 ${esc(c.phone)}</a></div>` : ''}</div>`).join('')}</div>` : '<p class="mut">Нет клиентов по этому фильтру.</p>',
+          `Долг: ${$$(sum(L, 'debt'))} · купили: ${$$(sum(L, 'sold'))} · оплатили: ${$$(sum(L, 'paid'))} — сверху самые большие долги`)}`;
+      body.querySelectorAll('[data-cf]').forEach(b => b.onclick = () => { cf = b.dataset.cf; draw(); });
       search();
     }
     if (tab === 'stock') {
       if (!S.stock) { body.innerHTML = '<div class="empty-state"><h3>Склад не назначен</h3><p>Попросите руководителя указать ваш склад.</p></div>'; return; }
       const L = S.stock.items.filter(i => !q || (i.name + ' ' + i.brand + ' ' + i.art).toLowerCase().includes(q.toLowerCase()));
       body.innerHTML = `<div class="bar"><input id="meQ" type="search" placeholder="Поиск товара, бренда, артикула" value="${esc(q)}" style="flex:1;min-width:0"></div>
-        ${panel(`Склад ${esc(S.stock.warehouse)} (${f0(L.length)})`, `<div class="tscroll"><table><thead><tr><th>Товар</th><th>Бренд</th><th class="n">Доступно</th><th class="n">Всего</th></tr></thead><tbody>${L.map(i => `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td>${esc(i.brand)}</td><td class="n ${i.available <= 0 ? 'neg' : ''}"><b>${f0(i.available)}</b></td><td class="n">${f0(i.total)}</td></tr>`).join('')}</tbody></table></div>`, `Остатки на ${S.live?.stock ? hhmm(S.live.stock) + ' (обновляются каждые 5 минут)' : dRu(S.stock.at)}. «Доступно» — без резерва под заказы.`)}`;
+        ${panel(`Склад ${esc(S.stock.warehouse)} (${f0(L.length)})`, `<div class="cards">${L.map(i => `<div class="ccard"><div class="top"><b>${esc(i.name)}</b><span class="amt ${i.available <= 0 ? 'neg' : ''}">${f0(i.available)} шт</span></div><div class="meta"><span>${esc(i.art)}</span>${i.brand ? `<span>${esc(i.brand)}</span>` : ''}<span>всего ${f0(i.total)}${i.total > i.available ? ` · в резерве ${f0(i.total - i.available)}` : ''}</span></div></div>`).join('')}</div>`, `Остатки на ${S.live?.stock ? hhmm(S.live.stock) + ' (обновляются каждые 5 минут)' : dRu(S.stock.at)}. «Доступно» — без резерва под заказы.`)}`;
       search();
     }
     if (tab === 'disc') {

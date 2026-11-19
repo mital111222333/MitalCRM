@@ -83,10 +83,13 @@ const PAY = {
     for (const a of ag.keys()) PAY.person(a, 'agent');
     return Object.entries(c.staff).filter(([, s]) => s.on !== false).map(([name, s]) => {
       const auto = PAY.workedOf(name, from, end), worked = p.worked[name] != null ? Number(p.worked[name]) : auto != null ? auto : days;
-      const paidDays = Math.min(worked, days), fix = (Number(s.fix) || 0) / days * paidDays, fixCur = s.fixCur === 'сум' ? 'сум' : '$';
+      // $ amounts are rounded to the cent before they are added and converted: the slip line «Итого $780,13 × 12 050» must give
+      // exactly the сум shown next to it (before: 180,1268 was multiplied unrounded — 9 400 528 instead of 9 400 567)
+      const c2 = v => Math.round(v * 100) / 100;
+      const paidDays = Math.min(worked, days), fix = c2((Number(s.fix) || 0) / days * paidDays), fixCur = s.fixCur === 'сум' ? 'сум' : '$';
       const fixUsd = fixCur === '$' ? fix : 0, fixUzs = fixCur === 'сум' ? Math.round(fix) : 0;
       const own = ag.get(name)?.paid || 0, team = s.role === 'lead' ? (s.team || []).filter(t => t !== name).reduce((t, a) => t + (ag.get(a)?.paid || 0), 0) : 0;
-      const collected = own + team, pct = collected * (Number(s.pct) || 0) / 100, bonus = s.bonus ? PAY.bonusOf(collected) : 0;
+      const collected = own + team, pct = c2(collected * (Number(s.pct) || 0) / 100), bonus = s.bonus ? c2(PAY.bonusOf(collected)) : 0;
       // gas and the lateness fine: counted by themselves, but a sum typed in the payroll wins
       const km = Number(p.km[name]) || 0, fuelAuto = km * (Number(s.fuel) || 0), gasSet = p.gas[name] != null, fuel = gasSet ? Number(p.gas[name]) || 0 : fuelAuto;
       const adv = (p.adv[name] || []).reduce((t, a) => t + PAY.inSum(a.s, a.cur, rate), 0), extra = (p.extra[name] || []).reduce((t, a) => t + PAY.inSum(a.s, a.cur, rate), 0);

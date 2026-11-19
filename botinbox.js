@@ -29,13 +29,25 @@ const BOTIN = {
       CRMLocal.touch();
       await CRMLocal.flush?.(); // saved before the rows are marked: nothing is lost if the page closes now
       for (const x of results) await AUTH.sb.from('crm_inbox').update({ applied_at: new Date().toISOString(), result: x.res }).eq('id', x.id);
-      if (typeof AC !== 'undefined' && results.some(x => /задание/.test(x.res))) AC.publish({ force: true }).catch(() => {});
-      toast(`JUMAVOY: внесено в CRM — ${results.length}`);
+      if (typeof AC !== 'undefined' && results.some(x => /задание|отметка агента/.test(x.res))) { AC.publish({ force: true }).catch(() => {}); AC.publishDb({ force: true }).catch(() => {}); }
+      const ag = results.filter(x => /^отметка агента/.test(x.res)).length;
+      toast(ag ? `Новые отметки агентов: ${ag} — Агенты → Задания агентам${results.length > ag ? ` · JUMAVOY: ${results.length - ag}` : ''}` : `JUMAVOY: внесено в CRM — ${results.length}`);
       return results.length;
     } catch (e) { console.warn('botinbox', e); return 0; } finally { BOTIN.busy = false; }
   },
   async apply(r) {
     const p = r.payload || {};
+    // agent — a mark from the agent's cabinet signed in with his login (me.js): the same record the auto-loader puts in inbox/.
+    // The database lets the agent write only as himself (agent name = the name of his own cabinet).
+    if (r.kind === 'agent') {
+      if (!p.agent || !p.act) return 'пропущено: нет агента';
+      if (p.act === 'collect') { const d = await REP.load(); if (!d.empty && !d.clients.some(c => c.name === p.client && c.agent === p.agent)) return 'пропущено: клиент не этого агента'; }
+      const ok = typeof ATK !== 'undefined' && await ATK.applyMark({ ...p, at: p.at || r.created_at });
+      if (!ok) return 'пропущено: задание или клиент не найдены';
+      BOTIN.agentMarks = (BOTIN.agentMarks || 0) + 1;
+      const R = { paid: 'оплатил', promise: 'обещал', refuse: 'отказ', noanswer: 'недозвон' };
+      return 'отметка агента: ' + (p.act === 'done' ? 'задание выполнено' : p.act === 'absreq' ? 'заявка на отсутствие' : 'сбор — ' + (R[p.r] || p.r));
+    }
     if (r.kind === 'atask') {
       if (!p.agent || !p.title) return 'пропущено: нет агента или текста';
       const id = ATK.all().reduce((m, t) => Math.max(m, t.id || 0), 0) + 1;
