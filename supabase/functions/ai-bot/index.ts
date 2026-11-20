@@ -23,6 +23,7 @@
 //   TAVILY_API_KEY (поиск в интернете, если у ключа Gemini нет бесплатного Google Search), GEMINI_SEARCH_MODEL
 //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET — Google Календарь, Gmail (чтение), Контакты через /google (README, раздел «Google»)
 //   NEWS_RSS — свои ленты новостей через запятую (по умолчанию spot.uz, gazeta.uz, kun.uz)
+//   OILBOOK_URL, OILBOOK_TOKEN — второй бизнес, админка OilBook (адрес сайта и тот же токен, что JUMAVOY_TOKEN в Railway)
 //   SUPABASE_URL и SUPABASE_SERVICE_ROLE_KEY Supabase подставляет сам — добавлять не нужно.
 // Подключение webhook: откройте в браузере  <адрес функции>?setup=<TG_SECRET>
 // «Verify JWT» у функции должен быть выключен (Telegram не присылает токен Supabase).
@@ -58,6 +59,8 @@ const CFG = {
   sbKey: () => env('SUPABASE_SERVICE_ROLE_KEY'),
   hour: (k: string, d: number) => { const v = parseInt(env(k), 10); return Number.isFinite(v) && v >= 0 && v <= 23 ? v : d; },
   quiet: () => env('QUIET_DAYS', 'Sun').split(/[,\s]+/).filter(Boolean),
+  obUrl: () => env('OILBOOK_URL').replace(/\/+$/, ''),
+  obToken: () => env('OILBOOK_TOKEN'),
 };
 
 // ───────────────────────────── helpers ─────────────────────────────
@@ -632,12 +635,13 @@ function balanceFor(db: any, from?: string, to?: string) {
   return { from, to: asOf, period: `${dm(from)} — ${dm(asOf)}`, byAgent };
 }
 const WRITES = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'reminder_add', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'save_photo', 'send_saved_file', 'message_agent', 'crm_task', 'crm_note', 'message_client',
-  'skill_add', 'skill_delete', 'calendar_add']);
+  'skill_add', 'skill_delete', 'calendar_add', 'oilbook_action']);
 // tools that do not need the CRM data: when GitHub / LINKO is down they keep working (reminders, personal money, tasks,
 // notebook, the outside world, Google); every other tool then answers with the data error instead of zeros
 const NO_CRM = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_cancel',
   'personal_debt_add', 'personal_debts', 'personal_debt_delete', 'notebook_search', 'save_photo', 'send_saved_file', 'web_research', 'weather', 'promo_calc', 'price_list',
-  'currency_rates', 'news', 'skill_use', 'skill_add', 'skill_list', 'skill_delete', 'calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search']);
+  'currency_rates', 'news', 'skill_use', 'skill_add', 'skill_list', 'skill_delete', 'calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search',
+  'oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action']);
 
 // ───────────────────────────── actions ─────────────────────────────
 // Anything that reaches another person is only a DRAFT until the owner presses «✅ Отправить» (ai_outbox + inline buttons → onButton).
@@ -658,10 +662,11 @@ async function crmBot(token: string, method: string, params: any) {
 const agentChat = (db: any, agent: string) => String(db.tgChats?.[agent]?.id || '');
 async function draft(ctx: any, row: { kind: string; target: string; text: string; payload: any }) {
   const [d] = await sb('ai_outbox', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, status: 'draft', ...row } });
-  const head = row.kind === 'agent_msg' ? `✉️ Черновик — сообщение для ${row.target} (уйдёт через бота CRM):` : `📋 Черновик — задание для ${row.target}:`;
+  const head = row.kind === 'agent_msg' ? `✉️ Черновик — сообщение для ${row.target} (уйдёт через бота CRM):`
+    : row.kind === 'oilbook' ? `🛢 OilBook — ${row.target}. Выполнить?` : `📋 Черновик — задание для ${row.target}:`;
   await tg('sendMessage', {
     chat_id: ctx.chatId, text: `${head}\n\n${row.text}`.slice(0, 4000), disable_web_page_preview: true,
-    reply_markup: { inline_keyboard: [[{ text: '✅ Отправить', callback_data: `ob:send:${d.id}` }, { text: '✖ Отмена', callback_data: `ob:cancel:${d.id}` }]] },
+    reply_markup: { inline_keyboard: [[{ text: row.kind === 'oilbook' ? '✅ Выполнить' : '✅ Отправить', callback_data: `ob:send:${d.id}` }, { text: '✖ Отмена', callback_data: `ob:cancel:${d.id}` }]] },
   });
   return d;
 }
@@ -690,6 +695,12 @@ async function onButton(q: any) {
   await answer(note);
 }
 async function sendDraft(row: any): Promise<string> {
+  if (row.kind === 'oilbook') {
+    const r = await ob('action', row.payload);
+    if (r.ok === false) throw new Error(r.error);
+    const until = r.paid_until || r.new_until;
+    return `✅ Выполнено в OilBook · ${nowTime(new Date().toISOString())}${until ? ` · оплачено до ${obDate(until)}` : ''}${r.shop_id ? ` · точка создана (id ${r.shop_id})` : ''}`;
+  }
   const db = await needData(), token = await crmBotToken(db), at = nowTime(new Date().toISOString());
   if (row.kind === 'agent_msg') {
     if (!token) throw new Error('в CRM не подключён бот Telegram (Настройки → Telegram)');
@@ -705,6 +716,118 @@ async function sendDraft(row: any): Promise<string> {
   catch (e) { return `✅ Задание записано в CRM, но агенту в Telegram не ушло: ${(e as Error).message}`; }
   return `✅ Задание дано ${row.target} (${at}) — агент получил его в Telegram, в CRM появится при открытии`;
 }
+// ───────────────────────────── OilBook: второй бизнес (платформа для точек замены масла) ─────────────────────────────
+// Админка OilBook (Railway) отдаёт JUMAVOY то же, что владелец видит в /admin: подписки, оплаты, заявки, общую аналитику.
+// Клиентов, машин и выручки точек там нет — это обещано точкам в соглашении. Вход — <OILBOOK_URL>/api/jumavoy/* с токеном
+// OILBOOK_TOKEN (= JUMAVOY_TOKEN в Railway). Любое изменение — только черновик с кнопкой «✅ Выполнить» (ai_outbox kind=oilbook).
+const obOn = () => !!(CFG.obUrl() && CFG.obToken());
+const OB_OFF = 'OilBook не подключён: добавьте в Supabase секреты OILBOOK_URL (адрес сайта OilBook) и OILBOOK_TOKEN (тот же, что JUMAVOY_TOKEN в Railway)';
+async function ob(path: string, body?: any): Promise<any> {
+  if (!obOn()) return { ok: false, error: OB_OFF };
+  let r: Response;
+  try {
+    r = await fetchT(`${CFG.obUrl()}/api/jumavoy/${path}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { Authorization: 'Bearer ' + headerSafe('OILBOOK_TOKEN', CFG.obToken()), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    }, 20000);
+  } catch (e) { return { ok: false, error: 'OilBook не отвечает: ' + redact((e as Error).message) }; }
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) return { ok: false, error: 'OilBook не принял токен: OILBOOK_TOKEN в Supabase должен совпадать с JUMAVOY_TOKEN в Railway' };
+  if (r.status === 404 && j.error === 'not found') return { ok: false, error: 'В OilBook (Railway → Variables) не задан JUMAVOY_TOKEN — не короче 32 символов' };
+  if (j.variants) return { ok: false, error: j.error, candidates: j.variants.map((v: any) => `${v.name} (@${v.username})`) };
+  if (!r.ok || j.ok === false) return { ok: false, error: j.error || `OilBook ответил ${r.status}` };
+  return j;
+}
+const obSum = (v: any) => v == null || v === '' ? '—' : Math.round(n(v)).toLocaleString('ru-RU').replace(/\s/g, ' ') + ' сум';
+export const obDate = (d: any) => { const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}.${m[2]}.${m[1]}` : '—'; };
+const obLeft = (s: any) => s.days_left == null ? '' : s.days_left < 0 ? ` (просрочено ${-s.days_left} дн.)` : s.days_left === 0 ? ' (сегодня)' : ` (${s.days_left} дн.)`;
+const obShopLine = (s: any) => `• ${s.name}${s.username ? ` (@${s.username})` : ''} — ${s.status_ru || s.status}${s.paid_until ? `, до ${obDate(s.paid_until)}${obLeft(s)}` : ''}${s.is_active ? '' : ' · ⛔ отключена'}`;
+// точка по названию, как его услышал ИИ (русский / узбекский / латиница / с ошибкой) — тем же поиском, что клиенты CRM
+async function obResolve(name: any): Promise<any> {
+  const query = String(name || '').trim();
+  if (!query) return { error: 'Назовите точку OilBook' };
+  const all = await ob('shops?status=all&limit=1000'); if (all.ok === false) return all;
+  if (/^\d+$/.test(query)) { const s = all.shops.find((x: any) => String(x.id) === query); if (s) return { shop: s }; }
+  const hits = best(query, all.shops, (s: any) => `${s.name} ${s.username}`, 6, 0.5);
+  if (!hits.length) return { error: `Точка «${query}» в OilBook не найдена`, candidates: best(query, all.shops, (s: any) => s.name, 5, 0.25).map(h => h.x.name) };
+  if (hits.length > 1 && hits[0].s < 1 && hits[0].s - hits[1].s < 0.15) return { error: 'Уточните, какая точка OilBook', candidates: hits.map(h => `${h.x.name} (@${h.x.username})`) };
+  return { shop: hits[0].x };
+}
+export function obSummaryText(s: any, brief = false) {
+  const c = s.counts || {}, out = [`🛢 OilBook${brief ? '' : ' на ' + obDate(s.date)}: за месяц ${obSum(s.month?.received)} (${n(s.month?.payments)} опл.)`
+    + `${s.today?.payments ? ` · сегодня ${obSum(s.today.received)}` : ''} · платят ${n(c.paying) + n(c.soon)} из ${n(c.all)}${c.trial ? ` · на пробном ${c.trial}` : ''}`];
+  if (s.pending_payments?.length) out.push('🧾 Чеки ждут подтверждения:\n' + lines(s.pending_payments, (p: any) => `• ${p.shop_name || 'точка #' + p.shop_id} — ${obSum(p.amount)}${p.months ? ` за ${p.months} мес.` : ''}`, 6));
+  if (s.pending_registrations?.length) out.push('📝 Новые заявки на регистрацию:\n' + lines(s.pending_registrations, (r: any) => `• ${r.shop_name}${r.city ? ', ' + r.city : ''}${r.phone ? ' · ' + r.phone : ''}`, 6));
+  if (s.expiring_7d?.length) out.push('⏳ Подписка кончается за 7 дней:\n' + lines(s.expiring_7d, (x: any) => `• ${x.name} — ${obDate(x.paid_until)}${obLeft(x)}`, 8));
+  if (s.overdue?.length) out.push('🔴 Не оплатили вовремя:\n' + lines(s.overdue, (x: any) => `• ${x.name} — ${x.status_ru}${x.paid_until ? ', срок был ' + obDate(x.paid_until) : ''}`, 8));
+  if (s.security_high_today) out.push(`🛡 Тревог безопасности сегодня: ${s.security_high_today} (OilBook → админка → Безопасность)`);
+  if (!brief && out.length === 1) out.push('Чеков, заявок и просрочек нет ✅');
+  return out.join('\n');
+}
+export async function oilbookBrief() {
+  if (!obOn()) return '';
+  const s = await ob('summary');
+  return s.ok === false ? '🛢 OilBook: ' + s.error : obSummaryText(s, true);
+}
+const OB_ACTS: Record<string, string> = {
+  extend: 'продлить подписку', set_until: 'оплачено до даты', active: 'включить / отключить точку', sms: 'SMS вкл/выкл', warehouse: 'склад вкл/выкл',
+  price: 'своя цена в месяц', message: 'написать владельцу в Telegram', payment: 'подтвердить / отклонить чек оплаты', registration: 'одобрить / отклонить заявку',
+};
+async function obDraft(ctx: any, a: any) {
+  if (!obOn()) return { error: OB_OFF };
+  const act = String(a.action || '').trim();
+  if (!OB_ACTS[act]) return { error: 'Такого действия в OilBook у меня нет. Могу', candidates: Object.values(OB_ACTS) };
+  if (act === 'payment' || act === 'registration') {
+    const s = await ob('summary'); if (s.ok === false) return s;
+    const isPay = act === 'payment', list: any[] = isPay ? s.pending_payments : s.pending_registrations;
+    const dec = a.decision === 'reject' ? 'reject' : isPay ? 'confirm' : 'approve';
+    const label = (x: any) => isPay ? `${x.shop_name} — ${obSum(x.amount)}` : `${x.shop_name}${x.city ? ', ' + x.city : ''}`;
+    if (!list.length) return { error: isPay ? 'Чеков на подтверждение в OilBook нет' : 'Новых заявок в OilBook нет' };
+    let pick = !a.shop && list.length === 1 ? list[0] : null;
+    if (!pick) {
+      if (!a.shop) return { error: isPay ? 'Какой чек? Ждут подтверждения' : 'Какую заявку? Новые', candidates: list.map(label) };
+      const h = best(a.shop, list, (x: any) => `${x.shop_name || ''} ${x.owner_name || ''} ${x.username || ''}`, 5, 0.5);
+      if (!h.length) return { error: `«${a.shop}» нет среди ${isPay ? 'чеков на подтверждение' : 'новых заявок'}`, candidates: list.map(label) };
+      if (h.length > 1 && h[0].s < 1 && h[0].s - h[1].s < 0.15) return { error: 'Уточните', candidates: h.map(x => label(x.x)) };
+      pick = h[0].x;
+    }
+    const text = isPay
+      ? `${dec === 'confirm' ? '✅ Подтвердить' : '✖ Отклонить'} оплату: ${obSum(pick.amount)}${pick.months ? ` за ${pick.months} мес.` : ''}${pick.has_receipt ? ' (чек в боте OilBook)' : ''}`
+      : `${dec === 'approve' ? '✅ Одобрить' : '✖ Отклонить'} заявку на регистрацию: ${pick.shop_name}${pick.owner_name ? ', ' + pick.owner_name : ''}${pick.city ? ', ' + pick.city : ''}${pick.phone ? ' · ' + pick.phone : ''}`;
+    const payload = isPay ? { action: act, payment_id: pick.id, decision: dec } : { action: act, request_id: pick.id, decision: dec };
+    const d = await draft(ctx, { kind: 'oilbook', target: pick.shop_name || 'OilBook', text, payload });
+    return { draft: d.id, action: act, shop: pick.shop_name };
+  }
+  const r = await obResolve(a.shop); if (!r.shop) return r;
+  const card = await ob('shop?id=' + r.shop.id); if (card.ok === false) return card;
+  const sh = card.shop, sub = card.sub || {}, on = a.on !== false && String(a.on) !== 'false';
+  const now = `Сейчас: ${sh.status_ru || sh.status}${sub.paid_until ? `, оплачено до ${obDate(sub.paid_until)}` : ''}`;
+  const payload: any = { action: act, shop_id: sh.id };
+  let text = '';
+  if (act === 'extend') {
+    const m = Math.round(n(a.months)), o = (card.options || []).find((x: any) => x.months === m);
+    if (!o) return { error: `На сколько продлить? Можно на ${(card.options || []).map((x: any) => x.months).join(', ')} мес.` };
+    text = `Продлить подписку на ${m} мес. — ${obSum(o.amount)}${o.discount ? ` (скидка ${o.discount}%)` : ''}.\n${now}`; payload.months = m;
+  } else if (act === 'set_until') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(a.date || ''))) return { error: 'До какого числа? Назовите дату' };
+    text = `Поставить «оплачено до ${obDate(a.date)}».\n${now}`; payload.date = a.date;
+  } else if (act === 'active') {
+    text = on ? 'Включить точку — вход и бот снова работают.' : '⛔ ОТКЛЮЧИТЬ точку — владелец и мастера не смогут войти.'; payload.on = on;
+  } else if (act === 'sms' || act === 'warehouse') {
+    text = `${on ? 'Включить' : 'Выключить'} ${act === 'sms' ? 'SMS-уведомления' : 'склад'}.`; payload.on = on;
+  } else if (act === 'price') {
+    const p = Math.round(n(a.price));
+    text = p ? `Своя цена подписки: ${obSum(p)} в месяц (по прайсу ${obSum(sub.monthly)}).` : `Убрать свою цену — будет по прайсу (${obSum(sub.monthly)} в месяц).`; payload.price = p || '';
+  } else if (act === 'message') {
+    const t = String(a.text || '').trim(); if (!t) return { error: 'Что написать владельцу точки?' };
+    if (!card.telegram_connected) return { error: `У ${sh.name} не подключён Telegram для уведомлений — написать через бота OilBook нельзя` };
+    text = `Сообщение владельцу в Telegram (через бота OilBook):\n\n${t}`; payload.text = t;
+  }
+  const d = await draft(ctx, { kind: 'oilbook', target: sh.name, text, payload });
+  return { draft: d.id, action: act, shop: sh.name };
+}
+
 // a part of the CRM's own summary (botsnap.js → workspaces/<owner>/bot.json.gz); without it the bot says so instead of guessing
 function snapPart(db: any, key: string): { error?: string; at?: string; data?: any } {
   const s = db.snap;
@@ -1395,6 +1518,48 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       MEM.delete(ctx.chatId);
       return rows?.length ? { deleted: rows[0].id, text: rows[0].text } : { error: `Записи #${n(a.id)} в памяти нет` };
     },
+  },
+  oilbook_summary: {
+    desc: 'OILBOOK — второй бизнес Саидбонура: платформа (сайт + Telegram-бот) для точек замены масла, он её владелец и админ. Сводка админки: доход платформы за месяц и сегодня, сколько точек платит, у кого кончается подписка, кто не оплатил, чеки на подтверждение, новые заявки. «Что в OilBook?», «ойлбук», «oilbook nima gap», «кто не оплатил подписку».',
+    params: {},
+    async run() { return await ob('summary'); },
+  },
+  oilbook_shops: {
+    desc: 'OILBOOK: список точек и их подписки. status: all | paying (оплачено) | soon (скоро кончается) | grace (просрочено) | blocked (заблокированы) | trial (пробный) | lifetime | off (отключены) | attention (требуют внимания). q — часть названия.',
+    params: { status: { type: 'string' }, q: { type: 'string' } },
+    async run(_db, a) {
+      const p = new URLSearchParams({ status: String(a.status || 'all'), limit: '300' }); if (a.q) p.set('q', String(a.q));
+      return await ob('shops?' + p);
+    },
+  },
+  oilbook_shop: {
+    desc: 'OILBOOK: карточка точки — подписка (до какого числа, сколько дней, цена в месяц, своя цена), филиалы, последние оплаты, включены ли SMS / склад, подключён ли Telegram, телефон. shop — название или логин, как услышал.',
+    params: { shop: { type: 'string' } },
+    async run(_db, a) { const r = await obResolve(a.shop); return r.shop ? await ob('shop?id=' + r.shop.id) : r; },
+  },
+  oilbook_payments: {
+    desc: 'OILBOOK: оплаты подписок (доход платформы) за период. from / to — YYYY-MM-DD; status: confirmed (по умолчанию) | pending (ждут подтверждения) | rejected | all; shop — фильтр по названию точки.',
+    params: { from: { type: 'string' }, to: { type: 'string' }, status: { type: 'string' }, shop: { type: 'string' } },
+    async run(_db, a) {
+      const p = new URLSearchParams({ status: String(a.status || 'confirmed'), limit: '300' });
+      for (const k of ['from', 'to']) if (/^\d{4}-\d{2}-\d{2}$/.test(String(a[k] || ''))) p.set(k, a[k]);
+      if (a.shop) p.set('q', String(a.shop));
+      const r = await ob('payments?' + p); if (r.ok !== false) Object.assign(r, { from: a.from, to: a.to, status: a.status || 'confirmed' });
+      return r;
+    },
+  },
+  oilbook_registrations: {
+    desc: 'OILBOOK: заявки на регистрацию новых точек — новые (ждут решения) и последние обработанные.',
+    params: {},
+    async run() { return await ob('registrations'); },
+  },
+  oilbook_action: {
+    desc: 'OILBOOK: ВЫПОЛНИТЬ ДЕЙСТВИЕ в админке. action: extend — продлить подписку на months (1 / 3 / 6 / 12) по прайсу; set_until — «оплачено до» date YYYY-MM-DD; active — on=true включить / on=false отключить точку; sms — SMS вкл/выкл (on); warehouse — склад вкл/выкл (on); price — своя цена подписки в месяц price (в сумах, 0 — убрать); message — написать владельцу точки в Telegram text (через бота OilBook, на языке, который просят); payment — чек оплаты: decision=confirm подтвердить / reject отклонить (shop — чья оплата); registration — заявка: decision=approve одобрить / reject отклонить (shop — название из заявки). Ничего не выполняется сразу: пользователь видит черновик и жмёт «✅ Выполнить». Несколько точек — отдельный вызов на каждую.',
+    params: {
+      action: { type: 'string' }, shop: { type: 'string' }, months: { type: 'number' }, date: { type: 'string', description: 'YYYY-MM-DD' },
+      on: { type: 'boolean' }, price: { type: 'number', description: 'сумов в месяц' }, text: { type: 'string' }, decision: { type: 'string' },
+    },
+    async run(_db, a, ctx) { return await obDraft(ctx, a); },
   },
   bot_help: {
     desc: 'Что умеет JUMAVOY: все возможности и команды. Вызывай на «что ты умеешь», «твои функции», «как тобой пользоваться», «помощь», «nima qila olasan», «imkoniyatlaring».',
@@ -2437,6 +2602,27 @@ const TPL: Record<string, (r: any) => string> = {
     lines(r.tasks, (t: any) => `• ${first(t.agent)}: ${t.title}${t.due ? ` (до ${dm(t.due)})` : ''} — ${t.state}${t.overdue ? ' ❗просрочено' : ''}${t.progress ? ` · ${t.progress}` : ''}${t.returned_comment ? ` · «${t.returned_comment}»` : ''}`, 30), `ℹ️ Данные CRM на ${r.crm_at}`].join('\n'),
   message_agent: () => '👆 Проверьте черновик и нажмите «✅ Отправить». Поправить — просто напишите, что изменить.',
   crm_task: () => '👆 Проверьте задание и нажмите «✅ Отправить». Поправить — просто напишите, что изменить.',
+  oilbook_action: () => '👆 Проверьте и нажмите «✅ Выполнить». Без нажатия в OilBook ничего не изменится.',
+  oilbook_summary: r => r.ok === false ? '⚠️ ' + r.error : obSummaryText(r),
+  oilbook_shops: r => r.ok === false ? '⚠️ ' + r.error : !r.shops.length ? '🛢 Таких точек в OilBook нет'
+    : `🛢 Точки OilBook: ${r.total}${r.sum_monthly ? ` · в месяц по подпискам ${obSum(r.sum_monthly)}` : ''}\n` + lines(r.shops, obShopLine, 40) + (r.shops.length > 40 ? `\n…и ещё ${r.shops.length - 40}` : ''),
+  oilbook_shop: r => {
+    if (r.ok === false) return '⚠️ ' + r.error;
+    const s = r.shop, sub = r.sub || {}, f = r.flags || {}, yn = (v: any) => (v ? 'вкл' : 'выкл');
+    return [`🛢 ${s.name}${s.username ? ` (@${s.username})` : ''}${s.is_active ? '' : ' · ⛔ отключена'}`,
+      `Подписка: ${s.status_ru}${sub.paid_until ? `, до ${obDate(sub.paid_until)}${obLeft({ days_left: sub.days_left })}` : ''} · ${obSum(sub.monthly)} в месяц${sub.custom_price ? ' (своя цена)' : ''}`,
+      sub.pending_payment ? `🧾 Ждёт подтверждения чек: ${obSum(sub.pending_payment.amount)}` : '',
+      `Филиалов: ${(r.branches || []).length} · SMS: ${yn(f.sms_enabled)} · склад: ${yn(f.warehouse_enabled)} · Telegram: ${r.telegram_connected ? 'подключён' : 'нет'}`,
+      s.phone ? `Телефон: ${s.phone}` : '',
+      r.payments?.length ? 'Последние оплаты:\n' + lines(r.payments, (p: any) => `• ${obDate(p.pay_day || p.created_at)} — ${obSum(p.amount)}${p.months ? ` (${p.months} мес.)` : ''}${p.status && p.status !== 'confirmed' ? ' · ' + p.status : ''}`, 6) : 'Оплат пока не было',
+    ].filter(Boolean).join('\n');
+  },
+  oilbook_payments: r => r.ok === false ? '⚠️ ' + r.error
+    : `🛢 Оплаты OilBook${r.from ? ` ${obDate(r.from)} — ${obDate(r.to || todayStr())}` : ''}: ${r.total} на ${obSum(r.sum)}\n`
+      + lines(r.payments, (p: any) => `• ${obDate(p.pay_day || p.created_at)} ${p.shop_name || ''} — ${obSum(p.amount)}${p.months ? ` (${p.months} мес.)` : ''}${p.method ? ', ' + p.method : ''}`, 30),
+  oilbook_registrations: r => r.ok === false ? '⚠️ ' + r.error : !r.pending.length ? '📝 Новых заявок на регистрацию в OilBook нет'
+    : `📝 Новые заявки OilBook: ${r.pending.length}\n` + lines(r.pending, (x: any) => `• ${x.shop_name}${x.owner_name ? ', ' + x.owner_name : ''}${x.city ? ', ' + x.city : ''}${x.phone ? ' · ' + x.phone : ''}`, 15)
+      + '\nОдобрить: «одобри заявку …»',
   crm_note: r => `📝 Записал в карточку ${r.client}${r.promise ? `: обещание ${r.sum ? $(r.sum) + ' ' : ''}на ${dm(r.promise)}` : ''}${r.text ? ` — «${r.text}»` : ''}. В CRM появится, когда она откроется.`,
   message_client: r => [`📨 Сообщение для ${r.client || r.phone} (${r.phone}):`, '', r.text, '', `👉 Открыть чат в Telegram: ${r.telegram}`, `👉 WhatsApp с готовым текстом: ${r.whatsapp}`,
     'ℹ️ В Telegram текст вставьте сами (скопируйте сообщение выше). Если ссылка Telegram не открывает чат — у клиента скрыт номер, тогда WhatsApp или звонок.'].join('\n'),
@@ -2514,7 +2700,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 История заказов и оплат в базе: с ${db.meta.orders_history_from} по ${db.meta.orders_history_to}. Данные LINKO обновлены: ${db.meta.linko_updated}.
 
 ПРАВИЛА:
-0. ИСТОЧНИК — ТОЛЬКО MitalCRM. Всё о работе (клиенты, агенты, заказы, оплаты, долги, склад, планы, зарплата, дисциплина, договоры, задания, пользователи, регионы) бери только из функций CRM: готовых или crm_explore / crm_query. Не бери это из интернета, новостей, писем, памяти разговора или своих знаний. Пользователь может попросить ЛЮБЫЕ данные платформы — найди и выдай их.
+0. ИСТОЧНИК — ТОЛЬКО MitalCRM. Всё о работе (клиенты, агенты, заказы, оплаты, долги, склад, планы, зарплата, дисциплина, договоры, задания, пользователи, регионы) бери только из функций CRM: готовых или crm_explore / crm_query. Не бери это из интернета, новостей, писем, памяти разговора или своих знаний. Пользователь может попросить ЛЮБЫЕ данные платформы — найди и выдай их. ИСКЛЮЧЕНИЕ — OILBOOK, второй бизнес Саидбонура (платформа для точек замены масла, он её владелец и админ): всё про OilBook, его точки, подписки, оплаты подписок, заявки — только функции oilbook_* (суммы там в сумах, не в $). Изменить что-то в OilBook (продлить, включить, отключить, подтвердить чек, одобрить заявку, написать точке) → oilbook_action: это черновик с кнопкой, выполнится после нажатия. Данных о клиентах, машинах и выручке точек OilBook у тебя нет и не будет — так обещано точкам; на такие вопросы так и отвечай.
 1. Любые цифры (суммы, долги, количество) бери ТОЛЬКО из ответов функций. Никогда не считай и не придумывай сам. Прежде чем сказать «таких данных нет», поищи через crm_explore и crm_query; если и там нет — так и скажи.
 2. Имена клиентов и агентов в базе на латинице; пользователь может назвать их по-русски, по-узбекски или с ошибкой — передавай как услышал, функция найдёт. Если функция вернула candidates — коротко перечисли варианты и спроси, кого он имел в виду.
 3. Переводи периоды в даты YYYY-MM-DD сам («за неделю» = последние 7 дней, «вчера», «за октябрь» = 2026-10-01…2026-10-31 и т.п.).
@@ -2734,7 +2920,7 @@ export function isLimitsQuestion(text: string) {
 async function command(text: string, chatId: number): Promise<string | null> {
   // «сколько осталось лимитов?» in plain words is answered without spending a request
   if (/^\/limits?\b/i.test(text) || isLimitsQuestion(text)) return limitsText();
-  const m = text.match(/^\/(today|dolg|agents|k|sklad|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
   const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
@@ -2742,6 +2928,7 @@ async function command(text: string, chatId: number): Promise<string | null> {
   // memory, reminders, the outside world, Google and skills need no CRM data
   if (cmd === 'weather') return run('weather', arg ? { city: arg, days: 3 } : { days: 1 });
   if (cmd === 'kurs') return run('currency_rates', arg ? { codes: arg } : {});
+  if (cmd === 'oil') return arg ? run('oilbook_shop', { shop: arg }) : run('oilbook_summary', {}); // OilBook: свой сервер, без данных CRM
   if (cmd === 'news') return run('news', arg ? { topic: arg, limit: 10 } : { limit: 10 });
   if (cmd === 'cal') return run('calendar_events', /^\d{4}-\d{2}-\d{2}$/.test(arg) ? { from: arg } : /завтра|ertaga/i.test(arg) ? { from: addDays(todayStr(), 1) } : /недел|hafta/i.test(arg) ? { from: todayStr(), to: addDays(todayStr(), 6) } : {});
   if (cmd === 'skills' || cmd === 'skill') return skillCommand(chatId, arg);
@@ -2852,6 +3039,8 @@ async function morningBrief(db: any, chatId: number, world?: World) {
   const fc = TOOLS.plan_forecast.run(db, {}, { chatId });
   const withPlan = fc.rows.filter((x: any) => x.plan);
   if (withPlan.length) out.push(`📈 План ${per({ period: `${P.from} — ${P.end}` })} (осталось ${fc.work_days_left} раб. дн.):\n` + lines(withPlan, (x: any) => `• ${first(x.agent)}: ${x.done_pct}% · прогноз ${x.forecast_pct}%${x.forecast_pct < 100 && x.need_per_day ? ` · нужно ${$(x.need_per_day)}/день` : ' ✅'}`, 10));
+  const oil = await oilbookBrief().catch(() => '');
+  if (oil) out.push(oil);
   const pers = await personalBrief(chatId);
   if (pers) out.push(pers);
   const gg = worldGoogle(w); if (gg) out.push(gg);
@@ -3301,6 +3490,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /plan — прогноз плана · /stop — перестали брать
 /k имя — карточка · /sleep — давно не брали
 /sklad — что заканчивается · /sklad товар — остатки
+/oil — сводка OilBook · /oil точка — карточка точки
 /memory — что я помню · /forget N — забыть
 /reminders — напоминания · /cancel N — отменить
 /tasks — задачи (канбан) · /task текст — новая задача
@@ -3314,7 +3504,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 Каждый день в ${CFG.hour('MORNING_HOUR', 8)}:00 присылаю план (с погодой, курсом и новостями; голосом, если не /voice off), в ${CFG.hour('EVENING_HOUR', 19)}:00 — итог дня.`;
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
-  ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'],
+  ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'], ['oil', 'OilBook: сводка / /oil точка'],
   ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
   ['weather', 'Погода: /weather город'], ['kurs', 'Курс ЦБ'], ['news', 'Новости: /news тема'], ['cal', 'Google Календарь: /cal завтра'], ['google', 'Подключить Google'], ['skills', 'Навыки'],
   ['voice', 'Голосовые ответы: авто / on / off'], ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
