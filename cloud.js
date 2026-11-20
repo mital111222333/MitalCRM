@@ -95,6 +95,53 @@ window.CLOUD = (() => {
   let lastSecrets = null;
   const verNow = async owner => { const { data } = await AUTH.sb.from('workspaces').select('version').eq('owner_id', owner).maybeSingle(); return data ? data.version : 0; };
 
+  // ---------- restore points: only the last 5 versions are kept and a busy day makes ~60 saves, so 5 versions cover an hour or two.
+  // Once a day the version from before the day's first save (= the end of the previous day) is copied to <owner>/daily/<day>.json.gz
+  // and kept 30 days. A save that drops many clients/tasks/uploads at once (a bug or a wrong action) also keeps the version before it.
+  const SNAP_KEEP_DAYS = 30, LS_SNAP = 'crm_snap_day';
+  const snapDir = owner => `${owner}/daily`;
+  const tashDay = (ms = Date.now()) => new Date(ms + 5 * 3600e3).toISOString().slice(0, 10); // Tashkent date
+  const bigDrop = (a, b) => !!a && !!b && ['clients', 'tasks', 'ag', 'wh'].some(k => (a[k] || 0) >= 10 && (b[k] || 0) < a[k] * 0.6);
+  async function snapshot(owner, cur, before, after) {
+    if (!cur) return;
+    const st = AUTH.sb.storage.from(WS.BUCKET), dir = snapDir(owner), day = tashDay();
+    if (bigDrop(before, after)) await st.copy(fileOf(owner, cur), `${dir}/${day}-drop-v${cur}.json.gz`).catch(() => {});
+    if (get(LS_SNAP) === day + owner) return;
+    const r = await st.copy(fileOf(owner, cur), `${dir}/${day}.json.gz`);
+    if (r.error && !/exist|duplicate|409/i.test(r.error.message || '')) return; // try again on the next save
+    set(LS_SNAP, day + owner);
+    const cutoff = tashDay(Date.now() - SNAP_KEEP_DAYS * 864e5);
+    const { data: list } = await st.list(dir, { limit: 500 });
+    const old = (list || []).map(f => f.name).filter(n => /^\d{4}-\d{2}-\d{2}/.test(n) && n.slice(0, 10) < cutoff);
+    if (old.length) await st.remove(old.map(n => `${dir}/${n}`)).catch(() => {});
+  }
+  async function listSnaps() {
+    const p = me(); if (!p || !sbOn()) throw new Error('Точки восстановления есть только у данных в базе MITAL');
+    const { data, error } = await AUTH.sb.storage.from(WS.BUCKET).list(snapDir(p.id), { limit: 500 });
+    if (error) throw sbErr(error, 'не удалось получить точки восстановления');
+    return (data || []).filter(f => /^\d{4}-\d{2}-\d{2}.*\.json\.gz$/.test(f.name))
+      .map(f => ({ name: f.name, day: f.name.slice(0, 10), drop: /-drop-/.test(f.name), pre: /-before-/.test(f.name), size: f.metadata?.size || 0 }))
+      .sort((a, b) => (a.name < b.name ? 1 : -1));
+  }
+  // the restored state becomes a new version (nothing is overwritten); the current version is kept as «<day>-before-restore»
+  async function restoreSnap(name) {
+    const p = me(); if (!p || !sbOn()) throw new Error('Войдите в свой аккаунт');
+    if (!/^[\w.-]+\.json\.gz$/.test(name)) throw new Error('Неверное имя точки');
+    const st = AUTH.sb.storage.from(WS.BUCKET);
+    const { data: blob, error } = await st.download(`${snapDir(p.id)}/${name}`);
+    if (error) throw sbErr(error, 'не удалось скачать точку восстановления');
+    const data = JSON.parse(await gunzip(new Uint8Array(await blob.arrayBuffer())));
+    if (data?.app !== 'mitalcrm' || !data.state) throw new Error('Файл точки повреждён');
+    const cur = await verNow(p.id);
+    if (cur) { const c = await st.copy(fileOf(p.id, cur), `${snapDir(p.id)}/${tashDay()}-before-restore-v${cur}.json.gz`); if (c.error && !/exist|duplicate|409/i.test(c.error.message || '')) throw sbErr(c.error, 'не удалось сохранить текущую версию перед восстановлением'); }
+    let secrets = {}; try { secrets = JSON.parse(lastSecrets || '{}'); } catch { /* none */ }
+    await CRMLocal.replaceFromCloud(joinSecrets(data.state, secrets));
+    set(LS.sha, 'sb' + cur); set(LS.dirty, '1'); set(LS.user, '1');
+    await sync({ force: true });
+    rerender();
+    return { savedAt: data.savedAt };
+  }
+
   // {missing:true} | {sha:'sb<version>', unchanged:true} | {sha, savedAt, device, state}
   async function pullSb({ fresh = false, owner = me()?.id } = {}) {
     const sb = AUTH.sb;
@@ -128,7 +175,7 @@ window.CLOUD = (() => {
     const { state, secrets } = splitSecrets(full);
     const bytes = await gzip(JSON.stringify({ app: 'mitalcrm', savedAt, device: device(), state }));
     if (bytes.length > 48e6) throw new Error('Данных стало слишком много (больше 48 МБ). Удалите старые загрузки в разделах «Загрузки».');
-    const { data: row, error } = await sb.from('workspaces').select('version').eq('owner_id', owner).maybeSingle();
+    const { data: row, error } = await sb.from('workspaces').select('version, summary').eq('owner_id', owner).maybeSingle();
     if (error) throw sbErr(error, 'не удалось проверить версию');
     const known = ver(get(LS.sha)), cur = row ? row.version : 0;
     if (!force && row && known !== cur) return { conflict: true }; // somebody saved a newer version meanwhile
@@ -161,7 +208,10 @@ window.CLOUD = (() => {
       if (e4) throw sbErr(e4, 'не удалось сохранить ключи');
       lastSecrets = sj;
     }
-    if (next > 5) sb.storage.from(WS.BUCKET).remove([fileOf(owner, next - 5)]).catch(() => {}); // keep the last 5 versions
+    // the restore points are copied before the oldest version is removed; they never block or fail the save
+    snapshot(owner, cur, row?.summary, s).catch(() => {}).finally(() => {
+      if (next > 5) sb.storage.from(WS.BUCKET).remove([fileOf(owner, next - 5)]).catch(() => {}); // keep the last 5 versions
+    });
     set(LS.sha, 'sb' + next); set(LS.dirty, null); set(LS.user, null); set(LS.at, savedAt);
     window.BOTSNAP?.soon(); // the summary for the Mital AI bot (botsnap.js) follows every save
     return { ok: true, size: bytes.length };
@@ -369,7 +419,7 @@ window.CLOUD = (() => {
   })();
 
   return {
-    on: () => !!store(), store, foreign, moveToDb, checkDb, wsOwner: () => get(WS.owner),
+    on: () => !!store(), store, foreign, moveToDb, checkDb, listSnaps, restoreSnap, wsOwner: () => get(WS.owner),
     // «this device is now mine»: the other account's data is removed from this browser (it stays in the database) and the
     // signed-in person's own data is loaded from the database. Refused while the other account has unsent changes here.
     async takeDevice() {
@@ -621,7 +671,8 @@ function loadCss(href) {
       : st === 'sb'
         ? `<p style="margin-top:0">✓ Ваши данные хранятся в <b>базе MITAL</b>: на любом устройстве войдите своим логином — данные откроются сами.
            Ключи (Telegram-бот, ИИ, LINKO) лежат отдельно, их видите только вы.</p>
-           <div class="bar"><button class="btn gray" id="dbCheck">Проверить, что всё совпадает</button></div><div id="dbRes" role="status"></div>`
+           <div class="bar"><button class="btn gray" id="dbCheck">Проверить, что всё совпадает</button>
+           <button class="btn gray" id="dbSnaps">Точки восстановления</button></div><div id="dbRes" role="status"></div>`
         : `<p style="margin-top:0">Сейчас данные хранятся ${CLOUD.cfg() ? 'в файле на GitHub' : 'только в этом браузере'}. Перенесите их в <b>базу MITAL</b> —
            тогда на других устройствах будет достаточно войти своим логином, без ключей и ссылок, а РОП увидит вашу CRM.</p>
            <p class="mut">Сначала сделайте резервную копию (Настройки → Резервная копия). Копия на GitHub остаётся как запасная, её никто не удаляет.</p>
@@ -637,6 +688,26 @@ function loadCss(href) {
       run(e.target, async () => { const r = await CLOUD.moveToDb(); setTimeout(() => EXT_PAGES.cloud(el).then(() => { const x = $('#dbRes', el); if (x) x.innerHTML = rows(r); }), 0); return r; });
     });
     $('#dbCheck', box)?.addEventListener('click', e => run(e.target, () => CLOUD.checkDb()));
+    // restore points: one per day for 30 days, plus copies made before a big drop of data and before each restore
+    $('#dbSnaps', box)?.addEventListener('click', async e => {
+      const btn = e.target; btn.disabled = true; res.innerHTML = '<p class="mut">Загружаю список…</p>';
+      try {
+        const list = await CLOUD.listSnaps();
+        const kind = s => (s.drop ? 'перед резким уменьшением данных' : s.pre ? 'перед восстановлением' : 'конец предыдущего дня');
+        res.innerHTML = list.length
+          ? `<p class="mut" style="margin-top:0">Каждый день сохраняется копия на конец предыдущего дня, хранится 30 дней. Восстановление создаёт новую версию, текущая тоже сохраняется как точка.</p>
+             <div class="tscroll"><table><thead><tr><th>День</th><th>Что это</th><th class="n">Размер</th><th></th></tr></thead><tbody>
+             ${list.map(s => `<tr><td>${esc(s.day.split('-').reverse().join('.'))}</td><td>${kind(s)}</td><td class="n">${UI.fmt0(Math.round(s.size / 1024))} КБ</td>
+               <td><button class="btn gray sm" data-snap="${esc(s.name)}">Восстановить</button></td></tr>`).join('')}</tbody></table></div>`
+          : '<p class="mut">Точек пока нет. Первая появится при первом сохранении завтра.</p>';
+        res.querySelectorAll('[data-snap]').forEach(b => b.addEventListener('click', async () => {
+          const name = b.dataset.snap;
+          if (!confirm(`Вернуть все данные CRM к точке «${name.slice(0, 10).split('-').reverse().join('.')}»? Изменения после неё пропадут из рабочей версии, но текущая версия сохранится как точка восстановления.`)) return;
+          b.disabled = true;
+          try { await CLOUD.restoreSnap(name); toast('Данные восстановлены'); } catch (er) { toast(er.message || String(er)); b.disabled = false; }
+        }));
+      } catch (er) { res.innerHTML = `<p class="neg">${esc(er.message || er)}</p>`; } finally { btn.disabled = false; }
+    });
     $('#dbClear', box)?.addEventListener('click', async () => {
       if (!confirm('Удалить с этого устройства данные другого аккаунта и загрузить ваши из базы? В базе его данные останутся.')) return;
       try { await CLOUD.takeDevice(); } catch (e) { return toast(e.message || String(e)); }
