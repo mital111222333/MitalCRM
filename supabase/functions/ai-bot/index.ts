@@ -3006,6 +3006,53 @@ export function pcmToWav(pcm: Uint8Array, rate: number) {
   h.setUint32(24, rate, true); h.setUint32(28, rate * 2, true); h.setUint16(32, 2, true); h.setUint16(34, 16, true); w(36, 'data'); h.setUint32(40, pcm.length, true);
   const out = new Uint8Array(44 + pcm.length); out.set(new Uint8Array(h.buffer)); out.set(pcm, 44); return out;
 }
+// ── a REAL Telegram voice message (round play button, waveform, speed ×1.5/×2): OGG with Opus inside ──
+// libopus compiled to WebAssembly (npm @evan/wasm, the Deno build carries the WASM inside — no extra files), loaded only when
+// a voice answer is needed. Measured on 40 s of speech: ~0.3 s of CPU (complexity 2), MP3 in plain JS took 0.8–2 s.
+// A CPU guard stops the encoder after VOICE_BUDGET_MS (900) and the old WAV is sent instead, so the ~2 s limit is never hit.
+let OPUS_LIB: Promise<any> | null = null;
+const opusLib = () => OPUS_LIB ??= import('npm:@evan/wasm@0.0.95/target/opus/deno.js').catch(e => { OPUS_LIB = null; throw e; });
+const OGG_TABLE = (() => { const t = new Uint32Array(256); for (let i = 0; i < 256; i++) { let r = i << 24; for (let k = 0; k < 8; k++) r = r & 0x80000000 ? (r << 1) ^ 0x04c11db7 : r << 1; t[i] = r >>> 0; } return t; })();
+export function oggCrc(b: Uint8Array) { let c = 0; for (let i = 0; i < b.length; i++) c = ((c << 8) ^ OGG_TABLE[((c >>> 24) ^ b[i]) & 0xff]) >>> 0; return c; }
+const cat = (list: Uint8Array[]) => { const out = new Uint8Array(list.reduce((s, x) => s + x.length, 0)); let p = 0; for (const x of list) { out.set(x, p); p += x.length; } return out; };
+// one Ogg page: «OggS», flags (2 = first page, 4 = last), granule = 48 kHz samples played by the end of the page, CRC over the page
+function oggPage(packets: Uint8Array[], granule: number, seq: number, flags: number, serial: number) {
+  const lacing: number[] = [];
+  for (const p of packets) { let l = p.length; while (l >= 255) { lacing.push(255); l -= 255; } lacing.push(l); }
+  const h = new Uint8Array(27 + lacing.length), dv = new DataView(h.buffer);
+  h.set([0x4f, 0x67, 0x67, 0x53]); h[4] = 0; h[5] = flags;
+  dv.setUint32(6, granule % 0x100000000, true); dv.setUint32(10, Math.floor(granule / 0x100000000), true);
+  dv.setUint32(14, serial, true); dv.setUint32(18, seq, true); h[26] = lacing.length; h.set(lacing, 27);
+  const page = cat([h, ...packets]); new DataView(page.buffer).setUint32(22, oggCrc(page), true);
+  return page;
+}
+// 16-bit mono PCM (what Gemini TTS returns, 24 kHz) → OGG/Opus bytes for sendVoice
+export async function pcmToOpus(pcm: Uint8Array, rate: number, budgetMs = n(env('VOICE_BUDGET_MS')) || 900) {
+  if (![8000, 12000, 16000, 24000, 48000].includes(rate)) throw new Error('Opus: частота ' + rate + ' не поддерживается');
+  const O = await opusLib(), t0 = performance.now();
+  const enc = new O.Encoder({ channels: 1, sample_rate: rate, application: 'voip' });
+  enc.bitrate = 24000; enc.complexity = 2; enc.signal = 'voice';
+  const frame = rate / 50 * 2, k48 = 48000 / rate, samples = Math.floor(pcm.length / 2);
+  const pre = Math.round((n(enc.lookahead) || rate / 160) * k48), serial = 0x4a554d56; // «JUMV»
+  const packets: Uint8Array[] = [];
+  for (let o = 0; o < samples * 2; o += frame) {
+    let f = pcm.subarray(o, o + frame);
+    if (f.length < frame) { const pad = new Uint8Array(frame); pad.set(f); f = pad; } // the last frame is filled with silence
+    packets.push(new Uint8Array(enc.encode(f)));
+    if (packets.length % 25 === 0 && performance.now() - t0 > budgetMs) throw new Error(`Opus: дольше ${budgetMs} мс — отправляю WAV`);
+  }
+  const head = new Uint8Array(19), hv = new DataView(head.buffer);
+  head.set(new TextEncoder().encode('OpusHead')); head[8] = 1; head[9] = 1; hv.setUint16(10, pre, true); hv.setUint32(12, rate, true); hv.setInt16(16, 0, true); head[18] = 0;
+  const vendor = new TextEncoder().encode(CFG.name), tags = new Uint8Array(8 + 4 + vendor.length + 4), tv = new DataView(tags.buffer);
+  tags.set(new TextEncoder().encode('OpusTags')); tv.setUint32(8, vendor.length, true); tags.set(vendor, 12); tv.setUint32(12 + vendor.length, 0, true);
+  const pages = [oggPage([head], 0, 0, 2, serial), oggPage([tags], 0, 1, 0, serial)], end = pre + samples * k48;
+  for (let i = 0, seq = 2; i < packets.length; seq++) {
+    const group: Uint8Array[] = []; let lace = 0;
+    while (i < packets.length && group.length < 50 && lace + Math.floor(packets[i].length / 255) + 1 <= 255) { lace += Math.floor(packets[i].length / 255) + 1; group.push(packets[i++]); }
+    pages.push(oggPage(group, i >= packets.length ? end : pre + i * 960, seq, i >= packets.length ? 4 : 0, serial));
+  }
+  return { ogg: cat(pages), seconds: samples / rate, packets: packets.length, ms: Math.round(performance.now() - t0) };
+}
 const unb64 = (s: string): Uint8Array => {
   const F = (Uint8Array as any).fromBase64; if (typeof F === 'function') { try { return F(s); } catch { /* padding or alphabet issue → the loop below */ } }
   const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out;
@@ -3033,6 +3080,18 @@ async function sayVoice(chatId: number, text: string) {
   try {
     await tg('sendChatAction', { chat_id: chatId, action: 'record_voice' });
     const { pcm, rate } = await tts(s);
+    // a real voice message (OGG/Opus → sendVoice). Any trouble — the encoder did not load, took too long, Telegram refused
+    // (e.g. the user allows voice messages only from contacts) — and the same speech goes as WAV below. VOICE_FORMAT=wav forces WAV.
+    if (env('VOICE_FORMAT') !== 'wav') {
+      try {
+        const v = await pcmToOpus(pcm, rate);
+        const fv = new FormData(); fv.append('chat_id', String(chatId)); fv.append('duration', String(Math.max(1, Math.round(v.seconds))));
+        fv.append('voice', new File([v.ogg], 'jumavoy.ogg', { type: 'audio/ogg' }));
+        const rv = await fetchT(`https://api.telegram.org/bot${CFG.tg()}/sendVoice`, { method: 'POST', body: fv }, 30000);
+        if (rv.ok) { console.log('voice: opus', v.seconds.toFixed(1), 's,', v.ogg.length, 'bytes,', v.ms, 'ms'); return; }
+        console.warn('voice: Telegram refused the voice message, sending WAV:', (await rv.text()).slice(0, 200));
+      } catch (e) { console.warn('voice: opus failed, sending WAV:', (e as Error).message); }
+    }
     // WAV as an audio message: no encoding at all. MP3 in JavaScript took 1–2 s of CPU for 40 s of speech and
     // Supabase stops a function after ~2 s of CPU («CPU Time exceeded») — the voice never arrived.
     const fd = new FormData(); fd.append('chat_id', String(chatId));

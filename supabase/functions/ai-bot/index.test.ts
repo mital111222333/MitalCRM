@@ -569,8 +569,49 @@ D.test('voice file: WAV built without heavy CPU (Supabase stops a function after
   const wav = M.pcmToWav(pcm, 24000), ms = performance.now() - t;
   eq([wav.length, new DataView(wav.buffer).getUint32(24, true)], [pcm.length + 44, 24000], 'size and sample rate in the header');
   assert(ms < 200, 'fast: ' + Math.round(ms) + ' ms');
-  const last = SENT.filter(s => s.method === 'sendAudio').at(-1)!;
-  assert(last && last.body.performer === 'JUMAVOY' && Number(last.body.duration) >= 0, 'sent as an audio message with the bot name');
+  // the answers above went as REAL voice messages (OGG/Opus)
+  const v = SENT.filter(s => s.method === 'sendVoice').at(-1)!;
+  assert(v && v.body.voice && Number(v.body.duration) >= 1, 'sent as a voice message: ' + JSON.stringify(v?.body).slice(0, 120));
+});
+
+D.test('voice message: OGG/Opus pages are valid, decode back to the same length, CPU inside the budget; WAV fallback', async () => {
+  const rate = 24000, secs = 40, pcm = new Uint8Array(rate * secs * 2), dv0 = new DataView(pcm.buffer);
+  for (let i = 0; i < rate * secs; i++) dv0.setInt16(2 * i, Math.round(7000 * Math.sin(i / rate * 2 * Math.PI * (170 + 50 * Math.sin(i / rate * 3))) * (0.6 + 0.4 * Math.sin(i / rate * 5))), true);
+  const r = await M.pcmToOpus(pcm, rate);
+  assert(r.ms < 900, `40 s of speech encoded in ${r.ms} ms (budget 900)`);
+  eq(r.packets, secs * 50, '20 ms frames');
+  // walk every page: capture pattern, CRC, flags, sequence, granule
+  const b = r.ogg, dv = new DataView(b.buffer, b.byteOffset, b.byteLength), packets: Uint8Array[] = [];
+  let p = 0, seq = 0, flagsFirst = -1, flagsLast = -1, lastGranule = 0;
+  while (p < b.length) {
+    assert(new TextDecoder().decode(b.subarray(p, p + 4)) === 'OggS', 'capture pattern at ' + p);
+    const nseg = b[p + 26], lace = b.subarray(p + 27, p + 27 + nseg), size = 27 + nseg + lace.reduce((s: number, x: number) => s + x, 0);
+    const page = b.slice(p, p + size), want = new DataView(page.buffer).getUint32(22, true); new DataView(page.buffer).setUint32(22, 0, true);
+    eq(M.oggCrc(page), want, 'page CRC ' + seq); eq(dv.getUint32(p + 18, true), seq, 'page sequence');
+    if (seq === 0) flagsFirst = b[p + 5]; flagsLast = b[p + 5]; lastGranule = dv.getUint32(p + 6, true);
+    let q = p + 27 + nseg, cur: number[] = [];
+    for (const l of lace) { cur.push(...b.subarray(q, q + l)); q += l; if (l < 255) { packets.push(new Uint8Array(cur)); cur = []; } }
+    p += size; seq++;
+  }
+  eq([flagsFirst, flagsLast], [2, 4], 'first page BOS, last page EOS');
+  const head = packets[0], hv = new DataView(head.buffer);
+  eq([new TextDecoder().decode(head.subarray(0, 8)), head[8], head[9], hv.getUint32(12, true)], ['OpusHead', 1, 1, rate], 'OpusHead: version 1, mono, 24 kHz');
+  eq(new TextDecoder().decode(packets[1].subarray(0, 8)), 'OpusTags', 'OpusTags');
+  eq(lastGranule, hv.getUint16(10, true) + rate * secs * 2, 'final granule = pre-skip + 48 kHz samples');
+  // the real libopus decoder reads every packet back
+  const O: any = await import('npm:@evan/wasm@0.0.95/target/opus/deno.js');
+  const dec = new O.Decoder({ channels: 1, sample_rate: rate });
+  const out = packets.slice(2).reduce((s, x) => s + dec.decode(x).length, 0);
+  eq(out, rate * secs * 2, 'decoded back to 40 s of 24 kHz PCM');
+  // too slow (budget) → an error, and sayVoice sends WAV instead
+  let slow = ''; try { await M.pcmToOpus(pcm, rate, -1); } catch (e) { slow = (e as Error).message; }
+  assert(/WAV/.test(slow), 'over budget → error: ' + slow);
+  D.env.set('VOICE_FORMAT', 'wav'); SENT.length = 0;
+  GEM = b2 => b2.generationConfig?.responseModalities ? { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: btoa(String.fromCharCode(...pcm.subarray(0, 4000))) } }] } }] } : say('Привет');
+  await tgPost({ text: 'ответь голосом: привет' });
+  D.env.delete('VOICE_FORMAT');
+  const a = SENT.find(s => s.method === 'sendAudio');
+  assert(a && a.body.performer === 'JUMAVOY' && !SENT.some(s => s.method === 'sendVoice'), 'VOICE_FORMAT=wav → WAV as an audio message');
 });
 
 D.test('actions: draft → «Отправить» → the CRM bot writes the agent; double tap, cancel, task, note, client link', async () => {

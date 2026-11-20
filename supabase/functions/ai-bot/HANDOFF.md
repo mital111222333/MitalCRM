@@ -162,4 +162,7 @@ Mital AI — уже не только рабочий бот: сферы work / p
 - Канбан (`ai_tasks`, `tasks.html`, начат 19.11): Mini App шлёт подпись Telegram только на `*.supabase.co`; контраст цветов доски. Тесты на задачи и подпись initData.
 - Тесты 22/22, `deno check`, `deno lint` чисто.
 Миграция `20261119000006_ai_tasks.sql` применена 20.11 (RLS, доступ у anon/authenticated отозван), изменения запушены в main.
-**Осталось владельцу:** деплой функции, `?setup=` (новые команды /tasks, /task в меню). Проверить в AI Studio, что `gemini-2.5-flash-lite` доступна ключу.
+**Осталось владельцу:** деплой функции, `?setup=` (новые команды /tasks, /task в меню).
+
+## 5з. 20.11.2026: настоящее голосовое (OGG/Opus)
+`sayVoice` шлёт `sendVoice` с OGG/Opus (кружок с волной, ×1.5/×2), а не WAV-файл. Кодировщик — libopus в WASM (`npm:@evan/wasm@0.0.95/target/opus/deno.js`, WASM внутри файла), грузится динамически только при озвучке. Свой OGG-муксер (`pcmToOpus`, `oggPage`, `oggCrc`): OpusHead/OpusTags, страницы ≤ 50 пакетов, granule 48 кГц, CRC Ogg. Настройки: 24 кбит/с, complexity 2, кадры 20 мс — на ПК ~0,3 с CPU на 40 с речи. Предохранитель `VOICE_BUDGET_MS` (900): дольше — бросаем и шлём WAV. Любая ошибка (не загрузился модуль, Telegram отказал — например, у пользователя голосовые только от контактов) → WAV через `sendAudio`. `VOICE_FORMAT=wav` — всегда WAV. Проверено: тест разбирает все страницы и CRC, libopus-декодер читает все пакеты (ровно 40 с), Chrome `decodeAudioData` декодирует файл. Тесты 23/23. В логах функции после ответа: `voice: opus … ms` — так видно реальное CPU в Supabase. Проверить в AI Studio, что `gemini-2.5-flash-lite` доступна ключу.
