@@ -572,6 +572,116 @@
     };
   }
 
+  // ---------- a window over the page (contract picture, client card): ✕, a tap outside, Esc or Telegram's «Назад» close it ----------
+  function sheet(html, onClose) {
+    const bg = document.createElement('div'); bg.className = 'modal-bg me-sheet';
+    bg.innerHTML = `<div class="modal wide" role="dialog" aria-modal="true"><button class="btn gray sm me-x" type="button" aria-label="Закрыть">✕</button>${html}</div>`;
+    document.body.appendChild(bg); document.body.style.overflow = 'hidden';
+    const close = () => { bg.remove(); if (!document.querySelector('.me-sheet')) document.body.style.overflow = ''; try { if (!document.querySelector('.me-sheet')) TGA?.BackButton?.hide(); TGA?.BackButton?.offClick(close); } catch { /* old Telegram */ } onClose?.(); };
+    bg.addEventListener('click', e => { if (e.target === bg || e.target.closest('.me-x')) close(); });
+    try { TGA?.BackButton?.show(); TGA?.BackButton?.onClick(close); } catch { /* old Telegram */ }
+    return { el: bg.firstElementChild, close };
+  }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { const l = [...document.querySelectorAll('.me-sheet')].pop(); l?.querySelector('.me-x')?.click(); } });
+
+  // ---------- the contract as a picture: the same document the supervisor opens in the CRM (drawn there, shown here as is) ----------
+  const DOC_W = 718; // 190 mm
+  async function docPng(el) {
+    const w = Math.ceil(el.offsetWidth), h = Math.ceil(el.offsetHeight), k = 2.5;
+    const xml = new XMLSerializer().serializeToString(el.cloneNode(true));
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(w * k)}" height="${Math.round(h * k)}"><foreignObject x="0" y="0" width="${w}" height="${h}" transform="scale(${k})"><div xmlns="http://www.w3.org/1999/xhtml"><style>${S.contracts?.css || ''}</style>${xml}</div></foreignObject></svg>`;
+    const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('телефон не смог нарисовать картинку')); });
+    const cv = document.createElement('canvas'); cv.width = Math.round(w * k); cv.height = Math.round(h * k);
+    const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height); g.drawImage(img, 0, 0);
+    const blob = await new Promise(ok => cv.toBlob(ok, 'image/png')); if (!blob) throw new Error('картинка не получилась'); return blob;
+  }
+  function openDoc(key) {
+    const K = S.contracts || {}, html = K.docs?.[key]; if (!html) return;
+    const o = key[0] === 'o' ? (K.once || []).find(x => 'o' + x.id === key) : null, ct = key[0] === 'k' ? (K.long || []).find(x => 'k' + x.id === key) : null;
+    const title = o ? `🧾 Договор №${esc(o.id)} · ${esc(o.client)}` : `📑 ${esc(ct?.title || 'Договор')}`, file = (o ? 'Договор-' + o.id : 'Шартнома-' + (ct?.id || '')) + '.png';
+    const canShare = !!(navigator.canShare && navigator.share);
+    const m = sheet(`<h3 style="margin:0 36px 8px 0">${title}</h3>
+      <div class="bar" style="flex-wrap:wrap;gap:6px;margin-bottom:8px">${canShare ? '<button class="btn sm" type="button" data-dsh>📤 Отправить картинкой</button>' : ''}<button class="btn gray sm" type="button" data-dpng>🖼 Сохранить картинку</button><button class="btn gray sm" type="button" data-dzoom>🔍 Крупнее</button>${o || ct ? `<button class="btn gray sm" type="button" data-cl="${esc((o || ct).client)}">👤 Карточка клиента</button>` : ''}</div>
+      <style>${K.css || ''}</style><div class="me-doc"><div class="me-doc-in">${html}</div></div><small class="mut" data-dmsg></small>`);
+    const box = m.el.querySelector('.me-doc'), inn = m.el.querySelector('.me-doc-in'), doc = inn.firstElementChild;
+    let big = false;
+    const fit = () => { const k = big ? 1 : Math.min(1, (box.clientWidth || DOC_W) / DOC_W), h = doc.offsetHeight; inn.style.transform = `scale(${k})`; inn.style.width = DOC_W + 'px'; box.style.height = Math.ceil(h * k) + 'px'; box.style.overflowX = big ? 'auto' : 'hidden'; };
+    fit(); setTimeout(fit, 60); addEventListener('resize', fit);
+    const off = new MutationObserver(() => { if (!m.el.isConnected) { removeEventListener('resize', fit); off.disconnect(); } }); off.observe(document.body, { childList: true });
+    m.el.querySelector('[data-dzoom]').onclick = e => { big = !big; e.target.textContent = big ? '🔍 По ширине экрана' : '🔍 Крупнее'; fit(); };
+    const say = t => { m.el.querySelector('[data-dmsg]').textContent = t; };
+    const blob = async () => { try { return await docPng(doc); } catch (e) { say('Не получилось сделать картинку: ' + (e.message || e)); return null; } };
+    m.el.querySelector('[data-dpng]').onclick = async () => { const b = await blob(); if (!b) return; const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = file; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 20000); say('Картинка сохранена'); };
+    const sh = m.el.querySelector('[data-dsh]'); if (sh) sh.onclick = async () => { const b = await blob(); if (!b) return; const f = new File([b], file, { type: 'image/png' }); try { if (navigator.canShare({ files: [f] })) await navigator.share({ files: [f], title: file.replace('.png', '') }); else say('Этот телефон не умеет отправлять файлы — сохраните картинку'); } catch (e) { if (e.name !== 'AbortError') say('Не получилось отправить: ' + (e.message || e)); } };
+  }
+
+  // ---------- the client card (tap a client's name): as the supervisor's card, only for the agent's own clients ----------
+  let cardTab = 'ord', cardFrom = '', cardTo = '';
+  function openCard(name) {
+    const c = S.clients.find(x => x.name === name); if (!c) return;
+    const C = S.cards?.[name], K = S.contracts || {};
+    if (!cardFrom || cardFrom < (S.period?.from || '')) cardFrom = S.period?.from || ''; if (!cardTo) cardTo = S.period?.to || '';
+    const m = sheet(`<div data-cbody></div>`);
+    const ST = { paid: ['pos', '✓ оплачен'], late: ['neg', 'просрочен'], today: ['warn', 'срок сегодня'], wait: ['', 'ждём'] };
+    const PST = { paid: ['pos', ' ✓'], late: ['neg', ' · просрочено'], today: ['warn', ' · сегодня'], wait: ['', ''] };
+    const inR = d => (!cardFrom || d >= cardFrom) && (!cardTo || d <= cardTo);
+    const draw1 = () => {
+      const docs = K.docs || {}, ctOf = (K.long || []).filter(k => k.client === name && docs['k' + k.id]);
+      const tabs = [['ord', '📦 Заказы'], ['pay', '💵 Оплаты'], ['days', '📈 По дням'], ['buy', '🛒 Покупки']];
+      let inner = '';
+      if (!C) inner = '<p class="mut">Заказы, оплаты и покупки клиента появятся после следующего обновления кабинета руководителем.</p>';
+      else if (cardTab === 'ord') {
+        const open = C.ord.filter(o => o.st !== 'paid'), paid = C.ord.filter(o => o.st === 'paid' && inR(o.d)), late = open.reduce((t, o) => t + o.parts.filter(p => p.st === 'late').reduce((a, p) => a + p.u, 0), 0);
+        const nx = open.flatMap(o => o.parts.filter(p => p.st === 'today' || p.st === 'wait')).sort((a, b) => a.d.localeCompare(b.d))[0];
+        const one = o => `<div class="ccard"${docs['o' + o.id] ? ` data-doc="o${esc(o.id)}" role="button" tabindex="0" style="cursor:pointer"` : ''}><div class="top"><b>№${esc(o.id)} от ${dm(o.d)}</b><span class="amt">${$$(o.s)}</span></div>
+          <div class="meta"><span class="${ST[o.st]?.[0] || ''}">${ST[o.st]?.[1] || ''}${o.st === 'late' && o.ld ? ` ${o.ld} дн.` : ''}</span>${o.paid > 0.005 ? `<span>оплачено ${$$(o.paid)}</span>` : ''}${o.left > 0.005 ? `<span class="${o.st === 'late' ? 'neg' : ''}"><b>осталось ${$$(o.left)}</b></span>` : ''}${o.spec ? '<span class="pill warn">спец</span>' : ''}${docs['o' + o.id] ? '<span>📄 договор — нажмите</span>' : ''}</div>
+          ${o.cond ? `<div class="mut" style="font-size:13px;margin-top:4px">${esc(o.cond)}</div>` : ''}
+          <div class="meta" style="margin-top:6px">${o.parts.map(p => `<span class="${PST[p.st]?.[0] || ''}" style="white-space:nowrap">${dm(p.d)} ${$$(p.s)}${p.u > 0.005 && p.u < p.s - 0.005 ? ` (ещё ${$$(p.u)})` : ''}${PST[p.st]?.[1] || ''}</span>`).join('')}</div>
+          <div class="mut" style="font-size:12px;margin-top:4px">${o.src === 'agreed' ? '🤝 срок по договорённости' : 'стандартный график'}</div></div>`;
+        inner = `<div class="kpis">${tile('Просрочено', $$(late), late > 0.005 ? '' : 'просрочек нет', late > 0.005 ? 'bad' : 'good')}${tile('Ближайший срок', nx ? dm(nx.d) : '—', nx ? `${$$(nx.u)} по заказу` : 'нет ближайших')}${C.old > 0.5 ? tile('Долг прошлых периодов', $$(C.old), 'старые заказы, срок неизвестен', 'bad') : ''}</div>
+          ${ctOf.length ? `<div class="bar" style="margin:8px 0">${ctOf.map(k => `<button class="btn gray sm" type="button" data-doc="k${esc(k.id)}">📑 ${esc(k.title)}</button>`).join('')}</div>` : ''}
+          ${open.length ? `<h4 class="ch">Не оплачены (${open.length})</h4><div class="cards">${open.map(one).join('')}</div>` : '<p class="pos"><b>✓ Все заказы оплачены</b></p>'}
+          ${paid.length ? `<h4 class="ch">Оплачены за выбранные дни (${paid.length})</h4><div class="cards">${paid.map(one).join('')}</div>` : ''}
+          <p class="mut" style="font-size:12px">Что оплачено — считается от долга: оплаты закрывают самые старые заказы.</p>`;
+      } else if (cardTab === 'pay') {
+        const P = C.pay.filter(p => inR(p.d)), tot = P.reduce((t, p) => t + p.s, 0);
+        inner = `<p>Оплачено за выбранные дни: <b class="pos">${$$(tot)}</b> · ${P.length} оплат</p>${P.length ? `<div class="tscroll"><table><thead><tr><th>Дата</th><th>Время</th><th class="n">Сумма</th><th>Как</th><th>Принял</th></tr></thead><tbody>${P.map(p => `<tr><td>${dRu(p.d)}</td><td>${esc(p.t)}</td><td class="n"><b class="pos">${$$(p.s)}</b></td><td>${esc(p.how || '—')}</td><td>${esc(p.by)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">Оплат в эти дни нет.</p>'}`;
+      } else if (cardTab === 'days') {
+        const D = C.days.filter(p => inR(p.d)).slice().reverse();
+        inner = D.length ? `<div class="tscroll"><table><thead><tr><th>День</th><th class="n">Купил</th><th class="n">Оплатил</th><th class="n">Долг на конец дня</th></tr></thead><tbody>${D.map(p => `<tr><td>${dRu(p.d)}${p.f ? ' <small class="mut">(с начала периода)</small>' : ''}</td><td class="n">${Math.abs(p.ds) > 0.005 ? $$(p.ds) : '—'}</td><td class="n">${Math.abs(p.dp) > 0.005 ? `<b class="pos">${$$(p.dp)}</b>` : '—'}</td><td class="n ${p.b <= -0.5 ? 'neg' : ''}">${Math.abs(p.b) < 0.005 ? '0' : $$(p.b)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">В эти дни данных нет.</p>';
+      } else {
+        const B = C.buy.filter(l => inR(l.d)), paidL = B.filter(l => !l.g), tot = paidL.reduce((t, l) => t + l.s, 0);
+        const byP = new Map(); for (const l of paidL) { const x = byP.get(l.p) || { q: 0, s: 0 }; x.q += l.q; x.s += l.s; byP.set(l.p, x); }
+        const brands = [...new Set(paidL.map(l => l.b).filter(Boolean))];
+        const byO = new Map(); for (const l of B) (byO.get(l.o) || byO.set(l.o, []).get(l.o)).push(l);
+        const R = (C.ret || []).filter(r => inR(r.d));
+        inner = `<p>Купил за выбранные дни: <b>${$$(tot)}</b> · ${byO.size} заказ(ов)${brands.length ? ` · бренды: ${brands.map(esc).join(', ')}` : ''}</p>
+          ${byP.size ? `<h4 class="ch">Что покупал больше всего</h4><div class="tscroll"><table><thead><tr><th>Товар</th><th class="n">Кол-во</th><th class="n">Сумма</th></tr></thead><tbody>${[...byP].sort((a, b) => b[1].s - a[1].s).slice(0, 15).map(([p, x]) => `<tr><td>${esc(p)}</td><td class="n">${Math.round(x.q * 100) / 100}</td><td class="n">${$$(x.s)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+          ${byO.size ? `<h4 class="ch">По заказам</h4>${[...byO].map(([id, L]) => `<details class="ccard" style="margin-bottom:8px"><summary><b>${dm(L[0].d)} · №${esc(id)}</b> — ${$$(L.reduce((t, l) => t + l.s, 0))} · ${L.length} поз.</summary><div class="tscroll" style="margin-top:6px"><table><tbody>${L.map(l => `<tr><td>${l.g ? '🎁 ' : ''}${esc(l.p)}</td><td class="n">× ${l.q}</td><td class="n">${l.g ? 'бонус' : $$(l.s)}</td></tr>`).join('')}</tbody></table></div></details>`).join('')}` : '<p class="mut">Покупок в эти дни нет.</p>'}
+          ${R.length ? `<h4 class="ch">Возвраты</h4><p>${R.map(r => `${dm(r.d)} <span class="neg">${$$(r.s)}</span>${r.why ? ` <small class="mut">(${esc(r.why)})</small>` : ''}`).join(' · ')}</p>` : ''}`;
+      }
+      m.el.querySelector('[data-cbody]').innerHTML = `<h3 style="margin:0 36px 2px 0">${esc(c.name)}</h3><div class="mut">${c.landmark ? '📍 ' + esc(c.landmark) : ''}</div>
+        ${c.phone ? `<div class="bar" style="margin:8px 0"><a class="btn sm" href="tel:${esc(c.phone)}">📞 ${esc(c.phone)}</a></div>` : ''}
+        <div class="kpis" style="margin-top:8px">${tile('Долг', c.debt > 0 ? $$(c.debt) : 'нет', c.lastPay ? `посл. оплата ${dm(c.lastPay)}` : 'оплат не было', c.debt > 0 ? 'warn' : 'good')}${tile('Купил за период', $$(c.sold), c.plan ? `план ${$$(c.plan)} · ${pctT(pctV(c.sold, c.plan))}` : (c.lastBuy ? `посл. покупка ${dm(c.lastBuy)}` : 'покупок не было'))}${tile('Оплатил за период', $$(c.paid), c.pool ? `пул ${$$(c.pool)} · осталось ${$$(Math.max(0, c.pool - c.paid))}` : '')}${c.promise ? tile('Обещал', dm(c.promise.date), c.promise.sum ? $$(c.promise.sum) : '') : ''}</div>
+        <nav class="tabs" style="margin:12px 0 8px">${tabs.map(([k, t]) => `<a href="#" data-ctb="${k}" class="${cardTab === k ? 'on' : ''}">${t}</a>`).join('')}</nav>
+        ${cardTab !== 'ord' || C ? `<div class="bar" style="gap:6px;margin-bottom:8px;flex-wrap:wrap"><label class="mut" style="display:flex;gap:4px;align-items:center">с <input type="date" data-cf1 value="${esc(cardFrom)}"></label><label class="mut" style="display:flex;gap:4px;align-items:center">по <input type="date" data-cf2 value="${esc(cardTo)}"></label><button class="btn gray sm" type="button" data-cfa>весь период</button></div>` : ''}
+        ${inner}`;
+      m.el.querySelectorAll('[data-ctb]').forEach(a => a.onclick = e => { e.preventDefault(); cardTab = a.dataset.ctb; draw1(); });
+      const f1 = m.el.querySelector('[data-cf1]'), f2 = m.el.querySelector('[data-cf2]'), fa = m.el.querySelector('[data-cfa]');
+      if (f1) f1.onchange = () => { cardFrom = f1.value; draw1(); }; if (f2) f2.onchange = () => { cardTo = f2.value; draw1(); };
+      if (fa) fa.onclick = () => { cardFrom = S.period?.from || ''; cardTo = S.period?.to || ''; draw1(); };
+    };
+    draw1();
+  }
+  // a client's name opens his card, a contract (or the 📄 of an order) its picture — anywhere in the cabinet
+  document.addEventListener('click', e => {
+    if (!S || e.target.closest('a[href],input,select,textarea,summary')) return;
+    const cl = e.target.closest('[data-cl]'); if (cl) { e.preventDefault(); e.stopPropagation(); openCard(cl.dataset.cl); return; }
+    const d = e.target.closest('[data-doc]'); if (d && !e.target.closest('button:not([data-doc])')) { e.preventDefault(); openDoc(d.dataset.doc); }
+  });
+  document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[data-doc][role=button]')) { e.preventDefault(); openDoc(e.target.dataset.doc); } });
+
   function draw() {
     const body = $('#meBody');
     if (!link && !SB) { body.innerHTML = '<div class="empty-state"><h3>Откройте кабинет из Telegram</h3><p>Нажмите кнопку «Мой кабинет» в боте MITAL — или откройте ссылку, которую прислал руководитель.</p></div>'; return; }
@@ -626,7 +736,7 @@
       if (!calDay || !days.includes(calDay)) calDay = days.includes(t0) ? t0 : days[0];
       const sumOf = L => L.reduce((t, x) => t + x.s, 0), late = C.filter(x => x.st === 'late').sort((a, b) => a.d.localeCompare(b.d));
       const by = new Map(); for (const x of C) (by.get(x.d) || by.set(x.d, []).get(x.d)).push(x);
-      const row = x => `<div class="ccard"><div class="top"><b>${esc(x.client)}</b><span class="amt ${ST[x.st][1]}">${$$(x.s)}</span></div>
+      const row = x => `<div class="ccard"><div class="top"><b data-cl="${esc(x.client)}">${esc(x.client)}</b><span class="amt ${ST[x.st][1]}">${$$(x.s)}</span></div>
         <div class="meta"><span class="pill ${KIND[x.kind]?.[1] || ''}">${KIND[x.kind]?.[0] || ''}</span><span class="${ST[x.st][1]}">${ST[x.st][0]}${x.st === 'late' ? ' с ' + dm(x.d) : ''}</span></div>${x.why ? `<div class="mut" style="font-size:13px;margin-top:4px">${esc(x.why)}</div>` : ''}
         ${S.clients.find(c => c.name === x.client)?.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(S.clients.find(c => c.name === x.client).phone)}">📞 Позвонить</a></div>` : ''}</div>`;
       const dayL = (by.get(calDay) || []), wd = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
@@ -647,7 +757,7 @@
       const by = new Map(S.clients.map(c => [c.name, c])), calBy = new Map(); for (const x of S.cal || []) if (x.st !== 'paid' && x.d <= tashToday()) calBy.set(x.client, (calBy.get(x.client) || 0) + x.s);
       const D = R[routeDay], vis = S.disc?.days?.find(x => x.day === tashToday());
       const stops = D.clients.map((n, i) => { const c = by.get(n) || { name: n }, due = calBy.get(n) || 0;
-        return `<div class="ccard"><div class="top"><b>${i + 1}. ${esc(n)}</b>${c.debt > 0 ? `<span class="amt neg">${$$(c.debt)}</span>` : '<span class="amt mut">долга нет</span>'}</div>
+        return `<div class="ccard"><div class="top"><b data-cl="${esc(n)}">${i + 1}. ${esc(n)}</b>${c.debt > 0 ? `<span class="amt neg">${$$(c.debt)}</span>` : '<span class="amt mut">долга нет</span>'}</div>
           <div class="meta">${due ? `<span class="neg">💰 к оплате сейчас ${$$(due)}</span>` : ''}${c.promise ? `<span>🤝 обещал ${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}</span>` : ''}${c.lastBuy ? `<span>посл. покупка ${dm(c.lastBuy)}</span>` : c.name && by.has(n) ? '<span>покупок не было — предложите заказ</span>' : ''}${c.landmark ? `<span>📍 ${esc(c.landmark)}</span>` : ''}</div>
           <div class="acts">${c.phone ? `<a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a>` : ''}<a class="btn gray sm" href="https://yandex.uz/maps/?text=${encodeURIComponent(n + (c.landmark ? ' ' + c.landmark : ''))}" target="_blank" rel="noopener">🧭 Карта</a></div></div>`; });
       const debtSum = D.clients.reduce((t, n) => t + (by.get(n)?.debt > 0 ? by.get(n).debt : 0), 0);
@@ -662,7 +772,10 @@
       const K = S.contracts, ST = { paid: ['✓', 'pos', 'оплачено'], late: ['!', 'neg', 'просрочено'], wait: ['·', 'mut', 'ждём'] };
       if (!K) { body.innerHTML = panel('📄 Договоры', '<p class="mut">Договоры появятся после следующего обновления кабинета руководителем.</p>'); return; }
       const part = p => `<span class="${ST[p.st][1]}" style="white-space:nowrap">${ST[p.st][0]} ${dm(p.d || p.to)} ${$$(p.s ?? p.plan)}${p.paid != null && p.st !== 'paid' ? ` (опл. ${$$(p.paid)})` : ''}</span>`;
-      const once = K.once || [], long = K.long || [], t0 = tashToday();
+      // search: client, № of the invoice / contract, conditions — one box for both lists
+      const ql = q.trim().toLowerCase(), hit = (...v) => !ql || v.some(x => String(x ?? '').toLowerCase().includes(ql));
+      const once = (K.once || []).filter(o => hit(o.client, o.id, '№' + o.id, o.cond)), long = (K.long || []).filter(k => hit(k.client, k.title, k.id)), t0 = tashToday();
+      const docBtn = key => (K.docs?.[key] ? ` data-doc="${esc(key)}" role="button" tabindex="0" style="cursor:pointer"` : '');
       // two separate sections (one-time orders can be 100+, so the long contracts used to sink to the very bottom)
       if (ctab !== 'once' && ctab !== 'long') ctab = 'once';
       const leftOf = o => o.parts.filter(p => p.st !== 'paid').reduce((t, p) => t + p.s, 0);
@@ -676,21 +789,25 @@
       let near = dues.filter(x => x.late || x.d <= lim); if (!near.length) near = dues.slice(0, 3);
       const when = d => { const n = Math.round((Date.parse(d + 'T12:00:00Z') - Date.parse(t0 + 'T12:00:00Z')) / 864e5); return n < 0 ? `просрочено с ${dm(d)}` : n === 0 ? 'сегодня' : n === 1 ? 'завтра' : `${dm(d)} · через ${n} дн.`; };
       const phone = n => S.clients.find(c => c.name === n)?.phone;
-      const nearP = dues.length ? panel(`⏰ Ближайшие оплаты (${near.length})`, `<div class="cards">${near.slice(0, 15).map(x => `<div class="ccard"><div class="top"><b>${esc(x.client)}</b><span class="amt ${x.late ? 'neg' : ''}">${$$(x.s)}</span></div>
+      const nearP = dues.length ? panel(`⏰ Ближайшие оплаты (${near.length})`, `<div class="cards">${near.slice(0, 15).map(x => `<div class="ccard"><div class="top"><b data-cl="${esc(x.client)}">${esc(x.client)}</b><span class="amt ${x.late ? 'neg' : ''}">${$$(x.s)}</span></div>
           <div class="meta"><span class="${x.late ? 'neg' : x.d === t0 ? 'warn' : ''}">${x.late ? '🔴 ' : x.d === t0 ? '🟠 ' : '📅 '}${when(x.d)}</span><span class="mut">${esc(x.what)}</span></div>
           ${phone(x.client) ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(phone(x.client))}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`, `Всего ждём ${$$(dues.reduce((t, x) => t + x.s, 0))} · просрочено ${$$(dues.filter(x => x.late).reduce((t, x) => t + x.s, 0))}`) : '';
       const lateN = L => L.length ? ` <b class="neg">· ${L.length}!</b>` : '';
-      const chips = `<div class="chips"><button type="button" data-ct="once" class="${ctab === 'once' ? 'on' : ''}">🧾 Разовые и спец (${once.length})${lateN(once.filter(o => o.parts.some(p => p.st === 'late')))}</button><button type="button" data-ct="long" class="${ctab === 'long' ? 'on' : ''}">📑 Договоры (${long.length})${lateN(long.filter(k => k.months.some(m => m.st === 'late')))}</button></div>`;
+      const chips = `<div class="bar"><input id="meQ" type="search" placeholder="🔎 Поиск: клиент, № договора" value="${esc(q)}" style="flex:1;min-width:0"></div>
+        <div class="chips"><button type="button" data-ct="once" class="${ctab === 'once' ? 'on' : ''}">🧾 Разовые и спец (${once.length})${lateN(once.filter(o => o.parts.some(p => p.st === 'late')))}</button><button type="button" data-ct="long" class="${ctab === 'long' ? 'on' : ''}">📑 Договоры (${long.length})${lateN(long.filter(k => k.months.some(m => m.st === 'late')))}</button></div>`;
       const onceS = [...once.filter(leftOf), ...once.filter(o => !leftOf(o))];
-      body.innerHTML = chips + nearP + (ctab === 'once' ? `${panel(`🧾 Разовые договоры и спецпредложения (${once.length})`, once.length ? `<div class="cards">${onceS.map(o => { const left = leftOf(o);
-          return `<div class="ccard"><div class="top"><b>${esc(o.client)}</b><span class="amt">${$$(o.s)}</span></div>
+      const none = what => `<p class="mut">${ql ? `По запросу «${esc(q)}» ничего не найдено.` : `${what} нет.`}</p>`;
+      const tapHint = K.docs && Object.keys(K.docs).length ? ' Нажмите на договор — откроется его картинка, на имя клиента — карточка клиента.' : '';
+      body.innerHTML = chips + (ql ? '' : nearP) + (ctab === 'once' ? `${panel(`🧾 Разовые договоры и спецпредложения (${once.length})`, once.length ? `<div class="cards">${onceS.map(o => { const left = leftOf(o);
+          return `<div class="ccard"${docBtn('o' + o.id)}><div class="top"><b data-cl="${esc(o.client)}">${esc(o.client)}</b><span class="amt">${$$(o.s)}</span></div>
             <div class="meta"><span>№${esc(o.id)} от ${dm(o.d)}</span>${o.spec ? '<span class="pill warn">спецпредложение</span>' : ''}${o.disc != null ? `<span>скидка ${esc(o.disc)}%</span>` : ''}${left ? `<span class="${o.parts.some(p => p.st === 'late') ? 'neg' : ''}">осталось ${$$(left)}</span>` : '<span class="pos">оплачено полностью</span>'}</div>
-            ${o.cond ? `<div class="mut" style="font-size:13px;margin-top:4px">${esc(o.cond)}</div>` : ''}<div class="meta" style="margin-top:6px">${o.parts.map(part).join('')}</div></div>`; }).join('')}</div>` : '<p class="mut">Разовых договоров нет.</p>', 'Каждый заказ на спеццене платится по своему графику — по частям. Красным — просроченные части.')}` : '')
+            ${o.cond ? `<div class="mut" style="font-size:13px;margin-top:4px">${esc(o.cond)}</div>` : ''}<div class="meta" style="margin-top:6px">${o.parts.map(part).join('')}</div></div>`; }).join('')}</div>` : none('Разовых договоров'), 'Каждый заказ на спеццене платится по своему графику — по частям. Красным — просроченные части.' + tapHint)}` : '')
         + (ctab === 'long' ? `${panel(`📑 Большие договоры (${long.length})`, long.length ? `<div class="cards">${long.map(k => { const late = k.months.filter(m => m.st === 'late'), tot = k.months.reduce((t, m) => t + m.plan, 0), paid = k.months.reduce((t, m) => t + (m.paid || 0), 0);
-          return `<div class="ccard"><div class="top"><b>${esc(k.title)}</b><span class="amt">${$$(tot)}</span></div>
-            <div class="meta"><span>${esc(k.client)}</span><span>с ${dm(k.start)} · ${k.months.length} мес.</span><span>оплачено ${$$(paid)}</span>${late.length ? `<span class="neg">просрочено месяцев: ${late.length}</span>` : ''}</div>
-            <div class="meta" style="margin-top:6px">${k.months.map(m => part({ ...m, d: m.to })).join('')}</div></div>`; }).join('')}</div>` : '<p class="mut">Больших договоров нет.</p>', 'Сумма месяца должна прийти до последнего дня этого месяца договора.')}` : '');
+          return `<div class="ccard"${docBtn('k' + k.id)}><div class="top"><b>${esc(k.title)}</b><span class="amt">${$$(tot)}</span></div>
+            <div class="meta"><span data-cl="${esc(k.client)}">👤 ${esc(k.client)}</span><span>с ${dm(k.start)} · ${k.months.length} мес.</span><span>оплачено ${$$(paid)}</span>${late.length ? `<span class="neg">просрочено месяцев: ${late.length}</span>` : ''}</div>
+            <div class="meta" style="margin-top:6px">${k.months.map(m => part({ ...m, d: m.to })).join('')}</div></div>`; }).join('')}</div>` : none('Больших договоров'), 'Сумма месяца должна прийти до последнего дня этого месяца договора.' + tapHint)}` : '');
       body.querySelectorAll('[data-ct]').forEach(b => b.onclick = () => { ctab = b.dataset.ct; store.set('mital_ctab', ctab); draw(); window.scrollTo(0, 0); });
+      search();
       return;
     }
     if (tab === 'tasks') {
@@ -752,8 +869,8 @@
         ${tile('АКБ / ОКБ', `${k.akb} / ${k.okb}`, 'активные / все клиенты')}</div>
         ${S.pay ? panel(`💰 Зарплата за ${esc(S.pay.label)}`, `<table style="width:100%">${S.pay.lines.map(([a, b]) => `<tr><td>${esc(a)}</td><td class="n" style="white-space:nowrap">${esc(b)}</td></tr>`).join('')}<tr><td><b>К выплате</b></td><td class="n"><b>${f0(S.pay.total)} сум</b></td></tr></table>${S.pay.voucher ? `<p class="pos" style="margin:8px 0 0">🎁 Ваучер в ресторан на ${f0(S.pay.voucher)} сум — поздравляем!</p>` : ''}`, 'Расчёт руководителя за закрытый месяц') : ''}
         ${panel('Рейтинг агентов', `<div class="tscroll"><table><thead><tr><th class="n">#</th><th>Агент</th><th class="n">План продаж</th><th class="n">Сбор пула</th></tr></thead><tbody>${S.board.map(b => `<tr${b.me ? ' style="font-weight:700"' : ''}><td class="n">${b.place}</td><td>${esc(b.agent)}${b.me ? ' — вы' : ''}</td><td class="n">${b.sold != null ? b.sold + '%' : '—'}</td><td class="n">${b.paid != null ? b.paid + '%' : '—'}</td></tr>`).join('')}</tbody></table></div>`, 'Место — по сумме % плана продаж и % сбора пула')}
-        ${top.length ? panel('Кому собрать в первую очередь', `<div class="cards">${top.map(c => `<div class="ccard"><div class="top"><b>${esc(c.name)}</b><span class="amt neg">${$$(c.debt)}</span></div><div class="meta">${c.pool ? `<span>по пулу осталось ${$$(Math.max(0, c.pool - c.paid))}</span>` : ''}${c.promise ? `<span>🤝 обещал ${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}</span>` : ''}${c.lastPay ? `<span>посл. оплата ${dm(c.lastPay)}</span>` : ''}</div>${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`) : ''}
-        ${sleep.length ? panel('🛒 Давно не покупали — предложите заказ', `<div class="cards">${sleep.map(c => `<div class="ccard"><div class="top"><b>${esc(c.name)}</b><span class="amt">${c.buyDays} дн.</span></div><div class="meta">${c.lastBuy ? `<span>посл. покупка ${dm(c.lastBuy)}</span>` : ''}${c.debt > 0 ? `<span class="neg">долг ${$$(c.debt)}</span>` : '<span class="pos">долга нет</span>'}${c.landmark ? `<span>${esc(c.landmark)}</span>` : ''}</div>${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`, 'Эти клиенты брали товар, но перестали — каждый вернувшийся клиент поднимает и продажи, и АКБ.') : ''}
+        ${top.length ? panel('Кому собрать в первую очередь', `<div class="cards">${top.map(c => `<div class="ccard"><div class="top"><b data-cl="${esc(c.name)}">${esc(c.name)}</b><span class="amt neg">${$$(c.debt)}</span></div><div class="meta">${c.pool ? `<span>по пулу осталось ${$$(Math.max(0, c.pool - c.paid))}</span>` : ''}${c.promise ? `<span>🤝 обещал ${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}</span>` : ''}${c.lastPay ? `<span>посл. оплата ${dm(c.lastPay)}</span>` : ''}</div>${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`) : ''}
+        ${sleep.length ? panel('🛒 Давно не покупали — предложите заказ', `<div class="cards">${sleep.map(c => `<div class="ccard"><div class="top"><b data-cl="${esc(c.name)}">${esc(c.name)}</b><span class="amt">${c.buyDays} дн.</span></div><div class="meta">${c.lastBuy ? `<span>посл. покупка ${dm(c.lastBuy)}</span>` : ''}${c.debt > 0 ? `<span class="neg">долг ${$$(c.debt)}</span>` : '<span class="pos">долга нет</span>'}${c.landmark ? `<span>${esc(c.landmark)}</span>` : ''}</div>${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 Позвонить</a></div>` : ''}</div>`).join('')}</div>`, 'Эти клиенты брали товар, но перестали — каждый вернувшийся клиент поднимает и продажи, и АКБ.') : ''}
         <section class="panel w12" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><div style="font-size:32px" aria-hidden="true">🎓</div><div style="flex:1;min-width:200px"><h4 style="margin:0">MITAL Akademiya</h4><div class="sub">Курсы для агентов: продажи, работа с клиентами и долгами, товары</div></div><a class="btn" style="padding:10px 18px;white-space:nowrap;line-height:1.2" href="${ACADEMY}" target="_blank" rel="noopener">Перейти к курсам →</a></section>${installCard()}`;
       bindExtras(body);
     }
@@ -790,7 +907,7 @@
       const sum = (A, kk) => A.reduce((t, c) => t + (c[kk] > 0 ? c[kk] : 0), 0);
       body.innerHTML = `<div class="bar"><input id="meQ" type="search" placeholder="Поиск клиента" value="${esc(q)}" style="flex:1;min-width:0"></div>
         <div class="chips" role="tablist">${Object.entries(F).map(([kk, [tt, fn]]) => `<button type="button" data-cf="${kk}" class="${kk === f ? 'on' : ''}">${tt} · ${base.filter(fn).length}</button>`).join('')}</div>
-        ${panel(`Мои клиенты (${f0(L.length)})`, L.length ? `<div class="cards">${L.map(c => `<div class="ccard"><div class="top"><b>${esc(c.name)}</b><span class="amt ${c.debt > 0 ? 'neg' : 'mut'}">${c.debt > 0 ? $$(c.debt) : 'долга нет'}</span></div>
+        ${panel(`Мои клиенты (${f0(L.length)})`, L.length ? `<div class="cards">${L.map(c => `<div class="ccard"><div class="top"><b data-cl="${esc(c.name)}">${esc(c.name)}</b><span class="amt ${c.debt > 0 ? 'neg' : 'mut'}">${c.debt > 0 ? $$(c.debt) : 'долга нет'}</span></div>
           <div class="meta"><span>купил ${$$(c.sold)}</span><span>оплатил ${$$(c.paid)}</span>${c.pool ? `<span>по пулу осталось ${$$(Math.max(0, c.pool - c.paid))}</span>` : ''}<span>посл. оплата ${c.lastPay ? dm(c.lastPay) : '—'}</span>${c.lastBuy ? `<span class="${c.buyDays > 30 ? 'neg' : ''}">посл. покупка ${dm(c.lastBuy)} (${c.buyDays} дн.)</span>` : '<span>покупок не было</span>'}${c.promise ? `<span>🤝 обещал ${dm(c.promise.date)}${c.promise.sum ? ' · ' + $$(c.promise.sum) : ''}</span>` : ''}${c.landmark ? `<span>📍 ${esc(c.landmark)}</span>` : ''}</div>
           ${c.phone ? `<div class="acts"><a class="btn gray sm" href="tel:${esc(c.phone)}">📞 ${esc(c.phone)}</a></div>` : ''}</div>`).join('')}</div>` : '<p class="mut">Нет клиентов по этому фильтру.</p>',
           `Долг: ${$$(sum(L, 'debt'))} · купили: ${$$(sum(L, 'sold'))} · оплатили: ${$$(sum(L, 'paid'))} — сверху самые большие долги`)}`;

@@ -51,6 +51,16 @@
   .me-tabs .ic { margin-right: 4px; }
   .me-tabs .mob { display: none; }
   .me-top button[hidden] { display: none; }
+  /* a client's name opens his card; windows (contract picture, client card) */
+  [data-cl] { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+  .me-sheet { z-index: 30; padding: 3vh 8px; }
+  .me-sheet .modal { position: relative; padding: 16px; }
+  .me-sheet .me-x { position: absolute; top: 10px; right: 10px; }
+  .me-sheet h4.ch { margin: 14px 0 6px; font-size: 14px; }
+  .me-doc { background: #fff; border: 1px solid var(--line-2, #ccc); border-radius: 6px; overflow: hidden; }
+  .me-doc-in { transform-origin: 0 0; }
+  .me-sheet details summary { cursor: pointer; }
+  html[data-theme="dark"] .me-sheet .modal { background: var(--card, #14232e); }
   @media (max-width: 700px) {
     .me-wrap { padding: 12px 12px calc(84px + env(safe-area-inset-bottom)); }
     .me-wrap h2 { font-size: 20px; }
@@ -87,7 +97,7 @@
 </main>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
-<script src="me-uz.js?v=202611191900"></script>
-<script src="me.js?v=202611201930"></script>
+<script src="me-uz.js?v=202611202300"></script>
+<script src="me.js?v=202611202300"></script>
 </body>
 </html>

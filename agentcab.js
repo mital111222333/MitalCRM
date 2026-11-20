@@ -73,6 +73,8 @@ const AC = {
       board, clients, tasks: typeof ATK !== 'undefined' ? ATK.forAgent(agent, d) : [], route,
       // the payment calendar (as Деньги → Календарь оплат, only his clients) and his contracts: one-time (spec) and long
       cal: money?.cal || null, contracts: money?.contracts || null,
+      // the client card (tap a client's name): orders and their schedule, payments, by days, purchases
+      cards: (() => { try { return AC.cards(clients, money?.st); } catch (e) { console.warn('cabinet: client cards', e); return null; } })(),
       // the pay slip of the last closed month (pay.js «Закрыть месяц»)
       pay: CRMLocal.ext().pay?.slips?.[agent] || null,
       disc: disc ? { start: disc.startTxt, rate: disc.rate, today: today || tSt ? { first: today?.first || '', late: today?.first ? DS.lateFor(t0, agent, today.first, disc.start) : 0, st: tSt ? DS.ST[tSt].t : '' } : null, marks, free: !!DS.cfg().free[agent], skip: !!DS.cfg().skip[agent], end: DS.cfg().end || '', autoAbs: DS.cfg().autoAbs || '',
@@ -108,9 +110,76 @@ const AC = {
     const got = new Map((st?.contracts || []).map(k => [k.id, k]));
     const long = cfg.contracts.filter(k => k.start && ((k.agent || '') === agent || (!k.agent && mine(k.accounts?.[0] || k.title)))).map(k => {
       const P = INST.planOf(k), s = got.get(k.id);
-      return { title: k.title, client: k.accounts?.[0] || k.title, start: k.start, months: P.map((plan, i) => { const w = CAL.ctMonth(k.start, i), due = INST.dueOf(k, i), paid = s?.list?.[i]?.paid ?? null; return { from: w.from, to: due, plan: r2(plan), paid: paid == null ? null : r2(paid), st: paid != null && paid >= plan - 0.5 ? 'paid' : due < t0 ? 'late' : 'wait' }; }) };
+      return { id: String(k.id), title: k.title, client: k.accounts?.[0] || k.title, start: k.start, months: P.map((plan, i) => { const w = CAL.ctMonth(k.start, i), due = INST.dueOf(k, i), paid = s?.list?.[i]?.paid ?? null; return { from: w.from, to: due, plan: r2(plan), paid: paid == null ? null : r2(paid), st: paid != null && paid >= plan - 0.5 ? 'paid' : due < t0 ? 'late' : 'wait' }; }) };
     });
-    return { cal, contracts: { once: once.sort((a, b) => String(b.d).localeCompare(String(a.d))).slice(0, 120), long } };
+    const onceL = once.sort((a, b) => String(b.d).localeCompare(String(a.d))).slice(0, 120);
+    // the paper contract of each one (the same picture the supervisor opens): o<invoice id> — one-time, k<contract id> — long
+    const docs = await AC.docs(onceL, cfg.contracts.filter(k => long.some(x => x.id === String(k.id)))).catch(e => { console.warn('cabinet: contract pictures', e); return {}; });
+    const css = Object.keys(docs).length ? INVO.css() + INST.ctCss() : '';
+    return { cal, contracts: { once: onceL, long, docs, css }, st };
+  },
+  // contracts drawn as the CRM draws them (INVO.doc / INST.ctDoc), shrunk to their sheet, as ready HTML: the cabinet only shows it.
+  // Laid out off screen once; the same input gives the same picture from the cache (the cabinets are published every few minutes)
+  async docs(once, cts) {
+    const out = {}; if (typeof INVO === 'undefined' || typeof INST === 'undefined' || !document.body) return out;
+    try { await INVO.loadRegions(); } catch { /* the city is only a hint */ }
+    AC._docC ||= new Map();
+    const box = document.createElement('div'); box.setAttribute('aria-hidden', 'true');
+    box.style.cssText = 'position:fixed;left:-30000px;top:0;visibility:hidden;pointer-events:none;width:800px';
+    box.innerHTML = `<style>${INVO.css()}${INST.ctCss()}</style><div></div>`; document.body.appendChild(box);
+    const slot = box.lastElementChild;
+    const put = (html, fit, sel) => {
+      if (AC._docC.has(html)) return AC._docC.get(html);
+      slot.innerHTML = html; const d = slot.querySelector(sel); if (d) fit(d);
+      const v = (d ? d.outerHTML : html).replace(/>\n\s+</g, '><'); AC._docC.set(html, v); return v;
+    };
+    try {
+      for (const o of once) { try { out['o' + o.id] = put(INVO.doc(INVO.rowOf({ id: o.id, date: o.d, client: o.client, sum: o.s })), INVO.fit, '.cdoc'); } catch (e) { console.warn('contract picture', o.id, e); } }
+      for (const k of cts) { try { out['k' + k.id] = put(INST.ctDoc(k), INST.ctFit, '.kdoc'); } catch (e) { console.warn('contract picture', k.id, e); } }
+    } finally { box.remove(); }
+    if (AC._docC.size > 3000) AC._docC.clear();
+    return out;
+  },
+  // the client card of the cabinet (as the CRM's card on a client name): orders with their payment schedule, payments of the period,
+  // the day-by-day history and what he bought. Only the agent's own clients; money to the cent.
+  hist() {
+    const ups = CRMLocal.engine.getState().ag.uploads || [], key = ups.length + '|' + (ups.at(-1)?.id ?? '');
+    if (AC._hist?.key === key) return AC._hist.m;
+    const sorted = ups.slice().sort((a, b) => (a.taken_at < b.taken_at ? -1 : a.taken_at > b.taken_at ? 1 : a.id - b.id));
+    const byDay = new Map(); for (const u of sorted) byDay.set(u.period_from + '|' + u.taken_at, u);
+    const m = new Map(), prev = new Map();
+    for (const u of [...byDay.values()].sort((a, b) => (a.taken_at < b.taken_at ? -1 : 1))) for (const r of u.rows || []) {
+      const pk = u.period_from + '|' + r.client, p = prev.get(pk);
+      (m.get(r.client) || m.set(r.client, []).get(r.client)).push({ d: u.taken_at, b: r.b1, ds: p ? r.sold - p.sold : r.sold, dp: p ? r.paid - p.paid : r.paid, first: !p });
+      prev.set(pk, r);
+    }
+    AC._hist = { key, m }; return m;
+  },
+  cards(clients, st) {
+    if (typeof LX === 'undefined' || !LX.has() || typeof CARD === 'undefined') return null;
+    const r2 = v => Math.round((Number(v) || 0) * 100) / 100, M = LX.model(), H = AC.hist(), out = {};
+    const norm = new Map(clients.map(c => [LX.norm(c.name), c.name])), of = n => norm.get(LX.norm(n));
+    const ords = new Map(), pays = new Map(), lines = new Map(), rets = new Map(), push = (mp, n, v) => { const k = of(n); if (k) (mp.get(k) || mp.set(k, []).get(k)).push(v); };
+    for (const o of M.ords) if (!/cancel|reject|отмен|отклон/i.test(String(o.status))) { const s = r2(o.sum - o.ret); if (s > 0.005) push(ords, o.client, { id: String(o.id), d: o.date, s }); }
+    for (const c of st?.clients || []) for (const o of c.orders || []) push(ords, c.name, { id: String(o.id), d: o.d, s: o.s, old: 1 });
+    for (const p of M.payments) push(pays, p.client, { d: p.date, t: p.time || '', s: r2(p.amount), how: p.bal ? 'карта / банк' : String(p.ptype || p.type || ''), by: p.courier || p.by || '' });
+    for (const l of M.lines) if (l.qty - l.ret > 0.0001) push(lines, l.client, { d: l.date, o: String(l.order), p: l.product, b: l.brand || '', q: Math.round((l.qty - l.ret) * 100) / 100, s: r2(l.sum), g: l.bonus ? 1 : 0 });
+    for (const r of M.returns) push(rets, r.client, { d: r.date, s: r2(r.sum), why: r.reason || '' });
+    for (const c of clients) {
+      const seen = new Set(), list = (ords.get(c.name) || []).filter(o => !seen.has(o.id) && seen.add(o.id)).sort((a, b) => (a.d === b.d ? Number(a.id) - Number(b.id) : a.d < b.d ? -1 : 1));
+      let O = null;
+      try { O = CARD.calc({ name: c.name, k: LX.norm(c.name), debt: Math.max(0, c.debt || 0), orders: list.map(({ id, d, s }) => ({ id, d, s })) }); } catch (e) { console.warn('cabinet card', c.name, e); }
+      const H1 = (H.get(c.name) || []).slice(-31);
+      out[c.name] = {
+        ord: O ? O.list.map(o => ({ id: o.id, d: o.d, s: r2(o.s), paid: r2(o.paid), left: r2(o.left), st: o.state, ld: o.lateDays || 0, src: o.src, cond: o.cond || '', spec: o.spec ? 1 : 0, parts: o.parts.map(p => ({ d: p.d, s: r2(p.s), u: r2(p.unpaid), st: p.st })) })).reverse() : [],
+        old: O ? r2(O.old) : 0,
+        pay: (pays.get(c.name) || []).sort((a, b) => (b.d + b.t).localeCompare(a.d + a.t)).slice(0, 200),
+        days: H1.map(p => ({ d: p.d, b: r2(p.b), ds: r2(p.ds), dp: r2(p.dp), ...(p.first ? { f: 1 } : {}) })),
+        buy: (lines.get(c.name) || []).sort((a, b) => b.d.localeCompare(a.d) || b.o.localeCompare(a.o)).slice(0, 250),
+        ret: (rets.get(c.name) || []).slice(0, 30),
+      };
+    }
+    return out;
   },
 
   async gh(c, method, path, body) {

@@ -131,4 +131,18 @@ window.ME_UZ = [
   // errors and system messages
   ['Нет доступа — обновите кабинет и попробуйте ещё раз', 'Ruxsat yoʻq — kabinetni yangilab qayta urinib koʻring'], ['Не отправилось:', 'Yuborilmadi:'], ['Войдите снова', 'Qayta kiring'],
   ['Кабинет ещё не готов — обновите через минуту', 'Kabinet hali tayyor emas — bir daqiqadan soʻng yangilang'], ['Фото не отправилось:', 'Foto yuborilmadi:'],
+  // contracts: search, the contract picture, the client card
+  ['🔎 Поиск: клиент, № договора', '🔎 Qidiruv: mijoz, shartnoma №'], ['ничего не найдено', 'hech narsa topilmadi'], ['По запросу', 'Soʻrov boʻyicha'],
+  ['Нажмите на договор — откроется его картинка, на имя клиента — карточка клиента.', 'Shartnomani bosing — rasmi ochiladi, mijoz nomini bosing — mijoz kartasi ochiladi.'],
+  ['📤 Отправить картинкой', '📤 Rasm qilib yuborish'], ['🖼 Сохранить картинку', '🖼 Rasmni saqlash'], ['🔍 Крупнее', '🔍 Kattaroq'], ['🔍 По ширине экрана', '🔍 Ekran kengligida'],
+  ['👤 Карточка клиента', '👤 Mijoz kartasi'], ['Картинка сохранена', 'Rasm saqlandi'], ['Не получилось сделать картинку:', 'Rasm qilib boʻlmadi:'],
+  ['Этот телефон не умеет отправлять файлы — сохраните картинку', 'Bu telefon fayl yubora olmaydi — rasmni saqlang'],
+  ['📦 Заказы', '📦 Buyurtmalar'], ['💵 Оплаты', '💵 Toʻlovlar'], ['📈 По дням', '📈 Kunlar boʻyicha'], ['🛒 Покупки', '🛒 Xaridlar'],
+  ['весь период', 'butun davr'], ['Купил за период', 'Davr ichida oldi'], ['Оплатил за период', 'Davr ichida toʻladi'], ['Ближайший срок', 'Eng yaqin muddat'],
+  ['Долг прошлых периодов', 'Oldingi davrlar qarzi'], ['Не оплачены', 'Toʻlanmagan'], ['Оплачены за выбранные дни', 'Tanlangan kunlarda toʻlangan'],
+  ['📄 договор — нажмите', '📄 shartnoma — bosing'], ['🤝 срок по договорённости', '🤝 kelishilgan muddat'], ['стандартный график', 'standart jadval'],
+  ['✓ Все заказы оплачены', '✓ Barcha buyurtmalar toʻlangan'], ['Оплачено за выбранные дни:', 'Tanlangan kunlarda toʻlangan:'], ['Оплат в эти дни нет.', 'Bu kunlarda toʻlov yoʻq.'],
+  ['Купил за выбранные дни:', 'Tanlangan kunlarda oldi:'], ['Что покупал больше всего', 'Eng koʻp nima olgan'], ['По заказам', 'Buyurtmalar boʻyicha'], ['Покупок в эти дни нет.', 'Bu kunlarda xarid yoʻq.'],
+  ['Долг на конец дня', 'Kun oxiridagi qarz'], ['В эти дни данных нет.', 'Bu kunlarda maʼlumot yoʻq.'], ['Возвраты', 'Qaytarishlar'],
+  ['Заказы, оплаты и покупки клиента появятся после следующего обновления кабинета руководителем.', 'Mijozning buyurtmalari, toʻlovlari va xaridlari rahbar kabinetni keyingi yangilaganida chiqadi.'],
 ];
