@@ -555,12 +555,103 @@ EXT_PAGES.rdyn = async el => {
     ${UI.tile('АКБ', `${cur.akb}`, { sub: `было ${prev.akb} · ОКБ ${cur.okb}`, delta: chip(cur.akb, prev.akb) })}
   </div>
   <div class="grid">
+    ${REP.recordsHTML(REP.records(CRMLocal.engine.getState()), repRec.metric, S.agent)}
     ${UI.panel('Продажи и сбор по месяцам', CH.columns(M.map(m => ({ label: m.from.endsWith('-01') ? m.label.slice(0, 3) + ' ' + m.from.slice(2, 4) : UI.dm(m.from), values: [pick(m).sold, pick(m).paid] })), [{ name: 'Продано', color: 'var(--c1)' }, { name: 'Собрано', color: 'var(--c3)' }], { fmt: UI.fmt0 }), { cls: 'w7' })}
     ${UI.panel('Долг клиентов на конец месяца', CH.columns(M.map(m => ({ label: m.from.endsWith('-01') ? m.label.slice(0, 3) + ' ' + m.from.slice(2, 4) : UI.dm(m.from), values: [pick(m).debt] })), [{ name: 'Долг', color: 'var(--c2)' }], { fmt: UI.fmt0 }), { cls: 'w5' })}
     ${UI.panel('Продажи агентов по месяцам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th>${M.map(m => `<th class="n">${m.label}</th>`).join('')}<th class="n">Изменение</th></tr></thead><tbody>${agents.map(a => { const v = M.map(m => m.agents[a]?.sold || 0); return `<tr><td>${esc(a)}</td>${v.map(x => `<td class="n">${f(x)}</td>`).join('')}<td class="n">${UI.delta(dp(v.at(-1), v.at(-2)), { unit: '%' }) || '—'}</td></tr>`; }).join('')}</tbody></table></div>`, { cls: 'w12', sub: 'Продано за месяц (по последней загрузке каждого месяца)' })}
     ${UI.panel('Сбор денег агентов по месяцам', `<div class="scroll" style="max-height:none"><table><thead><tr><th>Агент</th>${M.map(m => `<th class="n">${m.label}</th>`).join('')}<th class="n">Изменение</th></tr></thead><tbody>${agents.map(a => { const v = M.map(m => m.agents[a]?.paid || 0); return `<tr><td>${esc(a)}</td>${v.map(x => `<td class="n">${f(x)}</td>`).join('')}<td class="n">${UI.delta(dp(v.at(-1), v.at(-2)), { unit: '%' }) || '—'}</td></tr>`; }).join('')}</tbody></table></div>`, { cls: 'w12' })}
   </div>`;
   $('#repAg', body).onchange = e => { S.agent = e.target.value; EXT_PAGES.rdyn(el); };
+  const rec = $('#repRec', body); if (rec) rec.onclick = e => { const b = e.target.closest('[data-recm]'); if (!b) return; repRec.metric = b.dataset.recm; EXT_PAGES.rdyn(el); };
+};
+
+// ---------- Рекорды агентов: the period so far vs the best past period on the same day ----------
+// Every upload is a cumulative snapshot of its period, so «sold by the 20th» of any period = its latest upload on or before
+// that day. The record of an agent for day N = the best such value over all past periods; compared with the current one.
+let repRec = { metric: 'sold' };
+REP.records = S => {
+  const agentOf = r => r.agent || S.ag.clients[r.client]?.agent || 'Без агента';
+  const byP = new Map();
+  for (const u of S.ag.uploads) {
+    if (u.taken_at < u.period_from || u.taken_at > PLAN.end(u.period_from)) continue; // finals stored as «16.10–16.11» are dated after the period
+    (byP.get(u.period_from) || byP.set(u.period_from, []).get(u.period_from)).push(u);
+  }
+  if (!byP.size) return { k: 0, day: 1, from: '', to: '', periods: 0, past: 0, team: null, agents: [] };
+  const curFrom = [...byP.keys()].sort().at(-1), curTaken = byP.get(curFrom).reduce((m, u) => (u.taken_at > m ? u.taken_at : m), curFrom);
+  for (const l of byP.values()) l.sort((a, b) => (a.taken_at < b.taken_at ? -1 : a.taken_at > b.taken_at ? 1 : (a.uploaded_at || '') < (b.uploaded_at || '') ? -1 : (a.uploaded_at || '') > (b.uploaded_at || '') ? 1 : a.id - b.id));
+  const sumCache = new Map(), sums = u => {
+    if (!sumCache.has(u)) { const o = { _: { sold: 0, paid: 0 } }; for (const r of u.rows) { const a = (o[agentOf(r)] ||= { sold: 0, paid: 0 }); a.sold += r.sold || 0; a.paid += r.paid || 0; o._.sold += r.sold || 0; o._.paid += r.paid || 0; } sumCache.set(u, o); }
+    return sumCache.get(u);
+  };
+  const add = (d, n) => UI.localDate(Date.parse(d + 'T12:00:00') + n * 864e5);
+  const at = (P, n) => { const t = add(P, n), e = PLAN.end(P), lim = t < e ? t : e; let best = null; for (const u of byP.get(P) || []) if (u.taken_at <= lim) best = u; return best; };
+  const k = REP.days(curFrom, curTaken), past = [...byP.keys()].filter(P => P < curFrom).sort();
+  const cur = at(curFrom, k), curS = cur ? sums(cur) : { _: { sold: 0, paid: 0 } };
+  const names = new Set(Object.keys(curS).filter(a => a !== '_'));
+  const cands = past.map(P => { const u = at(P, k); return u && { P, u, s: sums(u) }; }).filter(Boolean);
+  for (const c of cands) for (const a of Object.keys(c.s)) if (a !== '_') names.add(a);
+  const curve = (P, who, m) => Array.from({ length: k + 1 }, (_, i) => { const u = at(P, i); return u ? sums(u)[who]?.[m] || 0 : null; });
+  const one = who => {
+    const o = {};
+    for (const m of ['sold', 'paid']) {
+      let best = null; for (const c of cands) { const v = c.s[who]?.[m] || 0; if (v > 0 && (!best || v > best.v)) best = { v, P: c.P, taken: c.u.taken_at }; }
+      const now = curS[who]?.[m] || 0;
+      o[m] = { now, best, pct: best ? now / best.v * 100 : null, beat: !!best && now > best.v, curve: curve(curFrom, who, m), bestCurve: best ? curve(best.P, who, m) : null };
+    }
+    return o;
+  };
+  const agents = [...names].sort((a, b) => a.localeCompare(b)).map(a => ({ a, ...one(a) }));
+  return { k, day: k + 1, from: curFrom, to: curTaken, periods: cands.length, past: past.length, team: one('_'), agents };
+};
+// the user's dates: «16.09–20.09.2026»
+REP.recLabel = (P, n) => { const t = UI.localDate(Date.parse(P + 'T12:00:00') + n * 864e5), e = PLAN.end(P), x = t < e ? t : e; return `${UI.dm(P)}–${UI.dm(x)}.${x.slice(0, 4)}`; };
+REP.recSpark = (now, best, beat) => {
+  const all = [...now, ...(best || [])].filter(v => v !== null), max = Math.max(1, ...all), n = Math.max(now.length, 2), W = 260, H = 54;
+  const xy = arr => arr.map((v, i) => (v === null ? null : [i / (n - 1) * W, H - 3 - v / max * (H - 8)])).filter(Boolean);
+  const pts = arr => xy(arr).map(p => p.map(c => c.toFixed(1)).join(',')).join(' ');
+  const cur = xy(now), last = cur.at(-1), b = beat ? ' beat' : '';
+  return `<svg class="rec-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    ${best ? `<polyline class="rs-best" points="${pts(best)}"/>` : ''}
+    ${cur.length ? `<polygon class="rs-area${b}" points="${cur[0][0].toFixed(1)},${H} ${pts(now)} ${last[0].toFixed(1)},${H}"/><polyline class="rs-now${b}" points="${pts(now)}"/>` : ''}
+  </svg>${cur.length ? `<i class="rs-dot${b}" style="left:${(last[0] / W * 100).toFixed(2)}%;top:${(last[1] / H * 100).toFixed(2)}%"></i>` : ''}`;
+};
+REP.recordsHTML = (R, metric, only) => {
+  if (!R.from) return '';
+  const f = UI.fmt0, M = { sold: 'Продажи', paid: 'Сбор денег' }, curL = REP.recLabel(R.from, R.k);
+  const list = R.agents.filter(x => !only || x.a === only), withRec = list.filter(x => x[metric].best);
+  const beat = withRec.filter(x => x[metric].beat).length;
+  const sorted = list.slice().sort((a, b) => (b[metric].pct ?? -1) - (a[metric].pct ?? -1) || b[metric].now - a[metric].now);
+  const metricBlock = (x, m, main) => {
+    const o = x[m], pct = o.pct, w = pct === null ? 0 : Math.min(100, pct), over = o.beat ? Math.min(100, (o.now - o.best.v) / o.best.v * 100) : 0;
+    const status = !o.best ? `<span class="rec-st new">рекорда ещё нет</span>`
+      : o.beat ? `<span class="rec-st beat">🏆 Новый рекорд +${Math.round(pct - 100)}%</span>`
+      : `<span class="rec-st gap">до рекорда $${f(o.best.v - o.now)}</span>`;
+    const fill = o.beat ? 100 - over / 2 : w;
+    return `<div class="rec-m ${main ? 'main' : 'sub'}${o.beat ? ' is-beat' : ''}">
+      <div class="rec-mh"><span class="rec-ml">${M[m]}</span>${status}</div>
+      <div class="rec-nums"><div><div class="rec-cap">Сейчас · ${curL}</div><div class="rec-now">$${f(o.now)}</div></div>
+        <div class="rec-vs">${o.best ? `<div class="rec-cap">Рекорд · ${REP.recLabel(o.best.P, R.k)}</div><div class="rec-best">$${f(o.best.v)}</div>` : '<div class="rec-cap">Рекорд</div><div class="rec-best">—</div>'}</div></div>
+      <div class="rec-bar" role="img" aria-label="${M[m]}: ${pct === null ? 'нет рекорда' : Math.round(pct) + '% от рекорда'}"><i style="width:${fill}%"></i>${o.beat ? `<b style="left:${fill}%;width:${100 - fill}%"></b>` : ''}${o.best ? `<s style="left:${o.beat ? fill : 100}%"></s>` : ''}<em>${pct === null ? '' : Math.round(pct) + '%'}</em></div>
+      ${main ? `<div class="rec-sw">${REP.recSpark(o.curve, o.bestCurve, o.beat)}</div>` : ''}
+    </div>`;
+  };
+  const initials = n => n.split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const card = (x, i) => {
+    const other = metric === 'sold' ? 'paid' : 'sold', both = x.sold.beat && x.paid.beat;
+    return `<article class="rec-card${x[metric].beat ? ' beat' : ''}">
+      <header><span class="rec-rank">${x[metric].best ? i + 1 : '·'}</span><span class="rec-av">${esc(initials(x.a))}</span><div class="rec-who"><b>${esc(x.a)}</b><small>${x[metric].best ? `${Math.round(x[metric].pct)}% от своего рекорда` : 'нет прошлых периодов'}</small></div>${both ? '<span class="rec-crown" title="Рекорд и по продажам, и по сбору">👑</span>' : ''}</header>
+      ${metricBlock(x, metric, true)}${metricBlock(x, other, false)}
+    </article>`;
+  };
+  const t = R.team[metric];
+  const tools = `<div class="rec-seg" role="tablist" aria-label="Показатель">${Object.entries(M).map(([k, v]) => `<button type="button" role="tab" data-recm="${k}" aria-selected="${k === metric}">${v}</button>`).join('')}</div>`;
+  return UI.panel(`🏆 Рекорды агентов · ${R.day}-й день периода`, R.periods ? `<div class="rec-hero">
+      <div class="rec-k"><span>Сравниваем</span><b>${curL}</b><small>с теми же днями ${R.periods} ${UI.plural(R.periods, 'прошлого периода', 'прошлых периодов', 'прошлых периодов')}</small></div>
+      <div class="rec-k gold"><span>Побили свой рекорд</span><b>${beat}<em> из ${withRec.length}</em></b><small>${M[metric].toLowerCase()} · пересчёт с каждой загрузкой</small></div>
+      <div class="rec-k"><span>Команда · ${M[metric].toLowerCase()}</span><b>$${f(t.now)}</b><small>${t.best ? `рекорд $${f(t.best.v)} · ${REP.recLabel(t.best.P, R.k)} · ${t.beat ? `<span class="pos">+${Math.round(t.pct - 100)}%</span>` : `${Math.round(t.pct)}%`}` : 'рекорда пока нет'}</small></div>
+    </div><div class="rec-legend"><span><i class="now"></i>этот период по дням</span><span><i class="best"></i>рекордный период по дням</span></div><div class="rec-grid">${sorted.map(card).join('')}</div>`
+    : UI.empty('Пока не с чем сравнивать', `Нужна хотя бы одна загрузка прошлого периода, сделанная не позже ${R.day}-го дня периода. С ежедневными загрузками рекорды появятся автоматически.`),
+  { cls: 'w12', sub: 'Рекорд — лучший результат агента за такое же число дней в любом прошлом периоде. Побил — этот период станет новой планкой для следующих.', tools: `<span id="repRec">${tools}</span>` });
 };
 
 // ---------- По дням / неделям / месяцам: what was sold and collected each day (the difference between daily uploads) ----------
