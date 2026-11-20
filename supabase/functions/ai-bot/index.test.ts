@@ -371,11 +371,25 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   await tgPost({ text: 'вопрос два' });
   eq(sentTexts().filter(t => t.includes('потрачено') && t.includes('запросов Gemini')).length, 1, '80% warning sent exactly once');
   D.env.delete('GEMINI_RPD');
+  D.env.set('GEMINI_FALLBACK_MODEL', 'off'); // the limit messages themselves; the fallback model has its own check below
   GEM = () => ({ __status: 429, body: { error: { code: 429, message: 'Quota exceeded for metric: generate_content_free_tier_requests, limit: 500', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } } });
+  let calls = GEM_LOG.length;
   await tgPost({ text: 'вопрос три' }); assert(lastText().includes('Дневной лимит Gemini исчерпан') && lastText().includes('/limits'), '429 per day: ' + lastText());
-  GEM = () => ({ __status: 429, body: { error: { code: 429, message: 'Quota exceeded', details: [{ violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }] }] } } });
+  eq(GEM_LOG.length - calls, 1, 'the daily limit is not retried');
+  const perMin = { __status: 429, body: { error: { code: 429, message: 'Quota exceeded', details: [{ violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }] }, { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '1s' }] } } };
+  GEM = () => perMin; calls = GEM_LOG.length;
   await tgPost({ text: 'вопрос четыре' }); assert(lastText().includes('лимит Gemini в минуту'), '429 per minute: ' + lastText());
-  eq(DB.ai_usage.reduce((s, r) => s + r.limited, 0), 2, 'refusals counted');
+  eq(GEM_LOG.length - calls, 2, 'per minute: one wait and one more try');
+  eq(DB.ai_usage.reduce((s, r) => s + r.limited, 0), 3, 'refusals counted');
+  // the per-minute limit passes after the wait → the answer comes, the user never sees the limit
+  let k = 0; GEM = () => (k++ ? say('Ответ после паузы') : perMin);
+  await tgPost({ text: 'вопрос пять' }); assert(lastText().startsWith('Ответ после паузы'), 'per minute: answered after the wait: ' + lastText());
+  // the daily limit of the main model → the free fallback model answers
+  D.env.set('GEMINI_FALLBACK_MODEL', 'gemini-fallback-test');
+  GEM = (_b: any, url: string) => /gemini-fallback-test/.test(url) ? say('Ответила запасная модель') : { __status: 429, body: { error: { code: 429, message: 'per day', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } } };
+  await tgPost({ text: 'вопрос шесть' }); assert(lastText().startsWith('Ответила запасная модель'), 'fallback model on the daily limit: ' + lastText());
+  assert(DB.ai_usage.some(r => r.model === 'gemini-fallback-test' && r.requests === 1), 'fallback usage counted under its own model');
+  D.env.delete('GEMINI_FALLBACK_MODEL');
 
   // the conversation really is stored: every question has its answer row
   eq(DB.ai_messages.filter(r => r.role === 'user').length, DB.ai_messages.filter(r => r.role === 'model').length, 'question/answer pairs stored');
@@ -386,7 +400,14 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   for (const k of Object.keys(GH)) delete GH[k]; for (const k of Object.keys(GHGZ)) delete GHGZ[k];
   await tgPost({ text: '/fresh' }); assert(lastText().includes('Нет доступа к данным CRM') && lastText().includes('404') && lastText().includes('GH_TOKEN'), '/fresh with 404: ' + lastText());
   await tgPost({ text: '/today' }); assert(lastText().includes('Нет доступа к данным CRM'), '/today with 404');
-  const g1 = GEM_LOG.length; await tgPost({ text: 'какой долг у Fozilxon?' }); assert(lastText().includes('Нет доступа к данным CRM') && GEM_LOG.length === g1, 'question with 404: no AI, clear error');
+  // a CRM question → the CRM tool answers with the data error (never with zeros)…
+  GEM = () => call('client_card', { client: 'Fozilxon' });
+  await tgPost({ text: 'какой долг у Fozilxon?' }); assert(lastText().includes('Нет доступа к данным CRM') && !/\$0\b|Долга нет/.test(lastText()), 'question with 404: clear error, no zeros: ' + lastText().slice(0, 200));
+  // …but everything that does not need the CRM keeps working: personal debts, reminders, tasks, the notebook, the web
+  GEM = () => call('personal_debts', {});
+  await tgPost({ text: 'мои личные долги' }); assert(lastText().includes('Личные долги') && !lastText().includes('Нет доступа'), 'without CRM data personal money still works: ' + lastText().slice(0, 200));
+  GEM = () => call('reminder_add', { at: `${ago(-30)}T10:00`, text: 'проверить склад' });
+  await tgPost({ text: 'напомни 15-го проверить склад' }); assert(lastText().startsWith('⏰ Напомню'), 'without CRM data reminders still work: ' + lastText().slice(0, 200));
   Object.assign(GH, saved); Object.assign(GHGZ, savedGz);
   await tgPost({ text: '/fresh' }); eq(lastText(), '🔄 Данные обновлены.', 'data back');
 
@@ -869,4 +890,91 @@ D.test('send_contract_files: no scans → the contract made in the platform, fou
   assert(/Отправил договор Nurmuhammad Chimyon/.test(M.TPL.send_contract_files(r)), 'reply text');
   const miss = await M.TOOLS.send_contract_files.run(db, { number: '999' }, { chatId: 111 });
   assert(/№999 не найден/.test(miss.error) && miss.contracts.includes('№284 Nurmuhammad Chimyon'), 'unknown number lists the contracts');
+});
+
+D.test('audit fixes: secrets, redaction, «лимит» words, edited messages, cancelled orders, Supabase retries', async () => {
+  // secrets copied from a phone or a page: invisible characters and quotes are removed (they crashed the Tavily header)
+  const zw = String.fromCharCode(0x200b), nb = String.fromCharCode(0xa0), bom = String.fromCharCode(0xfeff);
+  eq(M.cleanSecret(`${bom} "tvly-abc${zw}123"${nb}\n`), 'tvly-abc123', 'invisible chars and quotes removed');
+  // keys and tokens never reach the chat or the logs
+  const leak = M.redact('error sending request for url (https://api.telegram.org/bot123456:AAH-abcdefghijklmnopqrstuvw/sendMessage?key=AIzaSyA1234567890abcdefghijklmnopqrstu)');
+  assert(!/AAH-abc|AIzaSyA12/.test(leak) && /bot\*\*\*/.test(leak), 'token and key hidden: ' + leak);
+  // «лимит» of the bot vs a CRM limit
+  for (const t of ['лимит', 'сколько осталось лимитов?', 'limit qancha', 'какой лимит на сегодня']) assert(M.isLimitsQuestion(t), 'bot limit: ' + t);
+  for (const t of ['какой кредитный лимит у Fozilxon?', 'лимит долга клиента', 'у агента какой лимит', 'mijoz kredit limiti']) assert(!M.isLimitsQuestion(t), 'CRM limit goes to the AI: ' + t);
+  // a cancelled order does not make a sleeping client look active
+  const o = (id: number, date: string, status: number) => ({ id, created_date: date + ' 10:00:00', 'client.name': 'Sleepy', total_price: 100, status });
+  const db = M.build({ state: { ag: { clients: { Sleepy: { agent: 'A' } } }, wh: {}, ext: {} } }, { data: { orders: [o(1, ago(40), 3), o(2, ago(1), 4)] } }, null, null, [], []);
+  const sl = M.TOOLS.sleeping_clients.run(db, { min_days: 14 }, {});
+  eq([sl.count, sl.rows[0]?.days], [1, 40], 'last real order 40 days ago, the cancelled one ignored');
+  // an edited message is not answered again (it repeated writes: the same debt twice)
+  const before = DB.ai_ledger.length, g0 = GEM_LOG.length;
+  await M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: 99001, edited_message: { chat: { id: 111 }, from: { id: 111 }, text: 'дал Азизу $100' } }) }));
+  eq([DB.ai_ledger.length, GEM_LOG.length], [before, g0], 'edited message ignored');
+  // a Supabase read that hits «connection reset» is repeated; a write is not
+  const realFetch = (globalThis as any).fetch; let fails = 1, tries = 0;
+  (globalThis as any).fetch = (input: any, init: any = {}) => {
+    const url = String(typeof input === 'string' ? input : input.url);
+    if (url.includes('/rest/v1/ai_memory')) { tries++; if (fails-- > 0) return Promise.reject(new TypeError('connection reset')); }
+    return realFetch(input, init);
+  };
+  try {
+    const r = await M.TOOLS.memory_list.run(null, {}, { chatId: 111 });
+    assert(Array.isArray(r.facts) && tries === 2, 'read retried after connection reset: tries ' + tries);
+    fails = 5; tries = 0;
+    const w = await M.TOOLS.remember.run(null, { text: 'x', kind: 'fact' }, { chatId: 111 }).catch((e: Error) => ({ error: e.message }));
+    assert(w.error && /Supabase не ответил/.test(w.error) && tries === 1, 'write sent once, clear error: ' + JSON.stringify(w) + ' tries ' + tries);
+  } finally { (globalThis as any).fetch = realFetch; }
+  // a missing table names its own migration
+  const t = await M.TOOLS.task_list.run(null, {}, { chatId: 111 }).catch((e: Error) => ({ error: e.message }));
+  assert(/ai_tasks ещё не создана/.test(t.error) && /20261119000006_ai_tasks\.sql/.test(t.error), 'missing ai_tasks → its migration: ' + JSON.stringify(t));
+  // the Gemini key is sent in a header, never in the URL
+  GEM_LOG.length = 0; const g = (globalThis as any).fetch; let seenUrl = '', seenKey = '';
+  (globalThis as any).fetch = (input: any, init: any = {}) => { const u = String(typeof input === 'string' ? input : input.url); if (u.includes('generativelanguage')) { seenUrl = u; seenKey = init.headers?.['x-goog-api-key'] || ''; } return g(input, init); };
+  GEM = () => say('ok');
+  try { await tgPost({ text: 'привет, как дела?' }); } finally { (globalThis as any).fetch = g; }
+  assert(!/key=/.test(seenUrl) && seenKey === 'g', 'key in x-goog-api-key, not in the URL: ' + seenUrl);
+});
+
+D.test('tasks (kanban): add, board with buttons, move by button, progress → status, Mini App signed by Telegram', async () => {
+  DB.ai_tasks = []; SENT.length = 0;
+  const today = tz(new Date());
+  const a = await M.TOOLS.task_add.run(null, { title: 'Позвонить Азизу', due: ago(1), priority: 2 }, { chatId: 111 });
+  const b = await M.TOOLS.task_add.run(null, { title: 'Отчёт за неделю', status: 'doing' }, { chatId: 111 });
+  eq([a.status, b.status, b.open_tasks], ['todo', 'doing', 2], 'two open tasks');
+  assert(!(await M.TOOLS.task_add.run(null, { title: '  ' }, { chatId: 111 })).id, 'empty title refused');
+  await tgPost({ text: '/tasks' });
+  const board = SENT.filter(s => s.method === 'sendMessage').at(-1)!.body;
+  assert(/ПРОСРОЧЕНО|просрочено/.test(board.text) && /В ПРОЦЕССЕ/.test(board.text) && /🔥Позвонить Азизу/.test(board.text), 'board text: ' + board.text);
+  const kb = board.reply_markup.inline_keyboard.flat();
+  assert(kb.some((x: any) => x.callback_data === `tk:done:${a.id}:`) && kb.some((x: any) => x.web_app?.url), 'buttons and the Mini App');
+  // a press moves the card and redraws the same message
+  const press = (data: string) => M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: 99100 + Math.floor(Math.random() * 1e5), callback_query: { id: 'q', from: { id: 111 }, data, message: { chat: { id: 111 }, message_id: 7, text: 'board' } } }) }));
+  await press(`tk:done:${a.id}:`);
+  eq(DB.ai_tasks.find((t: any) => t.id === a.id).status, 'done', 'button → done');
+  assert(SENT.some(s => s.method === 'editMessageText' && s.body.message_id === 7), 'board redrawn in place');
+  assert(SENT.some(s => s.method === 'answerCallbackQuery' && /Готово/.test(s.body.text)), 'toast after the press');
+  // progress drives the status; a word query finds the task
+  const p = await M.TOOLS.task_set.run(null, { query: 'отчёт', progress: 100 }, { chatId: 111 });
+  eq([p.status, p.progress, p.open_tasks], ['done', 100, 0], '100 % → done');
+  assert(/всё сделано/.test(M.TPL.task_set(p)), 'all done note');
+  // another chat never sees these tasks
+  eq((await M.TOOLS.task_list.run(null, {}, { chatId: 222 })).todo, 0, 'own chat only');
+  // the Mini App: initData signed with the bot token → the owner; a wrong hash or another user → no access
+  const enc = new TextEncoder();
+  const hm = async (key: Uint8Array<ArrayBuffer>, data: string) => new Uint8Array(await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), enc.encode(data)));
+  const sign = async (user: number) => {
+    const p = new URLSearchParams({ auth_date: String(Math.floor(Date.now() / 1000)), query_id: 'Q', user: JSON.stringify({ id: user, first_name: 'S' }) });
+    const dcs = [...p.entries()].sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join('\n');
+    p.set('hash', [...await hm(await hm(enc.encode('WebAppData'), 'T'), dcs)].map(x => x.toString(16).padStart(2, '0')).join(''));
+    return p.toString();
+  };
+  eq(await M.webAppUser(await sign(111)), 111, 'signed owner gets in');
+  eq(await M.webAppUser(await sign(999)), null, 'a stranger is refused');
+  eq(await M.webAppUser((await sign(111)).replace(/hash=[0-9a-f]/, 'hash=0')), null, 'a forged hash is refused');
+  const api = (init: string, body: any) => M.serve(new Request('https://x/functions/v1/ai-bot/tasks', { method: 'POST', headers: { 'x-tg-init': init, 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+  eq((await api('', { op: 'list' })).status, 401, 'no signature → 401');
+  const added = await (await api(await sign(111), { op: 'add', title: 'С доски' })).json();
+  assert(added.tasks.some((t: any) => t.title === 'С доски') && added.today === today, 'Mini App adds and lists');
+  delete DB.ai_tasks;
 });

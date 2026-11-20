@@ -28,8 +28,21 @@
 // «Verify JWT» у функции должен быть выключен (Telegram не присылает токен Supabase).
 
 // deno-lint-ignore-file no-explicit-any
-// secrets are trimmed: a space, line break or quotes copied together with a token would make GitHub/Telegram reject it
-const env = (k: string, d = '') => String((globalThis as any).Deno?.env.get(k) || '').trim().replace(/^["'«]+|["'»]+$/g, '').trim() || d;
+// secrets are trimmed: a space, line break or quotes copied together with a token would make GitHub/Telegram reject it.
+// Invisible characters (zero-width space, non-breaking space, BOM, line breaks) that come with a copy from a phone or
+// a web page are removed too: in an HTTP header they crash fetch («not a valid ByteString» — that broke the Tavily search).
+// deno-lint-ignore no-control-regex -- control characters are exactly what this removes
+const INVISIBLE = /[\u0000-\u001f\u007f\u00a0\u00ad\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufeff]/g;
+export const cleanSecret = (v: any) => String(v || '').replace(INVISIBLE, '').trim().replace(/^["'«“]+|["'»”]+$/g, '').trim();
+const env = (k: string, d = '') => cleanSecret((globalThis as any).Deno?.env.get(k)) || d;
+// a key that goes into an HTTP header must be plain Latin-1: a Cyrillic look-alike letter gives a clear message instead of a crash
+function headerSafe(name: string, v: string) {
+  if (/[^\x20-\x7e]/.test(v)) throw new Error(`В секрете ${name} есть лишние символы (русская буква вместо латинской или эмодзи). Скопируйте ключ заново и вставьте в Supabase → Edge Functions → Secrets.`);
+  return v;
+}
+// tokens and keys never go to the chat or the logs: an error text of fetch contains the whole URL (bot token, ?key=)
+export const redact = (s: any) => String(s ?? '').replace(/bot\d+:[\w-]{20,}/g, 'bot***').replace(/([?&](?:key|token|access_token)=)[^&\s)]+/gi, '$1***')
+  .replace(/AIza[\w-]{30,}/g, 'AIza***').replace(/\b(?:ghp|github_pat|tvly|sb_secret)_[\w-]{10,}/g, '***');
 const CFG = {
   name: 'JUMAVOY',
   tg: () => env('TG_TOKEN'),
@@ -105,9 +118,10 @@ function best<T>(query: string, list: T[], key: (x: T) => string, limit = 8, min
 
 // ───────────────────────────── data (GitHub mitalcrm-data) ─────────────────────────────
 async function gh(path: string): Promise<Response> {
-  const r = await fetch(`https://api.github.com/repos/${CFG.owner()}/${CFG.repo()}/${path}`, {
-    headers: { Authorization: 'Bearer ' + CFG.ghToken(), Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'mital-ai-bot' },
-  });
+  // a timeout: a hanging GitHub must not hold the answer until the function is killed (~150 s)
+  const r = await fetchT(`https://api.github.com/repos/${CFG.owner()}/${CFG.repo()}/${path}`, {
+    headers: { Authorization: 'Bearer ' + headerSafe('GH_TOKEN', CFG.ghToken()), Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'mital-ai-bot' },
+  }, 30000);
   if (!r.ok) throw new Error(`GitHub ${r.status} для ${path}`);
   return r;
 }
@@ -279,11 +293,29 @@ async function sb(path: string, o: { method?: string; body?: any; prefer?: strin
   const headers: Record<string, string> = { apikey: key, 'Content-Type': 'application/json' };
   if (!key.startsWith('sb_')) headers.Authorization = 'Bearer ' + key; // legacy JWT key; new sb_secret_ keys go in apikey only
   if (o.prefer) headers.Prefer = o.prefer;
-  const r = await fetch(`${CFG.sbUrl()}/rest/v1/${path}`, { method: o.method || 'GET', headers, body: o.body === undefined ? undefined : JSON.stringify(o.body) });
+  const method = o.method || 'GET', url = `${CFG.sbUrl()}/rest/v1/${path}`, init = { method, headers, body: o.body === undefined ? undefined : JSON.stringify(o.body) };
+  // a read is safe to repeat: «connection reset» / 502–504 (seen in the logs) get two more tries; a write is sent once
+  let r: Response | null = null, last: any;
+  for (const wait of method === 'GET' ? [0, 400, 1200] : [0]) {
+    if (wait) await sleep(wait);
+    try { r = await fetchT(url, init, 15000); if (method !== 'GET' || ![502, 503, 504].includes(r.status)) break; await r.body?.cancel().catch(() => {}); }
+    catch (e) { last = e; r = null; }
+  }
+  if (!r) throw new Error('Supabase не ответил: ' + redact((last as Error)?.message || 'нет связи'));
   const t = await r.text();
-  if (!r.ok) throw new Error(/does not exist|PGRST205|schema cache/i.test(t) ? NO_DB : `Supabase ${r.status}: ${t.slice(0, 200)}`);
+  if (!r.ok) {
+    if (!/does not exist|PGRST205|schema cache/i.test(t)) throw new Error(`Supabase ${r.status}: ${t.slice(0, 200)}`);
+    const table = path.split('?')[0], mig = MIGRATION_OF[table];
+    throw new Error(mig ? `Таблица ${table} ещё не создана — выполните в Supabase SQL из миграции ${mig}` : NO_DB);
+  }
   return t ? JSON.parse(t) : null;
 }
+// which migration creates which table — a missing table names the right file instead of the first one
+const MIGRATION_OF: Record<string, string> = {
+  ai_messages: '20261118000001_mital_ai.sql', ai_memory: '20261118000001_mital_ai.sql', ai_reminders: '20261118000001_mital_ai.sql', ai_notebook: '20261118000001_mital_ai.sql', ai_events: '20261118000001_mital_ai.sql',
+  ai_ledger: '20261118000004_mital_ai_spheres.sql', ai_skills: '20261119000002_jumavoy_skills_google.sql', ai_google: '20261119000002_jumavoy_skills_google.sql', ai_tasks: '20261119000006_ai_tasks.sql',
+  ai_outbox: '20261119000001_bot_actions.sql', crm_inbox: '20261119000001_bot_actions.sql', 'rpc/ai_usage_add': '20261118000002_mital_ai_usage.sql',
+};
 const q = encodeURIComponent;
 
 // facts and rules the owner taught the bot: read before every answer (cached 1 minute)
@@ -390,7 +422,12 @@ async function officeText(buf: Uint8Array, ext: string): Promise<string> {
     return `## ${names[i] || 'Лист ' + (i + 1)}\n${rows.join('\n')}`;
   }).join('\n\n');
 }
-const b64 = (buf: Uint8Array) => { let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000)); return btoa(bin); };
+// the built-in Uint8Array.toBase64 (newer V8) is native and many times cheaper in CPU than the string loop — a 10 MB PDF
+// or a long voice message stays well inside the ~2 s CPU limit of the function; the loop stays as the fallback
+const b64 = (buf: Uint8Array) => {
+  if (typeof (buf as any).toBase64 === 'function') return (buf as any).toBase64();
+  let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000)); return btoa(bin);
+};
 const extOf = (name: string) => (String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/) || [])[1] || '';
 const geminiReads = (mime: string, ext: string) => /^image\//.test(mime) || mime === 'application/pdf' || ext === 'pdf';
 const TEXT_EXT = ['txt', 'md', 'csv', 'tsv', 'json', 'html', 'htm', 'xml', 'log'];
@@ -594,8 +631,13 @@ function balanceFor(db: any, from?: string, to?: string) {
   const asOf = grace ? to! : u.period_to;
   return { from, to: asOf, period: `${dm(from)} — ${dm(asOf)}`, byAgent };
 }
-const WRITES = new Set(['remember', 'forget', 'reminder_add', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'save_photo', 'send_saved_file', 'message_agent', 'crm_task', 'crm_note', 'message_client',
+const WRITES = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'reminder_add', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'save_photo', 'send_saved_file', 'message_agent', 'crm_task', 'crm_note', 'message_client',
   'skill_add', 'skill_delete', 'calendar_add']);
+// tools that do not need the CRM data: when GitHub / LINKO is down they keep working (reminders, personal money, tasks,
+// notebook, the outside world, Google); every other tool then answers with the data error instead of zeros
+const NO_CRM = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_cancel',
+  'personal_debt_add', 'personal_debts', 'personal_debt_delete', 'notebook_search', 'save_photo', 'send_saved_file', 'web_research', 'weather', 'promo_calc',
+  'currency_rates', 'news', 'skill_use', 'skill_add', 'skill_list', 'skill_delete', 'calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search']);
 
 // ───────────────────────────── actions ─────────────────────────────
 // Anything that reaches another person is only a DRAFT until the owner presses «✅ Отправить» (ai_outbox + inline buttons → onButton).
@@ -632,6 +674,7 @@ const phoneOf = (db: any, client: string) => {
 async function onButton(q: any) {
   const chatId = q.message?.chat?.id, uid = String(q.from?.id || ''), answer = (text = '') => tg('answerCallbackQuery', { callback_query_id: q.id, text: text.slice(0, 190) });
   if (!CFG.allowed().includes(uid)) return answer('Нет доступа');
+  if (/^tk:/.test(String(q.data || '')) && chatId) return taskButton(q, chatId, answer);
   const m = String(q.data || '').match(/^ob:(send|cancel):(\d+)$/); if (!m || !chatId) return answer();
   const now = new Date().toISOString();
   // claimed by a conditional update: a double tap never sends twice
@@ -680,7 +723,175 @@ export function staleNote(at: any, now = Date.now()) {
   return ` ⚠️ расчёт CRM устарел (${age}) — откройте MitalCRM на минуту, и бот получит свежие цифры`;
 }
 
+// ───────────────────────────── tasks: Google Tasks + a kanban board ─────────────────────────────
+// ai_tasks: todo («К выполнению») → doing («В процессе») → done («Готово»). The chat shows the board with buttons
+// (/tasks, «покажи задачи»), a press moves the card and redraws the board in place; «📋 Доска» opens the Telegram Mini App
+// (tasks.html on GitHub Pages), which talks to <function url>/tasks signed with Telegram initData (see tasksApi).
+const TASK_ST = ['todo', 'doing', 'done'] as const;
+const TASK_COL: Record<string, string> = { doing: '▶️ В ПРОЦЕССЕ', todo: '⬜ К ВЫПОЛНЕНИЮ', done: '✅ ГОТОВО' };
+const PRIO = ['', '❗', '🔥'];
+const DONE_DAYS = 7; // done cards stay on the board this long
+// a keyboard a tool wants under its answer: say() puts it under the last part of the next message to that chat
+const KB = new Map<number, any>();
+const short = (s: string, k: number) => (s.length > k ? s.slice(0, k - 1) + '…' : s);
+export const tasksUrl = () => {
+  const base = env('TASKS_URL', 'https://mital111222333.github.io/MitalCRM/tasks.html'), fn = env('SUPABASE_URL') ? `${env('SUPABASE_URL')}/functions/v1/ai-bot` : '';
+  return fn ? `${base}${base.includes('?') ? '&' : '?'}api=${q(fn)}` : base;
+};
+function taskSort(a: any, b: any) {
+  if (a.status === 'done') return String(b.done_at || '').localeCompare(String(a.done_at || ''));
+  return (b.priority || 0) - (a.priority || 0) || String(a.due || '9999').localeCompare(String(b.due || '9999')) || a.id - b.id;
+}
+async function taskRows(chatId: number, sphere?: string) {
+  const since = new Date(Date.now() - DONE_DAYS * 864e5).toISOString();
+  const rows = await sb(`ai_tasks?chat_id=eq.${chatId}&or=(status.eq.todo,status.eq.doing,done_at.gte.${q(since)})&order=id&limit=300`);
+  return (sphere ? rows.filter((r: any) => (r.sphere || 'work') === sphere) : rows).sort(taskSort);
+}
+const dueTag = (t: any, today = todayStr()) => !t.due || t.status === 'done' ? '' : t.due < today ? ` · ⚠️ просрочено (${dm(t.due)})` : t.due === today ? ' · 📌 сегодня' : ` · до ${dm(t.due)}`;
+const taskLine = (t: any) => `#${t.id} ${PRIO[t.priority || 0]}${t.title}${dueTag(t)}${t.status === 'doing' && t.progress > 0 ? ` · ${t.progress}%` : ''}${sphTag(t.sphere)}`;
+export const progressBar = (pct: number, w = 10) => '▓'.repeat(Math.round(pct / 100 * w)) + '░'.repeat(w - Math.round(pct / 100 * w));
+export function boardText(rows: any[], sphere?: string) {
+  const by = (s: string) => rows.filter(r => r.status === s), done = by('done').length, total = rows.length;
+  const pct = total ? Math.round(done / total * 100) : 0, late = rows.filter(r => r.status !== 'done' && r.due && r.due < todayStr()).length;
+  const out = [`📋 Задачи${sphere ? ' · ' + SPH[sphere] : ''} — готово ${done} из ${total}\n${progressBar(pct)} ${pct}%${late ? ` · ⚠️ просрочено: ${late}` : ''}`];
+  if (!total) return '📋 Задач пока нет.\nНапишите: «поставь задачу позвонить Азизу до пятницы» или /task текст';
+  for (const s of ['doing', 'todo', 'done']) {
+    const list = by(s); if (!list.length) continue;
+    out.push(`${TASK_COL[s]} (${list.length})\n` + lines(list, taskLine, s === 'done' ? 5 : 25) + (s === 'done' && list.length > 5 ? `\n…и ещё ${list.length - 5}` : ''));
+  }
+  return out.join('\n\n');
+}
+export function boardKeyboard(rows: any[], sphere = '') {
+  const kb: any[] = [], open = rows.filter(r => r.status !== 'done');
+  for (const t of open.slice(0, 12)) {
+    kb.push(t.status === 'doing'
+      ? [{ text: `✅ #${t.id} ${short(t.title, 22)}`, callback_data: `tk:done:${t.id}:${sphere}` }, { text: '↩️', callback_data: `tk:todo:${t.id}:${sphere}` }]
+      : [{ text: `▶️ #${t.id} ${short(t.title, 22)}`, callback_data: `tk:doing:${t.id}:${sphere}` }, { text: '✅', callback_data: `tk:done:${t.id}:${sphere}` }]);
+  }
+  kb.push([{ text: '🔄 Обновить', callback_data: `tk:ref:0:${sphere}` }, { text: '📋 Доска', web_app: { url: tasksUrl() } }]);
+  return { inline_keyboard: kb };
+}
+async function taskAdd(chatId: number, a: any) {
+  const title = String(a.title || '').trim().slice(0, 300); if (!title) return { error: 'Нет текста задачи' };
+  const due = /^\d{4}-\d{2}-\d{2}$/.test(String(a.due || '')) ? a.due : null, status = a.status === 'doing' ? 'doing' : 'todo', now = new Date().toISOString();
+  const [row] = await sb('ai_tasks', { method: 'POST', prefer: 'return=representation', body: { chat_id: chatId, title, note: String(a.note || '').slice(0, 2000), status, priority: Math.max(0, Math.min(2, Math.round(n(a.priority)))), due, sphere: sphereOf(a.sphere), progress: 0, started_at: status === 'doing' ? now : null } });
+  return row;
+}
+// one change of a task; the status follows the progress (100 % → done, >0 → in progress) and the other way round
+async function taskPatch(chatId: number, id: number, a: any) {
+  const now = new Date().toISOString(), p: any = { updated_at: now };
+  if (a.title != null && String(a.title).trim()) p.title = String(a.title).trim().slice(0, 300);
+  if (a.note != null) p.note = String(a.note).slice(0, 2000);
+  if (a.due !== undefined) p.due = /^\d{4}-\d{2}-\d{2}$/.test(String(a.due || '')) ? a.due : null;
+  if (a.priority != null) p.priority = Math.max(0, Math.min(2, Math.round(n(a.priority))));
+  if (a.sphere) p.sphere = sphereOf(a.sphere);
+  let st = TASK_ST.includes(a.status) ? a.status : undefined;
+  if (a.progress != null) { p.progress = Math.max(0, Math.min(100, Math.round(n(a.progress)))); if (!st) st = p.progress >= 100 ? 'done' : p.progress > 0 ? 'doing' : undefined; }
+  if (st) {
+    p.status = st;
+    if (st === 'doing') { p.started_at = now; p.done_at = null; }
+    if (st === 'done') { p.done_at = now; p.progress = 100; }
+    if (st === 'todo') { p.done_at = null; p.started_at = null; if (a.progress == null) p.progress = 0; }
+  }
+  const rows = await sb(`ai_tasks?id=eq.${id}&chat_id=eq.${chatId}`, { method: 'PATCH', body: p, prefer: 'return=representation' });
+  return rows?.[0] || null;
+}
+// a task named in words («задачу про Азиза») → its row: by number, else the open task whose title fits best
+async function taskFind(chatId: number, a: any) {
+  if (n(a.id) > 0) return (await sb(`ai_tasks?id=eq.${n(a.id)}&chat_id=eq.${chatId}`))[0] || null;
+  if (!a.query) return null;
+  const rows = (await taskRows(chatId)).filter((r: any) => r.status !== 'done' || a.status === 'todo');
+  return best(String(a.query), rows, (r: any) => r.title, 1).filter(h => h.s >= 0.5)[0]?.x || null;
+}
+async function sendBoard(chatId: number, sphere?: string) {
+  const rows = await taskRows(chatId, sphere);
+  return { text: boardText(rows, sphere), reply_markup: boardKeyboard(rows, sphere || '') };
+}
+// a button under the board: move the card, then redraw the same message
+async function taskButton(q: any, chatId: number, answer: (t?: string) => Promise<any>) {
+  const [, act, id, sph] = String(q.data).split(':'), sphere = SPHERES.includes(sph) ? sph : undefined;
+  let note = '';
+  if (act !== 'ref') {
+    const t = await taskPatch(chatId, +id, { status: act });
+    if (!t) return answer('Задача уже удалена');
+    const left = (await taskRows(chatId)).filter((r: any) => r.status !== 'done').length;
+    note = act === 'done' ? `✅ Готово: ${short(t.title, 60)} · осталось ${left}` : act === 'doing' ? `▶️ В процессе: ${short(t.title, 60)}` : `↩️ Вернул в «К выполнению»`;
+  }
+  const b = await sendBoard(chatId, sphere);
+  await tg('editMessageText', { chat_id: chatId, message_id: q.message.message_id, text: b.text.slice(0, 4096), reply_markup: b.reply_markup, disable_web_page_preview: true });
+  return answer(note || 'Обновлено');
+}
+// the Mini App: Telegram signs initData with the bot token (HMAC «WebAppData»); only ALLOWED_USERS get in, chat = user id
+async function hmacRaw(key: Uint8Array<ArrayBuffer>, data: string): Promise<Uint8Array<ArrayBuffer>> {
+  const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(data)));
+}
+export async function webAppUser(init: string, now = Date.now()): Promise<number | null> {
+  const p = new URLSearchParams(init || ''), hash = p.get('hash') || ''; if (!hash || !CFG.tg()) return null;
+  p.delete('hash');
+  const dcs = [...p.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, v]) => `${k}=${v}`).join('\n');
+  const sig = [...await hmacRaw(await hmacRaw(new TextEncoder().encode('WebAppData'), CFG.tg()), dcs)].map(b => b.toString(16).padStart(2, '0')).join('');
+  let diff = sig.length ^ hash.length; for (let i = 0; i < sig.length; i++) diff |= sig.charCodeAt(i) ^ (hash.charCodeAt(i) || 0);
+  if (diff || now / 1000 - n(p.get('auth_date')) > 7 * 86400) return null;
+  let id = ''; try { id = String(JSON.parse(p.get('user') || '{}').id || ''); } catch { return null; }
+  return id && CFG.allowed().includes(id) ? Number(id) : null;
+}
+const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, x-tg-init', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
+async function tasksApi(req: Request) {
+  const out = (v: any, status = 200) => new Response(JSON.stringify(v), { status, headers: { ...CORS, 'Content-Type': 'application/json; charset=utf-8' } });
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+  if (req.method !== 'POST') return out({ error: 'POST only' }, 405);
+  const chatId = await webAppUser(req.headers.get('x-tg-init') || '');
+  if (!chatId) return out({ error: 'Нет доступа: откройте доску из бота (/tasks → 📋 Доска)' }, 401);
+  const b = await req.json().catch(() => ({})), id = n(b.id);
+  try {
+    if (b.op === 'add') { const r = await taskAdd(chatId, b); if ((r as any).error) return out(r, 400); }
+    else if (b.op === 'move' || b.op === 'edit') { if (!await taskPatch(chatId, id, b.op === 'move' ? { status: b.status } : b)) return out({ error: 'Задача не найдена' }, 404); }
+    else if (b.op === 'del') await sb(`ai_tasks?id=eq.${id}&chat_id=eq.${chatId}`, { method: 'DELETE' });
+    else if (b.op && b.op !== 'list') return out({ error: 'Неизвестная операция' }, 400);
+    return out({ tasks: await taskRows(chatId), today: todayStr(), done_days: DONE_DAYS });
+  } catch (e) { return out({ error: (e as Error).message }, 500); }
+}
+
 const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, ctx: any) => any }> = {
+  task_add: {
+    desc: 'ПОСТАВИТЬ ЗАДАЧУ (как Google Задачи): «поставь задачу / добавь в задачи / надо сделать …». due — срок YYYY-MM-DD («до пятницы» → дата пятницы), priority 0 обычная / 1 важная / 2 срочная, status doing — если уже начал. Несколько задач — отдельный вызов на каждую. Это личный список владельца; задание АГЕНТУ — crm_task.',
+    params: { title: { type: 'string' }, note: { type: 'string' }, due: { type: 'string', description: 'YYYY-MM-DD' }, priority: { type: 'number' }, status: { type: 'string', enum: ['todo', 'doing'] }, sphere: SPHERE_PARAM },
+    async run(_db, a, ctx) {
+      const t: any = await taskAdd(ctx.chatId, a); if (t.error) return t;
+      KB.set(ctx.chatId, { inline_keyboard: [[{ text: '▶️ В процесс', callback_data: `tk:doing:${t.id}:` }, { text: '✅ Готово', callback_data: `tk:done:${t.id}:` }], [{ text: '📋 Все задачи', callback_data: 'tk:ref:0:' }, { text: '📋 Доска', web_app: { url: tasksUrl() } }]] });
+      const open = (await taskRows(ctx.chatId)).filter((r: any) => r.status !== 'done').length;
+      return { id: t.id, title: t.title, due: t.due, priority: t.priority, status: t.status, sphere: t.sphere, open_tasks: open };
+    },
+  },
+  task_list: {
+    desc: 'ЗАДАЧИ / КАНБАН-ДОСКА: «мои задачи», «что в процессе», «что осталось сделать», «покажи доску». Показывает колонки К выполнению / В процессе / Готово с прогрессом и кнопками.',
+    params: { sphere: SPHERE_PARAM },
+    async run(_db, a, ctx) {
+      const sphere = SPHERES.includes(a.sphere) ? a.sphere : undefined, rows = await taskRows(ctx.chatId, sphere);
+      KB.set(ctx.chatId, boardKeyboard(rows, sphere || ''));
+      return { text: boardText(rows, sphere), todo: rows.filter((r: any) => r.status === 'todo').length, doing: rows.filter((r: any) => r.status === 'doing').length, done_recent: rows.filter((r: any) => r.status === 'done').length };
+    },
+  },
+  task_set: {
+    desc: 'ИЗМЕНИТЬ ЗАДАЧУ: «задача 5 готова / сделал …» → status done; «начал / взял в работу» → doing; «верни в список» → todo; «сделал наполовину» → progress 50; перенести срок → due; переименовать → title; важность → priority. Задачу укажи номером id или словами в query.',
+    params: { id: { type: 'number' }, query: { type: 'string', description: 'слова из названия, если номер не назван' }, status: { type: 'string', enum: ['todo', 'doing', 'done'] }, progress: { type: 'number', description: '0–100 %' }, due: { type: 'string' }, title: { type: 'string' }, priority: { type: 'number' }, note: { type: 'string' } },
+    async run(_db, a, ctx) {
+      const t = await taskFind(ctx.chatId, a); if (!t) return { error: 'Не нашёл такую задачу — назовите номер (/tasks)' };
+      const r = await taskPatch(ctx.chatId, t.id, { ...a, id: undefined, query: undefined });
+      const left = (await taskRows(ctx.chatId)).filter((x: any) => x.status !== 'done').length;
+      return { id: r.id, title: r.title, status: r.status, progress: r.progress, due: r.due, open_tasks: left };
+    },
+  },
+  task_delete: {
+    desc: 'Удалить задачу (не выполнить, а убрать совсем) по номеру или словам.',
+    params: { id: { type: 'number' }, query: { type: 'string' } },
+    async run(_db, a, ctx) {
+      const t = await taskFind(ctx.chatId, a); if (!t) return { error: 'Не нашёл такую задачу — назовите номер (/tasks)' };
+      await sb(`ai_tasks?id=eq.${t.id}&chat_id=eq.${ctx.chatId}`, { method: 'DELETE' });
+      return { deleted: t.id, title: t.title };
+    },
+  },
   find_client: {
     desc: 'Найти клиента по части имени, ориентиру или телефону (имена на латинице, ищет и по кириллице). Вызывай, если не уверен в точном имени.',
     params: { query: { type: 'string', description: 'имя, часть имени, ориентир или телефон' } },
@@ -832,7 +1043,8 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
     run(db, a) {
       const g = resolveAgent(db, a.agent); if (a.agent && !g.name) return g;
       const min = n(a.min_days) || 14, t = todayStr(), last = new Map<string, string>();
-      for (const o of db.orders.values()) if (o.client && (!last.has(o.client) || last.get(o.client)! < o.date)) last.set(o.client, o.date);
+      // a cancelled order (status 4) is not a purchase: it must not make a sleeping client look active
+      for (const o of db.orders.values()) if (o.client && !cancelled(o) && (!last.has(o.client) || last.get(o.client)! < o.date)) last.set(o.client, o.date);
       const rows = [...last.entries()].map(([c, d]) => ({ client: c, agent: db.clients[c]?.agent || '', last_order: d, days: daysBetween(d, t), debt: db.debtors.get(c)?.total || 0 }))
         .filter(r => r.days >= min && (!g.name || r.agent === g.name)).sort((x, y) => y.days - x.days);
       return { note: `только клиенты, у которых был заказ с ${db.meta.orders_history_from}`, count: rows.length, rows: rows.slice(0, Math.min(n(a.limit) || 20, 60)).map(r => g.name ? { ...r, agent: undefined } : r) };
@@ -1508,8 +1720,17 @@ ${P.map((v, i) => `<tr><td class="k-ink">${i + 1}</td><td class="k-ink">${num(v)
 // searches by itself: DuckDuckGo (free, no key) → the top pages are read → Gemini writes the answer only from that text.
 // Once grounding is refused, the rest of the Google day goes straight to DuckDuckGo, so no request is wasted.
 let NO_GROUND_DAY = '';
+// the «no grounding today» mark is also kept in ai_events: after a cold start the function does not waste
+// one more Gemini request to learn again that Google Search is refused (the logs showed exactly that twice a day)
+async function groundingOff() {
+  const d = quotaDay(); if (NO_GROUND_DAY === d) return true;
+  if (!sbOn()) return false;
+  const r = await sb(`ai_events?key=eq.${q('noground:' + d)}&select=key`).catch(() => []);
+  if (r?.length) NO_GROUND_DAY = d;
+  return !!r?.length;
+}
 async function grounded(prompt: string, query: string) {
-  if (NO_GROUND_DAY !== quotaDay()) {
+  if (!await groundingOff()) {
     const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0.2 } };
     try {
       const d = await gemini(body, env('GEMINI_SEARCH_MODEL', CFG.model()));
@@ -1518,7 +1739,8 @@ async function grounded(prompt: string, query: string) {
       return { text: stripMd(partsText(d)), sources: sources as { title: string; url: string }[], requests: 1 };
     } catch (e) {
       if (!(e as any).searchLimit && !/Gemini (400|403|404)/.test((e as Error).message)) throw e;
-      console.warn('grounding off, DuckDuckGo instead:', (e as Error).message); NO_GROUND_DAY = quotaDay();
+      console.warn('grounding off, own search instead:', (e as Error).message); NO_GROUND_DAY = quotaDay();
+      if (sbOn()) await once('noground:' + NO_GROUND_DAY).catch(() => {});
     }
   }
   return { ...await selfSearch(prompt, query), requests: 1 };
@@ -1547,17 +1769,17 @@ async function pageText(url: string) {
 // Tavily (TAVILY_API_KEY, free 1000 searches a month at tavily.com) works from servers; DuckDuckGo needs no key, but often
 // answers servers with a bot check (status 202) — so it is only the last resort.
 export async function tavilySearch(query: string, max = 6) {
-  const r = await fetchT('https://api.tavily.com/search', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env('TAVILY_API_KEY')}` }, body: JSON.stringify({ query, max_results: max, search_depth: 'basic' }) }, 15000);
+  const r = await fetchT('https://api.tavily.com/search', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${headerSafe('TAVILY_API_KEY', env('TAVILY_API_KEY'))}` }, body: JSON.stringify({ query, max_results: max, search_depth: 'basic' }) }, 15000);
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Tavily ${r.status}: ${String(d.detail?.error || d.error || d.message || '').slice(0, 200)}`);
   return (d.results || []).filter((x: any) => x?.url).map((x: any) => ({ title: String(x.title || '').slice(0, 100), url: String(x.url), snippet: String(x.content || '').slice(0, 1500) }));
 }
 async function selfSearch(prompt: string, query: string) {
-  let hits: { title: string; url: string; snippet: string }[] = [], viaTavily = false;
-  if (env('TAVILY_API_KEY')) { try { hits = await tavilySearch(query); viaTavily = true; } catch (e) { console.warn('tavily', (e as Error).message); } }
+  let hits: { title: string; url: string; snippet: string }[] = [], viaTavily = false, tavilyErr = '';
+  if (env('TAVILY_API_KEY')) { try { hits = await tavilySearch(query); viaTavily = true; } catch (e) { tavilyErr = (e as Error).message; console.warn('tavily', redact(tavilyErr)); } }
   if (!hits.length) hits = await ddgSearch(query).catch(e => { console.warn('ddg', (e as Error).message); return []; });
   if (!hits.length) throw new Error(env('TAVILY_API_KEY')
-    ? 'Поиск в интернете сейчас не ответил. Попробуйте через пару минут.'
+    ? (/секрете|Tavily 40[13]/.test(tavilyErr) ? `Поиск в интернете не работает: ${/Tavily 40[13]/.test(tavilyErr) ? 'Tavily не принял ключ TAVILY_API_KEY — проверьте его на app.tavily.com' : tavilyErr}` : 'Поиск в интернете сейчас не ответил. Попробуйте через пару минут.')
     : 'Поиск в интернете недоступен: у ключа Gemini нет бесплатного поиска Google, а запасной поисковик не ответил. Подключите бесплатный ключ Tavily (секрет TAVILY_API_KEY) — тогда поиск заработает.');
   const texts = viaTavily ? hits.map(() => '') : await Promise.all(hits.slice(0, 3).map(h => pageText(h.url)));
   const mats = hits.map((h, i) => `[${i + 1}] ${h.title} — ${h.url}\n${h.snippet}${texts[i] ? '\nТекст страницы: ' + texts[i] : ''}`).join('\n\n');
@@ -2013,7 +2235,7 @@ const SERVICE = {
   heard: { type: 'string', description: 'если сообщение голосовое — дословно, что услышал' },
 };
 const REQUIRED: Record<string, string[]> = {
-  client_card: ['client'], agent_report: ['agent'], find_client: ['query'], notebook_search: ['query'],
+  task_add: ['title'], client_card: ['client'], agent_report: ['agent'], find_client: ['query'], notebook_search: ['query'],
   remember: ['text', 'kind'], forget: ['id'], reminder_add: ['at', 'text'], reminder_cancel: ['id'],
   personal_debt_add: ['person', 'action', 'amount'], personal_debt_delete: ['id'],
   crm_query: ['path'], promo_calc: ['items'],
@@ -2095,6 +2317,12 @@ const TPL: Record<string, (r: any) => string> = {
   sleeping_clients: r => !r.count ? 'Таких клиентов нет.' : [`😴 Давно не брали (${r.count})`, lines(r.rows, (c: any) => `• ${c.client}${c.agent ? ' · ' + c.agent.split(' ')[0] : ''} — ${c.days} дн. (последний ${dm(c.last_order)})${c.debt > 0.5 ? ', долг ' + $(c.debt) : ''}`, 20), `ℹ️ ${r.note}`].join('\n'),
   top_products: r => [`🏆 Топ товаров ${per(r)}`, lines(r.products, (p: any, i: number) => `${i + 1}. ${p.product} — ${p.qty} шт., ${$(p.sum)}`), `Всего: ${$(r.total_sum)}`].join('\n') + warn(r),
   stock: r => r.warehouses.map((w: any) => `🏬 ${w.warehouse} (на ${dm(w.taken_at)})\n` + (w.items.length ? lines(w.items, (i: any) => `• ${i.name} — ${i.available} шт.${i.reserved ? ` (+${i.reserved} в резерве)` : ''}`, 25) : 'ничего не найдено')).join('\n\n') || 'Склад не найден.',
+  task_add: r => `🆕 Задача #${r.id}: ${PRIO[r.priority || 0]}${r.title}${r.due ? ` · до ${dm(r.due)}` : ''}${r.status === 'doing' ? ' · ▶️ в процессе' : ''}${sphTag(r.sphere)}
+Открытых задач: ${r.open_tasks}`,
+  task_list: r => r.text,
+  task_set: r => `${r.status === 'done' ? '✅ Готово' : r.status === 'doing' ? `▶️ В процессе${r.progress ? ` · ${r.progress}% ${progressBar(r.progress)}` : ''}` : '⬜ К выполнению'}: #${r.id} ${r.title}${r.due && r.status !== 'done' ? ` · до ${dm(r.due)}` : ''}
+Открытых задач: ${r.open_tasks}${r.status === 'done' && !r.open_tasks ? ' — всё сделано 🎉' : ''}`,
+  task_delete: r => `🗑 Удалил задачу #${r.deleted}: ${r.title}`,
   send_contract_files: r => r.error ? `${r.error}${r.contracts?.length ? `\nДоговоры в CRM: ${r.contracts.join('; ')}` : r.candidates?.length ? `: ${r.candidates.join(', ')}` : ''}`
     : r.sent ? (r.kind === 'document' ? `📄 Отправил договор ${r.client} (${r.sent} шт.) — сканов в CRM нет, это сам договор из платформы.` : `Отправил ${r.sent} файл(а) договора ${r.client}.`)
     : `${r.client}: ${r.note || 'файлы не отправились'}${r.contracts_in_crm?.length ? `\nДоговоры в CRM: ${r.contracts_in_crm.join('; ')}` : ''}`,
@@ -2221,7 +2449,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 12. «Напомни …» → reminder_add: переведи время в YYYY-MM-DDTHH:MM по Ташкенту (сейчас ${t} ${L.time}; «через 2 часа» — прибавь к текущему времени). Список и отмена — reminder_list, reminder_cancel.
 13. Вопросы о правилах компании, ценах, условиях, акциях, документах, характеристиках товара → notebook_search. Отвечай только по найденным отрывкам и указывай источник в [квадратных скобках]; если в блокноте ответа нет — так и скажи.
 14. Если правило пользователя требует посчитать (бонус, процент) — возьми числа только из функций и покажи расчёт по шагам: 1 200 × 2% = 24. Сам числа не придумывай.
-15. Прогноз плана → plan_forecast. Кто перестал брать → stopped_clients. Что заканчивается на складе → stock_running_out. Обещания оплат → promises. Файл для NotebookLM → notebooklm_export. «Пришли / покажи договор (шартнома) клиента или №N» → send_contract_files (client и/или number) — он присылает сканы, а если их нет, сам договор из платформы; не ищи договор через crm_query.
+15. Прогноз плана → plan_forecast. Кто перестал брать → stopped_clients. Что заканчивается на складе → stock_running_out. Обещания оплат → promises. Файл для NotebookLM → notebooklm_export. «Пришли / покажи договор (шартнома) клиента или №N» → send_contract_files (client и/или number) — он присылает сканы, а если их нет, сам договор из платформы; не ищи договор через crm_query. ЗАДАЧИ (личный список владельца, как Google Задачи): «поставь / добавь задачу», «надо сделать» → task_add; «мои задачи / доска / что в процессе» → task_list; «готово / сделал / начал / наполовину / перенеси срок» → task_set; задание АГЕНТУ — это crm_task, а «напомни в 10» — reminder_add.
 16. Если прислали фото или документ (накладная, чек, прайс) — внимательно прочитай его. Для накладной перечисли товары, количество и суммы и, если указан клиент, сверь с его заказами в CRM (orders с with_products).
 17. СФЕРЫ: у remember, reminder_add и save_photo всегда указывай sphere по смыслу (у notebook_search и send_saved_file — только если сфера ясна из вопроса): work — всё про MITAL (клиенты, агенты, товары, план, склад, команда); personal — личные дела, здоровье, покупки; family — жена, дети, родители, родные; friends — друзья; ideas — бизнес-идеи и планы на будущее. Если сфера совсем неясна — коротко спроси. Отвечай в той сфере, о которой спрашивают, и не смешивай личное с рабочим.
 18. ДЕНЬГИ — ЛИЧНЫЕ И РАБОЧИЕ НЕ СМЕШИВАЙ. «Я должен / мне должны / я занял / дал в долг / вернул / мои долги / сколько у меня долгов / кто мне должен» → ЛИЧНЫЕ: personal_debts или personal_debt_add. Долги клиентов MITAL («должники», «долг клиента X», «долги агента», «кого дожимать», «остаток клиента») → debtors / client_card / collect_today. Если человек есть среди клиентов CRM и речь о товаре или оплате за товар — это работа; если непонятно — коротко спроси «личный долг или клиент MITAL?».
@@ -2294,21 +2522,48 @@ async function trackUsage(model: string, limited: boolean, u: any) {
     }
   } catch (e) { console.warn('usage', (e as Error).message); }
 }
-async function gemini(body: any, model = CFG.model()) {
-  const call = () => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(CFG.gKey())}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-  // 500/503 «the model is experiencing high demand» is temporary: two more tries before giving up
-  let r = await call();
-  for (const wait of [1500, 4000]) { if (r.status !== 500 && r.status !== 503) break; await r.body?.cancel().catch(() => {}); await new Promise(res => setTimeout(res, wait)); r = await call(); }
-  const d = await r.json().catch(() => ({}));
-  await trackUsage(model, r.status === 429, d.usageMetadata);
+// usage is written in the background (it used to add a Supabase round trip to every Gemini step);
+// handle() waits for it once at the end, before the «🔋 Лимит» line is built
+const USAGE_P: Promise<any>[] = [];
+export async function usageSettled() { while (USAGE_P.length) await Promise.allSettled(USAGE_P.splice(0)); }
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+const perDayLimit = (d: any) => /per.?day|PerDay|daily/i.test(JSON.stringify(d?.error || {}));
+// «retryDelay: "17s"» from Google's RetryInfo — how long the per-minute limit wants us to wait
+export const retrySeconds = (d: any) => { const x = (d?.error?.details || []).find((v: any) => /RetryInfo/.test(v?.['@type'] || ''))?.retryDelay; const s = parseFloat(String(x || '')); return Number.isFinite(s) ? s : 0; };
+// GEMINI_FALLBACK_MODEL: a second free model with its own quota, used when the main one says 429 (per minute after one
+// wait, or the daily limit). «off» switches it off. If the fallback fails too, the user gets the usual limit message.
+const fallbackModel = () => env('GEMINI_FALLBACK_MODEL', 'gemini-2.5-flash-lite');
+async function gemini(body: any, model = CFG.model(), canFallback = true): Promise<any> {
+  const search = !!body.tools?.some((t: any) => t.google_search);
+  // the key goes in a header, not in the URL: a network error prints the whole URL, and it reached the logs
+  const once1 = () => fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': headerSafe('GEMINI_KEY', CFG.gKey()) }, body: JSON.stringify(body),
+  }, 90000);
+  const call = async () => {
+    // 500/503 «the model is experiencing high demand» is temporary: two more tries before giving up
+    let r = await once1();
+    for (const wait of [1500, 4000]) { if (r.status !== 500 && r.status !== 503) break; await r.body?.cancel().catch(() => {}); await sleep(wait); r = await once1(); }
+    const d = await r.json().catch(() => ({}));
+    if (r.ok || r.status === 429) USAGE_P.push(trackUsage(model, r.status === 429, d.usageMetadata));
+    return { r, d };
+  };
+  let { r, d } = await call();
+  // the per-minute limit (free tier ~15 a minute) passes by itself: wait as long as Google asks (≤ 20 s) and try once more
+  if (r.status === 429 && !search && !perDayLimit(d)) {
+    const s = retrySeconds(d);
+    if (s <= 20) { console.warn('gemini 429 per minute, waiting', s || 5, 's'); await sleep(Math.max(2, s || 5) * 1000); ({ r, d } = await call()); }
+  }
   if (r.status === 429) {
     console.warn('gemini 429', model, JSON.stringify(d.error || {}).slice(0, 600));
-    if (body.tools?.some((t: any) => t.google_search)) throw Object.assign(new Error('Лимит поиска в интернете (Google Search в Gemini) на сегодня исчерпан. Обычные вопросы по CRM работают.'), { searchLimit: true });
-    const perDay = /per.?day|PerDay|daily/i.test(JSON.stringify(d.error || {})), rs = quotaReset();
-    throw new Error(perDay
-      ? `Дневной лимит Gemini исчерпан. Обновится в ${rs.at} (через ${rs.in}). Пока работают команды без ИИ: /today /dolg /k /plan /brief. Подробнее: /limits`
+    if (search) throw Object.assign(new Error('Лимит поиска в интернете (Google Search в Gemini) на сегодня исчерпан. Обычные вопросы по CRM работают.'), { searchLimit: true });
+    const fb = fallbackModel();
+    if (canFallback && fb && fb !== 'off' && fb !== model) {
+      try { const out = await gemini(body, fb, false); console.log('gemini fallback used:', fb); return out; }
+      catch (e) { console.warn('gemini fallback', fb, redact((e as Error).message)); }
+    }
+    const rs = quotaReset();
+    throw new Error(perDayLimit(d)
+      ? `Дневной лимит Gemini исчерпан. Обновится в ${rs.at} (через ${rs.in}). Пока работают команды без ИИ: /today /dolg /k /plan /brief /tasks. Подробнее: /limits`
       : 'Слишком много вопросов подряд (лимит Gemini в минуту). Подождите минуту и спросите снова.');
   }
   if (!r.ok) throw new Error(`Gemini ${r.status}: ${d.error?.message || ''}`);
@@ -2361,7 +2616,11 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
     for (const p of calls) {
       const { name } = p.functionCall, args = { ...(p.functionCall.args || {}) }; used.push(name);
       let result: any;
-      try { result = TOOLS[name] ? await TOOLS[name].run(db, args, { chatId, media }) : { error: 'нет такой функции' }; } catch (e) { result = { error: (e as Error).message }; }
+      try {
+        result = !TOOLS[name] ? { error: 'нет такой функции' }
+          : db.meta.data_error && !NO_CRM.has(name) ? { error: db.meta.data_error } // no CRM data → say so, never answer with zeros
+          : await TOOLS[name].run(db, args, { chatId, media });
+      } catch (e) { result = { error: redact((e as Error).message) }; }
       requests += n(result?.ai_requests); // web research spends its own Gemini requests — they count for this answer too
       done.push({ name, args, result });
       responses.push({ functionResponse: { name, response: { result } } });
@@ -2379,11 +2638,19 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
   return { text: 'Вопрос получился слишком сложным — разбейте, пожалуйста, на части.', used, requests };
 }
 
+// «сколько осталось лимитов?», «лимит», «limit qancha» — the bot's own Gemini limit. A CRM limit («кредитный лимит
+// клиента», «лимит агента») is a work question and goes to the AI: it used to be answered with /limits by mistake
+export function isLimitsQuestion(text: string) {
+  const t = String(text || '').trim().toLowerCase();
+  if (t.length > 60 || t.startsWith('/') || !/лимит|limit/.test(t)) return false;
+  if (/кредит|клиент|агент|долг|склад|товар|договор|kredit|mijoz|qarz/.test(t)) return false;
+  return /^(\S+\s+){0,4}\S*(лимит|limit)\S*(\s+\S+){0,4}\s*[?？!.]*$/.test(t);
+}
 // ───────────────────────────── quick commands (no AI at all) ─────────────────────────────
 async function command(text: string, chatId: number): Promise<string | null> {
   // «сколько осталось лимитов?» in plain words is answered without spending a request
-  if (/^\/limits?\b/i.test(text) || (text.length <= 60 && !text.startsWith('/') && /лимит|limit/i.test(text))) return limitsText();
-  const m = text.match(/^\/(today|dolg|agents|k|sklad|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
+  if (/^\/limits?\b/i.test(text) || isLimitsQuestion(text)) return limitsText();
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
   const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
@@ -2394,6 +2661,8 @@ async function command(text: string, chatId: number): Promise<string | null> {
   if (cmd === 'news') return run('news', arg ? { topic: arg, limit: 10 } : { limit: 10 });
   if (cmd === 'cal') return run('calendar_events', /^\d{4}-\d{2}-\d{2}$/.test(arg) ? { from: arg } : /завтра|ertaga/i.test(arg) ? { from: addDays(todayStr(), 1) } : /недел|hafta/i.test(arg) ? { from: todayStr(), to: addDays(todayStr(), 6) } : {});
   if (cmd === 'skills' || cmd === 'skill') return skillCommand(chatId, arg);
+  if (cmd === 'tasks') { const sp = Object.keys(SPH).find(k => arg && norm(SPH[k]).includes(norm(arg))); return run('task_list', sp ? { sphere: sp } : {}); }
+  if (cmd === 'task') return arg ? run('task_add', { title: arg }) : 'Напишите задачу: /task позвонить Азизу (срок и важность можно сказать словами без /)';
   if (cmd === 'memory') return run('memory_list', {});
   if (cmd === 'reminders') return run('reminder_list', {});
   if (cmd === 'my') return run('personal_debts', arg ? { person: arg } : {});
@@ -2502,10 +2771,21 @@ async function morningBrief(db: any, chatId: number, world?: World) {
   const pers = await personalBrief(chatId);
   if (pers) out.push(pers);
   const gg = worldGoogle(w); if (gg) out.push(gg);
+  const tb = await tasksBrief(chatId); if (tb) out.push(tb);
   const rem = await remindersToday(chatId);
   if (rem.length) out.push(`⏰ Напоминания на сегодня:\n` + rem.map((r: any) => `• ${nowTime(r.due_at).slice(-5)}${sphTag(r.sphere)} — ${r.text}`).join('\n'));
   if (w.news?.length) out.push('📰 Новости:\n' + lines(w.news, (x: any) => `• ${x.title} (${x.source})`, 5) + '\nЕщё: /news');
   return out.join('\n\n');
+}
+// tasks in the morning brief: in progress, due today and overdue
+export async function tasksBrief(chatId: number) {
+  if (!sbOn()) return '';
+  const rows = await taskRows(chatId).catch(() => []), t = todayStr();
+  const doing = rows.filter((r: any) => r.status === 'doing'), hot = rows.filter((r: any) => r.status === 'todo' && r.due && r.due <= t);
+  if (!doing.length && !hot.length) return '';
+  const open = rows.filter((r: any) => r.status !== 'done').length;
+  return `📋 Задачи (открыто ${open}, /tasks):
+` + lines([...hot, ...doing], taskLine, 10);
 }
 // personal money in the morning brief: debts with a due date that is past, today or within 3 days
 export async function personalBrief(chatId: number) {
@@ -2661,8 +2941,13 @@ const ANS = new Map<string, { at: number; text: string; mem?: string }>();
 
 // ───────────────────────────── Telegram ─────────────────────────────
 async function tg(method: string, params: any) {
-  const r = await fetch(`https://api.telegram.org/bot${CFG.tg()}/${method}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
-  return r.json().catch(() => ({}));
+  // a failed send used to vanish without a trace: now it is in the logs (an unchanged board after a button press is fine)
+  try {
+    const r = await fetchT(`https://api.telegram.org/bot${CFG.tg()}/${method}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) }, 30000);
+    const j = await r.json().catch(() => ({}));
+    if (j && j.ok === false && !/not modified|query is too old/i.test(j.description || '')) console.warn('telegram', method, r.status, String(j.description || '').slice(0, 200));
+    return j;
+  } catch (e) { console.warn('telegram', method, redact((e as Error).message)); return { ok: false, description: 'нет связи с Telegram' }; }
 }
 async function say(chatId: number, text: string) {
   text = text || '…';
@@ -2670,7 +2955,8 @@ async function say(chatId: number, text: string) {
   for (let i = 0; i < text.length;) {
     let j = Math.min(text.length, i + 4000);
     if (j < text.length) { const nl = text.lastIndexOf('\n', j); if (nl > i + 2000) j = nl + 1; }
-    await tg('sendMessage', { chat_id: chatId, text: text.slice(i, j), disable_web_page_preview: true });
+    const kb = j >= text.length ? KB.get(chatId) : undefined; if (kb) KB.delete(chatId);
+    await tg('sendMessage', { chat_id: chatId, text: text.slice(i, j), disable_web_page_preview: true, ...(kb ? { reply_markup: kb } : {}) });
     i = j;
   }
 }
@@ -2720,16 +3006,19 @@ export function pcmToWav(pcm: Uint8Array, rate: number) {
   h.setUint32(24, rate, true); h.setUint32(28, rate * 2, true); h.setUint16(32, 2, true); h.setUint16(34, 16, true); w(36, 'data'); h.setUint32(40, pcm.length, true);
   const out = new Uint8Array(44 + pcm.length); out.set(new Uint8Array(h.buffer)); out.set(pcm, 44); return out;
 }
-const unb64 = (s: string) => { const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
+const unb64 = (s: string): Uint8Array => {
+  const F = (Uint8Array as any).fromBase64; if (typeof F === 'function') { try { return F(s); } catch { /* padding or alphabet issue → the loop below */ } }
+  const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out;
+};
 async function tts(text: string) {
   const model = env('GEMINI_TTS_MODEL', 'gemini-2.5-flash-preview-tts');
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(CFG.gKey())}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': headerSafe('GEMINI_KEY', CFG.gKey()) },
     body: JSON.stringify({
       contents: [{ parts: [{ text: `Прочитай спокойно, дружелюбно и чётко, как личный ассистент; язык текста не меняй:\n${text}` }] }],
       generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: env('GEMINI_TTS_VOICE', 'Charon') } } } },
     }),
-  });
+  }, 60000);
   const d = await r.json().catch(() => ({}));
   await trackUsage(model, r.status === 429, d.usageMetadata);
   if (r.status === 429) throw Object.assign(new Error('дневной лимит озвучки Gemini исчерпан — до сброса отвечаю текстом'), { limit: true });
@@ -2824,37 +3113,26 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 • Запомни: у мамы день рождения 3 марта · Запиши идею: магазин фильтров в Коканде
 • Мои бизнес-идеи · Что ты помнишь про семью?
 💼 Работа:
-• Какой остаток у Fozilxon Fargona?
+• Какой остаток у Fozilxon Fargona? · Пришли договор Pop Sarvarbek
 • Сколько сделал Адхамжон за период? Выполнит ли план?
-• Кого сегодня дожимать по оплате? Кто сорвал обещание?
-• Должники старше 30 дней в Намангане
-• Кто из постоянных клиентов перестал брать?
-• Что заканчивается на складе?
-• Пришли договор Pop Sarvarbek
-• Запомни: Adxamjon в отпуске до 25.11
-• Напомни завтра в 10 позвонить Fozilxon
-• Сколько выходит зарплата у Адхамжона? Кто опаздывал на этой неделе?
-• Лидерборд · сигналы · кто платит завтра по календарю · какие задания не выполнены
-• 📷 фото накладной — распознаю и сверю с заказами
-• 📷 фото товара + «запомни, цена $14» — сохраню фото с описанием; «пришли фото масла» — пришлю обратно
-• 📷 фото + «напомни завтра в 10 проверить» — напомню вместе с фото
+• Кого сегодня дожимать? Кто сорвал обещание? Кто перестал брать?
+• Должники старше 30 дней в Намангане · Что заканчивается на складе?
+• Запомни: Adxamjon в отпуске до 25.11 · Напомни завтра в 10 позвонить Fozilxon
+• Зарплата Адхамжона · Кто опаздывал? · Лидерборд · Сигналы · Календарь оплат
+• 📷 фото накладной — сверю с заказами; фото + «запомни, цена $14» — сохраню; «пришли фото масла» — пришлю
+📋 Задачи (канбан):
+• Поставь задачу позвонить Азизу до пятницы, срочно · Мои задачи · Задача 5 готова
+• /tasks — доска с кнопками ▶️ / ✅ и «📋 Доска» на весь экран
 ✉️ Действия (сначала черновик — уходит только по кнопке «✅ Отправить»):
 • Отправь Адхамжону его остатки и скажи собрать быстрее — напишу агенту через бота CRM
 • Поставь Адхамжону задание собрать долг Fozilxon до пятницы — задание в CRM и агенту в Telegram
 • Запиши Fozilxon: обещал $500 в пятницу — пометка / обещание в карточку клиента CRM
 • Напиши клиенту Fozilxon про оплату — текст + ссылка на чат в Telegram и WhatsApp
 🌍 Интернет и мир:
-• Найди в интернете цены на Mobil 5W40 в Узбекистане · Что нового в налогах для ИП? — отвечу с источниками
-• Исследуй подробно рынок моторных масел в Фергане — глубокий поиск по нескольким направлениям
-• Погода в Намангане на 3 дня · Курс доллара · Новости бизнеса
-📅 Google (подключить: /google):
-• Что у меня завтра в календаре? · Запиши в календарь встречу с Liman в пятницу в 15:00
-• Есть новые письма? · Прочитай письмо от поставщика · Телефон Азиза из контактов
-• Утром покажу события дня, дни рождения и новые письма
-🧩 Навыки (как в OpenJarvis):
-• Научись: когда прошу письмо поставщику — возьми остатки со склада и напиши заказ на неделю
-• Сделай недельный отчёт · Разбери работу Адхамжона · Напиши Fozilxon про долг на узбекском — готовые навыки
-• /skills — список · /skill ссылка на SKILL.md или файл SKILL.md с подписью /skill — импорт
+• Найди в интернете цены на Mobil 5W40 в Узбекистане — отвечу с источниками
+• Исследуй подробно рынок масел в Фергане · Погода в Намангане на 3 дня · Курс доллара
+📅 Google (/google): Что у меня завтра? · Запиши в календарь встречу в пятницу в 15:00 · Есть новые письма?
+🧩 Навыки: Сделай недельный отчёт · Разбери работу Адхамжона · Научись: когда прошу … — делай так · /skills
 📚 Блокнот знаний (как NotebookLM): пришлите PDF / Word / Excel / фото без подписи — я его прочитаю и буду отвечать по нему со ссылкой на источник. /nb — список.
 📤 /notebooklm — файл-сводка CRM для Google NotebookLM (по понедельникам присылаю сам).
 Быстрые команды (мгновенно, без ИИ):
@@ -2866,6 +3144,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /sklad — что заканчивается · /sklad товар — остатки
 /memory — что я помню · /forget N — забыть
 /reminders — напоминания · /cancel N — отменить
+/tasks — задачи (канбан) · /task текст — новая задача
 /my — личные долги · /my имя — история с человеком
 /weather [город] — погода · /kurs — курс ЦБ · /news [тема] — новости
 /cal — календарь (завтра, неделя) · /google — подключить Google
@@ -2876,7 +3155,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 Каждый день в ${CFG.hour('MORNING_HOUR', 8)}:00 присылаю план (с погодой, курсом и новостями; голосом, если не /voice off), в ${CFG.hour('EVENING_HOUR', 19)}:00 — итог дня.`;
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
-  ['k', 'Карточка клиента: /k имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'],
+  ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'],
   ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
   ['weather', 'Погода: /weather город'], ['kurs', 'Курс ЦБ'], ['news', 'Новости: /news тема'], ['cal', 'Google Календарь: /cal завтра'], ['google', 'Подключить Google'], ['skills', 'Навыки'],
   ['voice', 'Голосовые ответы: авто / on / off'], ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
@@ -2884,7 +3163,9 @@ const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого д
 const seen = new Map<number, number>();
 async function handle(u: any) {
   if (u.callback_query) { if (seen.has(u.update_id)) return; seen.set(u.update_id, Date.now()); return void await onButton(u.callback_query).catch(e => console.error('button', e)); }
-  const m = u.message || u.edited_message; if (!m?.chat) return;
+  // an EDITED message is not answered again: re-running it repeated what the first one already did
+  // (the same personal debt, reminder or task written twice); a corrected question is simply sent anew
+  const m = u.message; if (!m?.chat) return;
   if (seen.has(u.update_id)) return; seen.set(u.update_id, Date.now());
   if (seen.size > 500) for (const [k, t] of seen) if (Date.now() - t > 3600e3) seen.delete(k);
   const chatId = m.chat.id, uid = String(m.from?.id || '');
@@ -2922,7 +3203,10 @@ async function handle(u: any) {
     if (quick) { console.log('command', Date.now() - t0, 'ms'); return await say(chatId, quick); }
     const key = text && !doc && !photo ? `${chatId}|${norm(text)}` : '', hit = key && ANS.get(key);
     if (hit && Date.now() - hit.at < 300e3 && (await getHistory(chatId)).at(-1)?.parts?.[0]?.text === hit.mem) return await say(chatId, hit.text);
-    const [db, media] = await Promise.all([needData(), voice ? voicePart(voice) : doc || photo ? filePart(doc, photo) : null]);
+    // the CRM data, the file and the chat's history / memory / skills are fetched at the same time (ask() then reads them
+    // from the caches). Without the CRM data the bot still answers everything that does not need it (see NO_CRM)
+    const [db, media] = await Promise.all([loadDB(), voice ? voicePart(voice) : doc || photo ? filePart(doc, photo) : null,
+      getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
     const parts = voice ? [media, { text: '(голосовое сообщение: передай в поле heard, что услышал)' }]
       : media ? [media, { text: text || 'Что здесь? Если это накладная или чек — распиши товары, количество и суммы.' }] : [{ text }];
     const qText = voice ? '[голосовое]' : media ? `[${photo ? 'фото' : 'документ ' + (doc.file_name || '')}] ${text}` : text;
@@ -2930,12 +3214,17 @@ async function handle(u: any) {
     const res = await ask(db, chatId, parts, qText, fileInfo);
     console.log('ok', Date.now() - t0, 'ms', 'gemini requests:', res.requests, res.used.join(','));
     if (key && !res.used.some(x => WRITES.has(x))) { ANS.set(key, { at: Date.now(), text: res.text, mem: (await getHistory(chatId)).at(-1)?.parts?.[0]?.text }); if (ANS.size > 200) ANS.clear(); }
+    await usageSettled(); // the day's total for the «🔋 Лимит» line
     await say(chatId, res.text + usageLine(res.requests));
     if (await wantsVoice(chatId, !!voice, text)) await sayVoice(chatId, res.text);
   } catch (e) {
-    console.error(e);
-    await say(chatId, '⚠️ ' + ((e as Error).message || 'Ошибка'));
-  } finally { clearInterval(typing); }
+    console.error(redact((e as Error)?.stack || e));
+    await say(chatId, '⚠️ ' + (redact((e as Error).message) || 'Ошибка'));
+  } finally {
+    clearInterval(typing);
+    KB.delete(chatId); // a keyboard a tool prepared for an answer that never went out must not stick to the next message
+    await usageSettled();
+  }
 }
 
 const json = (v: any, status = 200) => new Response(JSON.stringify(v, null, 2), { status, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
@@ -2944,6 +3233,8 @@ async function serve(req: Request) {
   const rt = (globalThis as any).EdgeRuntime;
   // Google sign-in comes back here: <function url>/google?code=…&state=… (the state is signed, see oauthState)
   if (req.method === 'GET' && url.pathname.endsWith('/google')) return await googleCallback(url).catch(e => new Response('Ошибка: ' + esc((e as Error).message), { status: 500, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }));
+  // the kanban Mini App (tasks.html) → <function url>/tasks, signed with Telegram initData
+  if (url.pathname.endsWith('/tasks')) return await tasksApi(req);
   // schedule: pg_cron → ?cron=1 with the x-mital-cron header (= TG_SECRET). Answer at once, work in the background
   if (url.searchParams.has('cron')) {
     if (!CFG.secret() || req.headers.get('x-mital-cron') !== CFG.secret()) return new Response('forbidden', { status: 403 });

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Задачи JUMAVOY</title>
+<!-- Telegram Mini App: kanban board of JUMAVOY tasks (ai_tasks). Opened from the bot (/tasks → «📋 Доска»).
+     Data goes to <function url>/tasks (passed as ?api=…), signed with Telegram initData. -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:var(--tg-theme-secondary-bg-color,#f2f3f5);--card:var(--tg-theme-bg-color,#fff);--tx:var(--tg-theme-text-color,#15171a);--mut:var(--tg-theme-hint-color,#5f6670);--acc:var(--tg-theme-button-color,#1f6fd6);--acc-tx:var(--tg-theme-button-text-color,#fff);--line:rgba(127,127,127,.22);--red:#c9302c;--amber:#e9a23b;--green:#23804f;--todo:#8a94a6}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+button,input,select,textarea{font:inherit;color:inherit}
+.wrap{max-width:1180px;margin:0 auto;padding:12px 16px 24px}
+.top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}
+h1{font-size:20px;margin:0}.stat{color:var(--mut);font-size:13px}
+.bar{height:8px;border-radius:99px;background:var(--line);overflow:hidden;display:flex;margin-bottom:10px}.bar i{height:100%}
+.chips{display:flex;gap:6px;overflow-x:auto;margin-bottom:10px}
+.chip{border:1px solid var(--line);background:var(--card);border-radius:99px;padding:5px 12px;font-size:13px;white-space:nowrap;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--acc);border-color:var(--acc);color:var(--acc-tx)}
+form.add{display:grid;grid-template-columns:1fr auto;gap:8px;background:var(--card);border-radius:14px;padding:10px;border:1px solid var(--line)}
+form.add input[name=title]{border:0;background:transparent;outline:none;min-width:0}
+.more{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}.more>*{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:6px 8px;font-size:13px}
+.btn{border:0;background:var(--acc);color:var(--acc-tx);border-radius:10px;padding:8px 14px;font-weight:600;cursor:pointer}
+.tabs{display:none;gap:6px;margin:12px 0 0}.tabs button{flex:1;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:7px 4px;font-size:13px}
+.tabs button[aria-selected="true"]{border-color:var(--acc);color:var(--acc);font-weight:600}
+.board{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px;align-items:start}
+.col{border:1px solid var(--line);border-radius:16px;padding:10px;min-height:120px}.col.over{background:rgba(47,128,237,.1)}
+.col h2{font-size:13px;text-transform:uppercase;margin:2px 4px 10px;display:flex;justify-content:space-between;color:var(--mut)}
+.list{display:flex;flex-direction:column;gap:8px}
+.card{background:var(--card);border-radius:12px;padding:10px;border:1px solid var(--line);border-left:3px solid var(--pc,transparent);cursor:grab}
+.card.p1{--pc:var(--amber)}.card.p2{--pc:var(--red)}
+.card .t{font-weight:600;word-break:break-word}.card.done .t{text-decoration:line-through;color:var(--mut)}
+.note{color:var(--mut);font-size:13px;white-space:pre-wrap}
+.meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;font-size:12px;color:var(--mut)}
+.tag{background:var(--bg);border-radius:6px;padding:1px 6px}.tag.late{color:var(--red)}.tag.today{color:#a86a00}
+.pg{margin-top:8px;display:flex;gap:8px;align-items:center}.pg input{flex:1}.pg span{font-size:12px;color:var(--mut)}
+.acts{display:flex;gap:6px;margin-top:8px}.acts button{flex:1;border:1px solid var(--line);background:var(--bg);border-radius:9px;padding:6px 4px;font-size:13px;cursor:pointer}
+.acts .go{background:var(--acc);color:var(--acc-tx);border-color:var(--acc)}.acts .ok{background:var(--green);color:#fff;border-color:var(--green)}
+.empty,.msg{color:var(--mut);font-size:13px;text-align:center;padding:16px}
+dialog{border:0;border-radius:18px;padding:0;width:min(520px,calc(100vw - 32px));background:var(--card);color:var(--tx)}
+dialog form{padding:16px;display:flex;flex-direction:column;gap:10px}
+dialog label{font-size:12px;color:var(--mut);display:flex;flex-direction:column;gap:4px}
+dialog input,dialog select,dialog textarea{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:8px}
+.foot{display:flex;justify-content:space-between}.del{border:0;background:none;color:var(--red)}
+.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s}.toast.on{opacity:.95}
+@media (max-width:720px){.tabs{display:flex}.board{grid-template-columns:1fr}.col{display:none}.col.show{display:block}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><h1>📋 Задачи</h1><span class="stat" id="stat">…</span></div>
+  <div class="bar" id="bar"></div>
+  <div class="chips" id="chips"></div>
+  <form class="add" id="add" autocomplete="off">
+    <input name="title" placeholder="Новая задача…" maxlength="300" required>
+    <button class="btn">Добавить</button>
+    <div class="more"><input name="due" type="date"><select name="priority"><option value="0">Обычная</option><option value="1">❗ Важная</option><option value="2">🔥 Срочная</option></select><select name="sphere"></select></div>
+  </form>
+  <div class="tabs" id="tabs"></div>
+  <main class="board" id="board"><div class="msg">Загружаю…</div></main>
+</div>
+<dialog id="dlg"><form id="edit">
+  <label>Задача<input name="title" maxlength="300" required></label>
+  <label>Заметка<textarea name="note" rows="3"></textarea></label>
+  <label>Срок<input name="due" type="date"></label>
+  <label>Важность<select name="priority"><option value="0">Обычная</option><option value="1">❗ Важная</option><option value="2">🔥 Срочная</option></select></label>
+  <label>Статус<select name="status"><option value="todo">К выполнению</option><option value="doing">В процессе</option><option value="done">Готово</option></select></label>
+  <label>Сфера<select name="sphere"></select></label>
+  <label>Прогресс: <b id="pv">0%</b><input name="progress" type="range" min="0" max="100" step="10"></label>
+  <div class="foot"><button type="button" class="del" id="del">Удалить</button><span><button type="button" class="chip" id="cancel">Отмена</button> <button class="btn">Сохранить</button></span></div>
+</form></dialog>
+<div class="toast" id="toast"></div>
+<script>
+(() => {
+  const TG = window.Telegram && Telegram.WebApp, $ = s => document.querySelector(s);
+  // the Telegram signature (initData) goes only to a Supabase function: a changed ?api= link cannot collect it elsewhere
+  const API0 = (new URLSearchParams(location.search).get('api') || '').replace(/\/$/, '');
+  const API = /^https:\/\/[a-z0-9-]+\.supabase\.co\/functions\/v1\/[\w-]+$/i.test(API0) ? API0 + '/tasks' : '';
+  const COLS = [['todo', 'К выполнению', 'var(--todo)'], ['doing', 'В процессе', 'var(--acc)'], ['done', 'Готово', 'var(--green)']];
+  const SPH = { work: '💼 Работа', personal: '👤 Личное', family: '👨‍👩‍👧 Семья', friends: '🤝 Друзья', ideas: '💡 Идеи' };
+  const ls = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+  let tasks = [], today = '', sphere = ls.get('tk_sphere') || '', tab = ls.get('tk_tab') || 'doing', editing = null, drag = 0;
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const dm = d => d ? d.slice(8, 10) + '.' + d.slice(5, 7) : '';
+  const haptic = ok => { try { ok ? TG.HapticFeedback.notificationOccurred('success') : TG.HapticFeedback.impactOccurred('light'); } catch {} };
+  const toast = t => { if (!t) return; const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('on'), 2000); };
+  if (TG) { TG.ready(); TG.expand(); }
+  async function api(body) {
+    const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tg-init': (TG && TG.initData) || '' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({ error: 'Сервер ответил ' + r.status }));
+    if (!r.ok || j.error) throw new Error(j.error || 'Ошибка ' + r.status);
+    tasks = j.tasks; today = j.today; draw();
+  }
+  const run = (body, ok) => api(body).then(() => toast(ok)).catch(e => toast('⚠️ ' + e.message));
+  document.querySelectorAll('select[name=sphere]').forEach(s => s.innerHTML = Object.entries(SPH).map(([k, v]) => `<option value="${k}">${v}</option>`).join(''));
+  $('#chips').onclick = e => { const b = e.target.closest('[data-s]'); if (b) { sphere = b.dataset.s; ls.set('tk_sphere', sphere); draw(); } };
+  $('#tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; ls.set('tk_tab', tab); draw(); } };
+  function card(t) {
+    const late = t.status !== 'done' && t.due && t.due < today, now = t.status !== 'done' && t.due === today;
+    const acts = t.status === 'todo' ? '<button class="go" data-a="doing">▶ В процесс</button><button class="ok" data-a="done">✓ Готово</button>'
+      : t.status === 'doing' ? '<button data-a="todo">↩</button><button class="ok" data-a="done">✓ Готово</button>' : '<button data-a="doing">↺ Вернуть</button>';
+    return `<article class="card p${t.priority || 0} ${t.status}" draggable="true" data-id="${t.id}"><div class="t">${t.priority == 2 ? '🔥 ' : t.priority == 1 ? '❗ ' : ''}${esc(t.title)}</div>
+      ${t.note ? `<div class="note">${esc(t.note)}</div>` : ''}<div class="meta">${t.due ? `<span class="tag ${late ? 'late' : now ? 'today' : ''}">${late ? '⚠️ ' : '📅 '}${now ? 'сегодня' : dm(t.due)}</span>` : ''}${!sphere && t.sphere && t.sphere !== 'work' ? `<span class="tag">${SPH[t.sphere] || ''}</span>` : ''}<span>#${t.id}</span></div>
+      ${t.status === 'doing' ? `<div class="pg"><input type="range" min="0" max="100" step="10" value="${t.progress || 0}" data-pg><span>${t.progress || 0}%</span></div>` : ''}<div class="acts">${acts}</div></article>`;
+  }
+  function draw() {
+    const list = tasks.filter(t => !sphere || (t.sphere || 'work') === sphere), by = s => list.filter(t => t.status === s);
+    const n = { todo: by('todo').length, doing: by('doing').length, done: by('done').length }, total = list.length || 1;
+    const late = list.filter(t => t.status !== 'done' && t.due && t.due < today).length;
+    $('#stat').textContent = list.length ? `готово ${n.done} из ${list.length} · ${Math.round(n.done / total * 100)}%${late ? ' · ⚠️ просрочено ' + late : ''}` : 'задач нет';
+    $('#bar').innerHTML = COLS.slice().reverse().map(([s, , c]) => `<i style="width:${n[s] / total * 100}%;background:${c}"></i>`).join('');
+    $('#chips').innerHTML = [['', 'Все'], ...Object.entries(SPH)].map(([k, v]) => `<button class="chip" data-s="${k}" aria-pressed="${k === sphere}">${v}</button>`).join('');
+    $('#tabs').innerHTML = COLS.map(([s, l]) => `<button data-tab="${s}" aria-selected="${s === tab}">${l} · ${n[s]}</button>`).join('');
+    $('#board').innerHTML = COLS.map(([s, l]) => `<section class="col ${s === tab ? 'show' : ''}" data-col="${s}"><h2><span>${l}</span><span>${n[s]}</span></h2><div class="list">${by(s).map(card).join('') || `<div class="empty">${s === 'done' ? 'Готовые за 7 дней' : 'Пусто'}</div>`}</div></section>`).join('');
+  }
+  $('#board').addEventListener('click', e => {
+    const c = e.target.closest('.card'); if (!c) return;
+    const a = e.target.closest('[data-a]'), id = +c.dataset.id;
+    if (a) { haptic(a.dataset.a === 'done'); return run({ op: 'move', id, status: a.dataset.a }, a.dataset.a === 'done' ? '✅ Готово!' : a.dataset.a === 'doing' ? '▶ В процессе' : ''); }
+    if (!e.target.closest('.pg')) open(tasks.find(t => t.id === id));
+  });
+  $('#board').addEventListener('input', e => { if (e.target.matches('[data-pg]')) e.target.nextElementSibling.textContent = e.target.value + '%'; });
+  $('#board').addEventListener('change', e => { if (e.target.matches('[data-pg]')) { const v = +e.target.value; run({ op: 'edit', id: +e.target.closest('.card').dataset.id, progress: v }, v >= 100 ? '✅ Готово!' : ''); } });
+  $('#board').addEventListener('dragstart', e => { const c = e.target.closest('.card'); if (c) drag = +c.dataset.id; });
+  $('#board').addEventListener('dragover', e => { const col = e.target.closest('.col'); if (col && drag) { e.preventDefault(); col.classList.add('over'); } });
+  $('#board').addEventListener('dragleave', e => { const col = e.target.closest('.col'); if (col) col.classList.remove('over'); });
+  $('#board').addEventListener('drop', e => {
+    const col = e.target.closest('.col'); if (!col || !drag) return; e.preventDefault();
+    const t = tasks.find(x => x.id === drag), s = col.dataset.col; drag = 0;
+    if (t && t.status !== s) run({ op: 'move', id: t.id, status: s }, s === 'done' ? '✅ Готово!' : ''); else draw();
+  });
+  $('#add').onsubmit = e => {
+    e.preventDefault(); const f = e.target, title = f.title.value.trim(); if (!title) return;
+    run({ op: 'add', title, due: f.due.value || null, priority: +f.priority.value, sphere: f.sphere.value }, '🆕 Добавлено').then(() => { f.title.value = ''; f.due.value = ''; });
+  };
+  const dlg = $('#dlg'), ef = $('#edit');
+  function open(t) {
+    if (!t) return; editing = t;
+    ef.title.value = t.title; ef.note.value = t.note || ''; ef.due.value = t.due || ''; ef.priority.value = String(t.priority || 0);
+    ef.status.value = t.status; ef.sphere.value = t.sphere || 'work'; ef.progress.value = t.progress || 0; $('#pv').textContent = (t.progress || 0) + '%';
+    dlg.showModal();
+  }
+  ef.progress.oninput = () => $('#pv').textContent = ef.progress.value + '%';
+  $('#cancel').onclick = () => dlg.close();
+  ef.onsubmit = e => {
+    e.preventDefault(); if (!editing) return;
+    const body = { op: 'edit', id: editing.id, title: ef.title.value, note: ef.note.value, due: ef.due.value || null, priority: +ef.priority.value, sphere: ef.sphere.value };
+    if (ef.status.value !== editing.status) body.status = ef.status.value; else body.progress = +ef.progress.value;
+    dlg.close(); run(body, 'Сохранено');
+  };
+  $('#del').onclick = () => { if (editing && confirm('Удалить задачу?')) { dlg.close(); run({ op: 'del', id: editing.id }, '🗑 Удалено'); } };
+  if (!TG || !TG.initData || !API.startsWith('http')) { $('#board').innerHTML = '<div class="msg">Откройте доску из бота JUMAVOY: /tasks → «📋 Доска».</div>'; $('#add').hidden = true; $('#stat').textContent = ''; return; }
+  run({ op: 'list' });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) run({ op: 'list' }); });
+})();
+</script>
+</body>
+</html>
