@@ -136,6 +136,7 @@ const SENT: { method: string; body: any; bot?: string }[] = [];
 const sentTexts = () => SENT.filter(s => s.method === 'sendMessage').map(s => s.body.text);
 let GEM: (body: any, url?: any) => any = () => say('ok');
 const GEM_LOG: any[] = [];
+let HEARD: any = 'как дела'; // what the transcription request «hears» in a voice message
 function call(name: string, args: any) { return { candidates: [{ content: { role: 'model', parts: [{ functionCall: { name, args } }] } }] }; }
 function say(text: string) { return { candidates: [{ content: { role: 'model', parts: [{ text }] } }] }; }
 
@@ -158,7 +159,10 @@ function say(text: string) { return { candidates: [{ content: { role: 'model', p
     return new Response(JSON.stringify({ ok: true, result: true }));
   }
   if (url.host === 'generativelanguage.googleapis.com') {
-    const b = JSON.parse(init.body); GEM_LOG.push(b); const res = GEM(b, String(url));
+    const b = JSON.parse(init.body); GEM_LOG.push(b);
+    // a voice message is first transcribed by its own request (no tools, only the audio + TRANSCRIBE_PROMPT)
+    const isTr = !b.tools && JSON.stringify(b.contents || []).includes('Запиши ДОСЛОВНО');
+    const res = isTr ? (HEARD.__status ? HEARD : say(HEARD)) : GEM(b, String(url));
     if (res.__status) return new Response(JSON.stringify(res.body), { status: res.__status });
     return new Response(JSON.stringify({ usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 50 }, ...res }));
   }
@@ -302,7 +306,7 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   assert(GEM_LOG.at(-1).contents.length >= 3, 'conversation history sent');
   assert(DB.ai_messages.length >= 4, 'messages logged in Supabase');
   await tgPost({ text: '/memory' }); assert(lastText().includes('Abdulmutallib в отпуске'), '/memory');
-  GEM = () => call('bot_help', { heard: 'Скажи, что ты умеешь' });
+  HEARD = 'Скажи, что ты умеешь'; GEM = () => call('bot_help', {});
   await tgPost({ voice: { file_id: 'docx1', mime_type: 'audio/ogg' } });
   assert(lastText().startsWith('🎤 «Скажи, что ты умеешь»') && lastText().includes('Быстрые команды'), 'voice «what can you do» → help: ' + lastText().slice(0, 120));
   assert(GEM_LOG.findLast((b: any) => b.tools).tools[0].functionDeclarations.some((f: any) => f.name === 'bot_help'), 'bot_help declared');
@@ -1012,10 +1016,84 @@ D.test('tasks (kanban): add, board with buttons, move by button, progress → st
   };
   eq(await M.webAppUser(await sign(111)), 111, 'signed owner gets in');
   eq(await M.webAppUser(await sign(999)), null, 'a stranger is refused');
-  eq(await M.webAppUser((await sign(111)).replace(/hash=[0-9a-f]/, 'hash=0')), null, 'a forged hash is refused');
+  eq(await M.webAppUser((await sign(111)).replace(/hash=([0-9a-f])/, (_: string, c: string) => 'hash=' + (c === '0' ? '1' : '0'))), null, 'a forged hash is refused');
   const api = (init: string, body: any) => M.serve(new Request('https://x/functions/v1/ai-bot/tasks', { method: 'POST', headers: { 'x-tg-init': init, 'content-type': 'application/json' }, body: JSON.stringify(body) }));
   eq((await api('', { op: 'list' })).status, 401, 'no signature → 401');
   const added = await (await api(await sign(111), { op: 'add', title: 'С доски' })).json();
   assert(added.tasks.some((t: any) => t.title === 'С доски') && added.today === today, 'Mini App adds and lists');
   delete DB.ai_tasks;
+});
+
+// 20.11: «Golden Booster narxlari» was answered with warehouse stock, «can you count a promo?» with «Такого навыка нет»,
+// and a voice message was «heard» as the previous question. Prices now come from the price list in the notebook.
+const PRICE_DOC = { id: 1, title: 'MITAL PRICE.pdf', content: `30.10.2026
+
+GOLDEN BOOSTER MADE IN KOREA
+№ | Наименование | объём | 1л | шт. в коробке
+1 | GOLDEN BOOSTER Red 5W-30 API SQ/ILSAC GF-7A - 4L | 7,95 | 31,81 | 4
+2 | GOLDEN BOOSTER Purple 5W-30 API SN/CF ACEA A3-B4 - 4L | 7,33 | 29,32 | 4
+3 | GOLDEN BOOSTER Red 10W-40 API SQ/ILSAC GF-7A - 4L | 7,65 | 30,61 | 4
+6 | GOLDEN BOOSTER Purple 0W-20 API SP/ILSAC GF-6A - 4L | 8,67 | 34,68 | 4
+7 | GOLDEN BOOSTER ATF Multi LV Dex HP, Dex-VI - 4L | 8,88 | 35,53 | 4
+
+Liman OIL
+5 | Liman ATF dexron VI Full Synthetic - 5 L | 6,47 | 32,34 | 4
+
+ECO FILTER
+OIL FILTER
+4 | "ECO FILTER" OF-00208E (CAPTIVA) | 2,4 | 50` };
+const PROMO_DOC = { id: 2, title: 'АКЦИЯЛАР.pdf', content: 'AKSIYA GOLDEN BOOSTER PURPLE\n20 karobka 5w30/10w40 – 10%= 2111.04$\nGB ATF 12 dona – 383.72$' };
+
+D.test('price list: parsed from the notebook, found by Uzbek / Russian words, used by promo_calc', async () => {
+  const nb = [PRICE_DOC, PROMO_DOC], ctx = { notebook: nb };
+  const pl = M.priceRows(nb);
+  eq(pl.rows.length, 7, 'rows'); eq(pl.date, '30.10.2026', 'date'); eq(pl.source, 'MITAL PRICE.pdf', 'source (the promo sheet is not a price list)');
+  const red = pl.rows.find((r: any) => r.name.startsWith('GOLDEN BOOSTER Red 5W-30'));
+  eq([red.piece, red.liter, red.box, red.box_price], [31.81, 7.95, 4, 127.24], 'per piece / litre / box');
+  const f = pl.rows.find((r: any) => /CAPTIVA/.test(r.name)); eq([f.piece, f.box], [2.4, 50], 'filter: price and box');
+
+  const all = await M.TOOLS.price_list.run(null, { product: 'Golden Booster narxlari' }, ctx);
+  eq(all.found, 5, 'all Golden Booster');
+  const t = M.TPL.price_list(all);
+  assert(t.includes('от 30.10.2026') && t.includes('GOLDEN BOOSTER Red 5W-30 API SQ/ILSAC GF-7A - 4L — $31,81 за шт. ($7,95/л), в коробке 4 шт. = $127,24'), 'template: ' + t);
+  eq((await M.TOOLS.price_list.run(null, { product: 'GB qizil 5w30' }, ctx)).rows.map((r: any) => r.piece), [31.81], 'qizil = Red, 5w30 = 5W-30');
+  eq((await M.TOOLS.price_list.run(null, { product: 'голден бустер фиолетовый 5W-30 цена' }, ctx)).rows.map((r: any) => r.piece), [29.32], 'Cyrillic + Russian colour');
+  eq((await M.TOOLS.price_list.run(null, { product: 'Mobil 1' }, ctx)).found, 0, 'unknown product');
+  assert(/нет прайс-листа/.test((await M.TOOLS.price_list.run(null, {}, { notebook: [PROMO_DOC] })).error), 'no price list');
+
+  // promo: prices and pieces per box from the price list; a name that fits two products is asked, not guessed
+  const r = await M.TOOLS.promo_calc.run(null, { items: [
+    { name: 'Golden Booster Purple 5W-30', qty: 20, in_boxes: true },
+    { name: 'GB ATF', qty: 12, bonus: true },
+    { name: 'Captiva filter', qty: 20, bonus: true },
+  ], discount_pct: 10 }, ctx);
+  eq(r.items.map((x: any) => x.sum), [2345.6, 426.36, 48], 'sums from the price list'); eq(r.client_pays, 2111.04, '−10% as in the promo sheet');
+  eq(r.we_give, 2819.96, 'A'); eq(r.percent, 25.14, 'percent');
+  assert(M.TPL.promo_calc(r).includes('Цены взял из прайса: MITAL PRICE.pdf от 30.10.2026'), 'says where prices came from');
+  const amb = await M.TOOLS.promo_calc.run(null, { items: [{ name: 'Golden Booster 5W-30', qty: 1 }], client_pays: 10 }, ctx);
+  assert(/однозначную цену/.test(amb.error) && /подходит 2/.test(amb.error), 'ambiguous: ' + amb.error);
+  eq((await M.TOOLS.promo_calc.run(null, { items: [{ name: 'GB Red 5w30', qty: 2, price: 30 }], client_pays: 50 }, ctx)).we_give, 60, 'a price the user said wins');
+});
+
+D.test('a wrong skill name goes back to the AI; voice is transcribed without the history', async () => {
+  let step = 0;
+  GEM = () => (++step === 1 ? call('skill_use', { name: 'promo_calc' }) : say('Ha, hisoblab beraman: narxlarni prays-listdan o‘zim olaman.'));
+  await tgPost({ text: 'Jumavoy, bitta aksiyani hisoblab bera olasanmi?' });
+  assert(lastText().startsWith('Ha, hisoblab beraman') && !/навыка/.test(lastText()), 'no «Такого навыка нет»: ' + lastText());
+  assert(JSON.stringify(GEM_LOG.at(-1).contents.at(-1)).includes('Не вызывай skill_use снова'), 'the AI is told to call the function directly');
+
+  FILES.v2 = new Uint8Array([1, 2, 3]);
+  HEARD = 'Golden Booster narxlarini yubor';
+  GEM = () => say('🎤 «что-то старое»\n\nMana narxlar.');
+  await tgPost({ voice: { file_id: 'v2', mime_type: 'audio/ogg' } });
+  const tr = GEM_LOG.findLast((b: any) => !b.tools && JSON.stringify(b.contents).includes('Запиши ДОСЛОВНО')), main = GEM_LOG.findLast((b: any) => b.tools);
+  assert(!tr.tools && !JSON.stringify(tr.contents).includes('hisoblab bera olasanmi'), 'the transcription request has no history');
+  const lastUser = JSON.stringify(main.contents.at(-1));
+  assert(lastUser.includes('расшифровка) Golden Booster narxlarini yubor') && !lastUser.includes('inlineData'), 'the AI answers the transcribed text: ' + lastUser.slice(0, 200));
+  assert(sentTexts().some(t => t.startsWith('🎤 «Golden Booster narxlarini yubor»\n\nMana narxlar.')), 'heard line from the transcription, the model one removed');
+  assert(DB.ai_messages.some((m: any) => m.role === 'user' && m.text === 'Golden Booster narxlarini yubor'), 'history keeps the words, not «[голосовое]»');
+  HEARD = 'ПУСТО';
+  await tgPost({ voice: { file_id: 'v2', mime_type: 'audio/ogg' } });
+  assert(lastText().includes('Не расслышал'), 'silence: ' + lastText());
+  HEARD = 'как дела'; GEM = () => say('ok');
 });
