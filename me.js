@@ -722,7 +722,8 @@
     if (tab === 'more') {
       const L = [['clients', '👥', 'Мои клиенты'], ['contracts', '📄', 'Договоры'], ['stock', '📦', 'Склад'], ['disc', '⏰', 'Дисциплина'], ['chat', '💬', 'Чат с руководителем']];
       body.innerHTML = `<div class="cards">${L.map(([k, ic, t]) => `<a class="ccard" href="#" data-go="${k}" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">${ic}</span>${t}</a>`).join('')}
-        <a class="ccard" href="${ACADEMY}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">🎓</span>MITAL Akademiya</a></div>
+        <a class="ccard" href="${ACADEMY}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">🎓</span>MITAL Akademiya</a>
+        ${SB ? '<a class="ccard" href="#" data-ai="1" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">🤖</span>Мой ассистент JUMAVOY</a>' : ''}</div>
         ${installCard()}${langCard()}${tgCab ? '' : '<button class="btn gray" type="button" data-out="1" style="width:100%;margin-top:4px;padding:12px">🚪 Выйти из аккаунта</button>'}`;
       bindExtras(body);
       return;
@@ -956,7 +957,24 @@
     }
   }
 
+  // ---------- 🤖 the personal assistant JUMAVOY (edge function team-bot): a separate Telegram bot that answers from THIS cabinet.
+  // The function checks the login, gives a one-time code and the bot binds the Telegram chat that opens t.me/<bot>?start=<code>
+  // to this login. Only for a login (the database knows whose cabinet it is); the old link / cabinet button has no login.
+  const TEAM_BOT = SB_URL + '/functions/v1/team-bot?act=link';
+  async function openAi(btn) {
+    if (btn.dataset.busy) return; btn.dataset.busy = '1'; const was = btn.style.opacity; btn.style.opacity = '.5';
+    try {
+      const { data: { session } } = await SB.auth.getSession(); if (!session) { location.replace('./'); return; }
+      const r = await fetch(TEAM_BOT, { method: 'POST', headers: { Authorization: 'Bearer ' + session.access_token } }), j = await r.json().catch(() => ({}));
+      if (!j.url) throw new Error(j.error || 'Не удалось — проверьте интернет');
+      if (inTg) { TGA.openTelegramLink(j.url); try { TGA.close(); } catch { /* old Telegram */ } } else location.href = j.url;
+    } catch (e) { alert(e.message || 'Не удалось — проверьте интернет'); }
+    finally { delete btn.dataset.busy; btn.style.opacity = was; }
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('click', e => { const a = e.target.closest('[data-ai]'); if (!a || !SB) return; e.preventDefault(); openAi(a); });
+    { const n = $('#meAiTab'); if (n) n.hidden = !SB; }
     document.querySelectorAll('[data-tab]').forEach(a => a.onclick = e => { e.preventDefault(); tab = a.dataset.tab; q = ''; doing = null; draw(); scrollTo(0, 0); });
     document.addEventListener('click', e => { if (e.target.closest('[data-chat]') && tgCab) { try { TGA.close(); } catch { /* old Telegram */ } } });
     document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (!g) return; e.preventDefault(); tab = g.dataset.go; doing = null; draw(); scrollTo(0, 0); });
