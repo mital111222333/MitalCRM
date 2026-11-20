@@ -26,6 +26,9 @@
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.get('k') && h.get('u')) { store.set('mital_me', { k: h.get('k'), u: h.get('u') }); history.replaceState(null, '', location.pathname + location.search); }
   const link = inTg && qs.get('u') ? { tg: TGA.initData, u: qs.get('u') } : store.get('mital_me');
+  // tgCab: opened by the cabinet button of the supervisor's bot (signed initData, no login). Inside the MITAL CRM bot («Панель»)
+  // the person signs in with his login instead: then the page works as in a browser (own logout, chat through the bot link)
+  const tgCab = inTg && !!link?.tg;
   if (inTg) { try { TGA.ready(); TGA.expand(); if (TGA.colorScheme === 'dark') document.documentElement.dataset.theme = 'dark'; } catch { /* old Telegram */ } }
   // the third way in: the agent signed in to MITAL CRM with his own login (index.html sends agents here). The cabinet is read from
   // the MITAL database (agent_cabinets, only his own row — the database rules check it); it is written there by his supervisor's CRM.
@@ -59,7 +62,7 @@
     if (!confirm('Выйти из аккаунта на этом телефоне?')) return;
     try { if (SB) await SB.auth.signOut(); } catch { /* offline: the local session is removed anyway */ }
     for (const k of ['crm_me', 'crm_auth', 'mital_me', DATA_KEY, 'mital_me_data', 'mital_me_marks', 'mital_me_cq', 'mital_cnt']) { try { localStorage.removeItem(k); } catch { /* blocked */ } }
-    location.replace('./');
+    location.replace(inTg ? './?tg=1' : './');
   }
   function bindExtras(root) {
     root.querySelectorAll('[data-out]').forEach(b => b.onclick = logout);
@@ -89,7 +92,7 @@
   const CH = { msgs: [], last: 0, timer: null, sending: false };
   const chatUrl = p => S?.chat ? S.chat.replace(/\/+$/, '') + p : '';
   async function chatLoad() {
-    if (!inTg || !S?.chat) return;
+    if (!tgCab || !S?.chat) return;
     try {
       const r = await fetch(chatUrl('/agent/messages?since=' + CH.last), { headers: { Authorization: 'tma ' + TGA.initData }, cache: 'no-store' });
       const j = await r.json(); if (!Array.isArray(j)) return;
@@ -194,7 +197,7 @@
   const msg = (t, bad) => { const m = $('#meMsg'); m.textContent = t; m.className = bad ? 'neg' : 'mut'; m.hidden = !t; };
   // chat with the supervisor = the chat with the bot: inside Telegram the button closes the cabinet and the agent is back in that chat
   // (voice, photos, files — everything Telegram has); the supervisor answers from CRM → «Чаты Telegram». Outside Telegram it opens the bot.
-  const chatBtn = () => (inTg ? '<button class="btn gray" type="button" data-chat="1">💬 Чат с руководителем</button>' : S?.bot ? `<a class="btn gray" href="https://t.me/${esc(S.bot)}" target="_blank" rel="noopener">💬 Чат с руководителем</a>` : S?.boss ? `<a class="btn gray" href="https://t.me/${esc(S.boss)}" target="_blank" rel="noopener">💬 Написать руководителю</a>` : '');
+  const chatBtn = () => (tgCab ? '<button class="btn gray" type="button" data-chat="1">💬 Чат с руководителем</button>' : S?.bot ? `<a class="btn gray" href="https://t.me/${esc(S.bot)}" target="_blank" rel="noopener">💬 Чат с руководителем</a>` : S?.boss ? `<a class="btn gray" href="https://t.me/${esc(S.boss)}" target="_blank" rel="noopener">💬 Написать руководителю</a>` : '');
   const search = () => { const i = $('#meQ'); if (i) i.oninput = () => { q = i.value; draw(); const j = $('#meQ'); j.focus(); j.setSelectionRange(j.value.length, j.value.length); }; };
 
 
@@ -585,7 +588,7 @@
     const openN = (S.tasks || []).filter(isOpen).length; $('#meTaskN').textContent = openN ? `(${openN})` : '';
     if (tab !== 'chat') chatStop();
     if (tab === 'chat') {
-      if (!inTg || !S.chat) { body.innerHTML = panel('Чат с руководителем', `<p>Чат работает в кабинете внутри Telegram.</p>${chatBtn() ? `<div class="bar">${chatBtn()}</div>` : ''}`); return; }
+      if (!tgCab || !S.chat) { body.innerHTML = panel('Чат с руководителем', `<p>Чат работает в кабинете внутри Telegram.</p>${chatBtn() ? `<div class="bar">${chatBtn()}</div>` : ''}`); return; }
       body.innerHTML = panel('Чат с руководителем', `<div class="chat-list" id="chatList"><p class="mut">Загружаю…</p></div>
         <div class="chat-send"><label class="btn gray" title="Отправить фото" aria-label="Отправить фото" style="cursor:pointer;font-size:20px;padding:8px 12px;line-height:1">📷<input id="chatPh" type="file" accept="image/*" hidden></label><textarea id="chatT" rows="2" maxlength="3000" placeholder="Сообщение"></textarea><button class="btn" id="chatGo" type="button">➤</button></div><small id="chatE" class="neg" role="alert"></small>`, 'Голосовые и файлы можно отправить в самом чате с ботом — кнопка ниже');
       body.insertAdjacentHTML('beforeend', `<div class="bar">${chatBtn()}</div>`);
@@ -610,7 +613,7 @@
       const L = [['clients', '👥', 'Мои клиенты'], ['contracts', '📄', 'Договоры'], ['stock', '📦', 'Склад'], ['disc', '⏰', 'Дисциплина'], ['chat', '💬', 'Чат с руководителем']];
       body.innerHTML = `<div class="cards">${L.map(([k, ic, t]) => `<a class="ccard" href="#" data-go="${k}" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">${ic}</span>${t}</a>`).join('')}
         <a class="ccard" href="${ACADEMY}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;font-weight:600"><span style="font-size:26px">🎓</span>MITAL Akademiya</a></div>
-        ${installCard()}${langCard()}${inTg ? '' : '<button class="btn gray" type="button" data-out="1" style="width:100%;margin-top:4px;padding:12px">🚪 Выйти из аккаунта</button>'}`;
+        ${installCard()}${langCard()}${tgCab ? '' : '<button class="btn gray" type="button" data-out="1" style="width:100%;margin-top:4px;padding:12px">🚪 Выйти из аккаунта</button>'}`;
       bindExtras(body);
       return;
     }
@@ -838,7 +841,7 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-tab]').forEach(a => a.onclick = e => { e.preventDefault(); tab = a.dataset.tab; q = ''; doing = null; draw(); scrollTo(0, 0); });
-    document.addEventListener('click', e => { if (e.target.closest('[data-chat]') && inTg) { try { TGA.close(); } catch { /* old Telegram */ } } });
+    document.addEventListener('click', e => { if (e.target.closest('[data-chat]') && tgCab) { try { TGA.close(); } catch { /* old Telegram */ } } });
     document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (!g) return; e.preventDefault(); tab = g.dataset.go; doing = null; draw(); scrollTo(0, 0); });
     $('#meUpd').onclick = load;
     // header: language switch and «install» (shown when the browser offers it)
@@ -846,8 +849,8 @@
     const ib = document.createElement('button'); ib.type = 'button'; ib.id = 'meInst'; ib.textContent = '📲'; ib.title = 'Установить приложение'; ib.hidden = !installEv || standalone(); ib.onclick = install;
     $('#meUpd').before(ib, lb);
     // «Выйти» in the header (only the icon on the phone, so it always fits) — and a full button in «Ещё». Not inside Telegram:
-    // there the cabinet is opened by the bot, without a login
-    if (!inTg) {
+    // there the cabinet is opened by the bot, without a login (the MITAL CRM bot's «Панель» does sign in: logout is shown)
+    if (!tgCab) {
       const out = document.createElement('button'); out.type = 'button'; out.id = 'meOut'; out.innerHTML = '🚪<span class="lbl"> Выйти</span>'; out.title = 'Выйти из аккаунта'; out.setAttribute('aria-label', 'Выйти из аккаунта'); $('#meUpd').after(out);
       out.onclick = logout;
     }

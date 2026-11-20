@@ -14,6 +14,13 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="icon-192.png" sizes="192x192" type="image/png">
 <title>MITAL CRM</title>
+<script>/* opened from the «Панель» button of the MITAL CRM bot (?tg=1): Telegram's script first (it reads its data from the address),
+   then that data is removed from the address so the CRM pages (#/...) route as usual. In a normal browser nothing is loaded. */
+if (/[?&]tg=1\b/.test(location.search) || /tgWebApp/.test(location.hash)) document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\/script>');</script>
+<script>(function () { var T = window.Telegram && Telegram.WebApp; if (!T || !T.initData) return;
+  try { T.ready(); T.expand(); if (T.disableVerticalSwipes) T.disableVerticalSwipes(); } catch (e) { /* old Telegram */ }
+  document.documentElement.classList.add('in-tg');
+  if (/tgWebApp/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search); })();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&subset=cyrillic&display=swap">
 <link rel="stylesheet" href="style.css?v=202611191650">
