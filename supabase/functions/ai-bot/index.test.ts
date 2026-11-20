@@ -171,9 +171,12 @@ function say(text: string) { return { candidates: [{ content: { role: 'model', p
     assert(init.headers?.apikey === 'service', 'Supabase apikey header');
     return postgrest(url, method, init.body ? JSON.parse(init.body) : undefined, init.headers?.Prefer || '');
   }
+  if (url.host === 'oil.test' && OB) return OB(url, method, init);
   const w = world(url, method, init); if (w) return w;
   throw new Error('unexpected fetch ' + url);
 };
+// the OilBook admin API (/api/jumavoy/*) — set by the OilBook test
+let OB: ((url: URL, method: string, init: any) => Response) | null = null;
 
 const M: any = await import('./index.ts');
 let upd = 1;
@@ -1096,4 +1099,80 @@ D.test('a wrong skill name goes back to the AI; voice is transcribed without the
   await tgPost({ voice: { file_id: 'v2', mime_type: 'audio/ogg' } });
   assert(lastText().includes('Не расслышал'), 'silence: ' + lastText());
   HEARD = 'как дела'; GEM = () => say('ok');
+});
+
+D.test('OilBook: /oil, card by a Cyrillic name, draft → «✅ Выполнить» → admin action; cheque; token errors; nothing without a press', async () => {
+  const btn = (data: string) => M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: upd++, callback_query: { id: 'cb' + upd, from: { id: 111 }, data, message: { message_id: 9, chat: { id: 111 }, text: 'черновик' } } }) }));
+  const shops = [
+    { id: 3, name: 'Ali Motors', username: 'alimotors', status: 'soon', status_ru: 'скоро заканчивается', paid_until: '2026-12-01', days_left: 3, is_active: 1 },
+    { id: 4, name: 'Sardor Oil', username: 'sardor', status: 'paying', status_ru: 'оплачено', paid_until: '2027-02-01', days_left: 60, is_active: 1 },
+  ];
+  const ACT: any[] = [];
+  const js = (o: any, status = 200) => new Response(JSON.stringify(o), { status });
+  OB = (url, method, init) => {
+    if (init.headers?.Authorization !== 'Bearer obtok') return js({ ok: false, error: 'unauthorized' }, 401);
+    const p = url.pathname.replace('/api/jumavoy/', '');
+    if (p === 'summary') return js({ ok: true, date: T, counts: { all: 2, paying: 1, soon: 1 }, month: { received: 398000, payments: 2 }, today: { received: 0, payments: 0 },
+      expiring_7d: [shops[0]], overdue: [], pending_payments: [{ id: 9, shop_id: 3, shop_name: 'Ali Motors', amount: 199000, months: 1 }], pending_registrations: [], security_high_today: 0 });
+    if (p === 'shops') return js({ ok: true, total: 2, counts: {}, shops });
+    if (p === 'shop') {
+      const s = shops.find(x => String(x.id) === url.searchParams.get('id'));
+      return s ? js({ ok: true, shop: s, sub: { paid_until: s.paid_until, days_left: s.days_left, monthly: 199000 }, flags: { sms_enabled: 0, warehouse_enabled: 1 }, telegram_connected: true,
+        options: [{ months: 1, amount: 199000, discount: 0 }, { months: 3, amount: 567000, discount: 5 }], payments: [], branches: [] })
+        : js({ ok: false, error: 'точка не найдена' }, 404);
+    }
+    if (p === 'action' && method === 'POST') { ACT.push(JSON.parse(init.body)); return js({ ok: true, paid_until: '2027-03-01' }); }
+    return js({ ok: false, error: 'not found' }, 404);
+  };
+  D.env.set('OILBOOK_URL', 'https://oil.test/'); D.env.set('OILBOOK_TOKEN', 'obtok');
+  try {
+    // 1) /oil — the summary without the AI
+    const g0 = GEM_LOG.length;
+    await tgPost({ text: '/oil' });
+    assert(/OilBook/.test(lastText()) && /398 000 сум/.test(lastText()) && /Ali Motors — 199 000 сум/.test(lastText()) && /Подписка кончается/.test(lastText()), '/oil: ' + lastText());
+    eq(GEM_LOG.length, g0, '/oil spends no Gemini request');
+    // 2) a shop card: the name as heard in Russian finds the Latin one
+    GEM = () => call('oilbook_shop', { shop: 'Али моторс' });
+    await tgPost({ text: 'покажи али моторс в ойлбук' });
+    assert(/🛢 Ali Motors/.test(lastText()) && /Telegram: подключён/.test(lastText()) && /199 000 сум в месяц/.test(lastText()), 'card: ' + lastText());
+    // 3) extend: only a draft, OilBook is not touched until «✅ Выполнить»
+    GEM = () => call('oilbook_action', { action: 'extend', shop: 'Ali Motors', months: 3 });
+    await tgPost({ text: 'продли али моторс на 3 месяца' });
+    const dr = SENT.filter(s => s.method === 'sendMessage' && s.body.reply_markup).at(-1)!;
+    assert(/OilBook — Ali Motors/.test(dr.body.text) && /на 3 мес\. — 567 000 сум/.test(dr.body.text), 'draft: ' + dr.body.text);
+    eq(dr.body.reply_markup.inline_keyboard[0][0].text, '✅ Выполнить', 'button label');
+    eq(ACT.length, 0, 'nothing done before the press');
+    const data = dr.body.reply_markup.inline_keyboard[0][0].callback_data;
+    await btn(data);
+    eq(ACT[0], { action: 'extend', shop_id: 3, months: 3 }, 'the admin action after the press');
+    assert(SENT.some(s => s.method === 'editMessageText' && /✅ Выполнено в OilBook/.test(s.body.text) && /01\.03\.2027/.test(s.body.text)), 'done note with the new date');
+    await btn(data); eq(ACT.length, 1, 'double tap: done once');
+    // 4) the only pending cheque is confirmed by «подтверди оплату»
+    GEM = () => call('oilbook_action', { action: 'payment', decision: 'confirm' });
+    await tgPost({ text: 'подтверди оплату в ойлбук' });
+    const d2 = SENT.filter(s => s.method === 'sendMessage' && s.body.reply_markup).at(-1)!;
+    assert(/Подтвердить оплату: 199 000 сум/.test(d2.body.text), 'cheque draft: ' + d2.body.text);
+    await btn(d2.body.reply_markup.inline_keyboard[0][0].callback_data);
+    eq(ACT[1], { action: 'payment', payment_id: 9, decision: 'confirm' }, 'cheque confirmed');
+    // 5) cancel → nothing; unknown action → the list of what it can
+    GEM = () => call('oilbook_action', { action: 'active', shop: 'Sardor', on: false });
+    await tgPost({ text: 'отключи сардор' });
+    const d3 = SENT.filter(s => s.method === 'sendMessage' && s.body.reply_markup).at(-1)!;
+    assert(/ОТКЛЮЧИТЬ/.test(d3.body.text), 'off draft: ' + d3.body.text);
+    await btn(d3.body.reply_markup.inline_keyboard[0][1].callback_data);
+    eq(ACT.length, 2, 'cancelled: nothing done');
+    GEM = () => call('oilbook_action', { action: 'delete', shop: 'Sardor' });
+    await tgPost({ text: 'удали сардор' });
+    assert(/Такого действия в OilBook у меня нет/.test(lastText()) && /продлить подписку/.test(lastText()), 'unknown action: ' + lastText());
+    // 6) a wrong token / no secrets → a clear message
+    D.env.set('OILBOOK_TOKEN', 'bad');
+    await tgPost({ text: '/oil' });
+    assert(/не принял токен/.test(lastText()), 'bad token: ' + lastText());
+    D.env.delete('OILBOOK_TOKEN');
+    await tgPost({ text: '/oil' });
+    assert(/OilBook не подключён/.test(lastText()), 'no secrets: ' + lastText());
+    eq(await M.oilbookBrief(), '', 'no secrets → no OilBook block in the morning brief');
+  } finally {
+    D.env.delete('OILBOOK_URL'); D.env.delete('OILBOOK_TOKEN'); OB = null; GEM = () => say('ok');
+  }
 });
