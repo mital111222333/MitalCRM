@@ -4,7 +4,7 @@
 // auto-loader (doGet ?agent=code), which reads only that one file: the agent never gets the GitHub key or anybody else's data.
 // Stored in the synced state: ext.agentAccess = { agents: { [agent]: { on, code, wh, sentAt } }, publishedAt }.
 // «Режим офиса» (this device only): the CRM refreshes itself and the cabinets every 15 minutes while it is open.
-// Telegram: the same file is also saved as agents/tg/<telegram user id>.json; the bot's menu button «📱 Мой кабинет» opens me.html
+// Telegram: the same file is also saved as agents/tg/<telegram user id>.json; the button «📱 Открыть мой кабинет» in the bot's message opens me.html (the menu button is «Панель» — the login page)
 // as a Telegram Mini App, and the auto-loader serves that file after checking Telegram's signature (no link or code needed).
 window.EXT_PAGES = window.EXT_PAGES || {};
 
@@ -16,6 +16,19 @@ const AC = {
   newCode() { const b = crypto.getRandomValues(new Uint8Array(18)); return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); },
   async sha(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join(''); },
   miniUrl() { const base = location.origin + location.pathname.replace(/[^/]*$/, ''); return `${base}me.html?u=${encodeURIComponent(AC.web())}`; },
+  // «Панель»: the bot's menu button for everyone — the MITAL CRM login page (agents and store keepers land in their cabinet
+  // after signing in, the others in the CRM). The page outside GitHub Pages (a local copy) still points the button at the public one.
+  panelUrl() { const base = location.protocol === 'https:' ? location.origin + location.pathname.replace(/[^/]*$/, '') : 'https://mital111222333.github.io/MitalCRM/'; return base + '?tg=1'; },
+  panelBtn() { return { type: 'web_app', text: 'Панель', web_app: { url: AC.panelUrl() } }; },
+  // once per bot: the default button and every linked agent / store keeper (their chats had «Мой кабинет» / «Кабинет склада»)
+  async panelAll() {
+    const t = CRMLocal.ext().tg; if (!t?.token || t.panelFor === t.token.split(':')[0]) return 0;
+    await TG.call('setChatMenuButton', { menu_button: AC.panelBtn() });
+    const chats = new Set([...Object.values(t.chats || {}).map(c => c?.id), ...(typeof WC !== 'undefined' ? Object.keys(WC.cfg().stores) : [])].filter(Boolean).map(String));
+    let n = 0;
+    for (const id of chats) { try { await TG.call('setChatMenuButton', { chat_id: Number(id), menu_button: AC.panelBtn() }); n++; } catch { /* blocked the bot: gets the default «Панель» */ } }
+    t.panelFor = t.token.split(':')[0]; CRMLocal.touch(); return n;
+  },
   chatOf(agent) { const t = CRMLocal.ext().tg || {}; return t.token && t.chats?.[agent]?.id ? String(t.chats[agent].id) : ''; },
   // the bot's @username: the agent's chat with the supervisor is the chat with this bot (answered from CRM → Чаты Telegram)
   async bot() { if (AC._bot !== undefined) return AC._bot; try { AC._bot = (await TG.call('getMe')).username || ''; } catch { AC._bot = ''; } return AC._bot; },
@@ -167,14 +180,14 @@ const AC = {
     const c = AC.cloud(); if (!c) return;
     if (code) await AC.gh(c, 'DELETE', AC.DIR + (await AC.sha(code)) + '.json', { message: 'CRM: доступ агента закрыт' });
     const chat = agent && AC.chatOf(agent);
-    if (chat) { await AC.gh(c, 'DELETE', AC.DIR + 'tg/' + chat + '.json', { message: 'CRM: доступ агента закрыт' }); try { await TG.call('setChatMenuButton', { chat_id: Number(chat), menu_button: { type: 'default' } }); } catch { /* bot not reachable */ } }
+    if (chat) { await AC.gh(c, 'DELETE', AC.DIR + 'tg/' + chat + '.json', { message: 'CRM: доступ агента закрыт' }); try { await TG.call('setChatMenuButton', { chat_id: Number(chat), menu_button: AC.panelBtn() }); } catch { /* bot not reachable */ } }
   },
-  // the bot's menu button for this agent + a message with the button
+  // the bot's menu button for this agent («Панель», as everyone has) + a message with his cabinet button
   async connectTg(agent) {
     const chat = AC.chatOf(agent); if (!chat) throw new Error('Агент не привязан в «Telegram агентам»');
     const url = AC.miniUrl();
-    await TG.call('setChatMenuButton', { chat_id: Number(chat), menu_button: { type: 'web_app', text: 'Мой кабинет', web_app: { url } } });
-    await TG.call('sendMessage', { chat_id: Number(chat), parse_mode: 'HTML', text: '<b>Ваш кабинет MITAL CRM</b>\nВаши клиенты и долги, план и факт, склад, дисциплина и место в рейтинге — прямо в Telegram.\n\nНажмите кнопку ниже или «Мой кабинет» слева от поля ввода.', reply_markup: { inline_keyboard: [[{ text: '📱 Открыть мой кабинет', web_app: { url } }]] } });
+    await TG.call('setChatMenuButton', { chat_id: Number(chat), menu_button: AC.panelBtn() });
+    await TG.call('sendMessage', { chat_id: Number(chat), parse_mode: 'HTML', text: '<b>Ваш кабинет MITAL CRM</b>\nВаши клиенты и долги, план и факт, склад, дисциплина и место в рейтинге — прямо в Telegram.\n\nНажмите кнопку ниже. Со своим логином и паролем — синяя кнопка «Панель» слева от поля ввода.', reply_markup: { inline_keyboard: [[{ text: '📱 Открыть мой кабинет', web_app: { url } }]] } });
   },
 };
 
@@ -186,6 +199,8 @@ const AC = {
     if (typeof WC !== 'undefined' && WC.publishSb) WC.publishSb().catch(e => console.warn('store keepers (database)', e)); // завсклад with his own login
     if (typeof WC !== 'undefined' && WC.publish && Object.keys(WC.cfg().stores).length) WC.publish().catch(e => console.warn('store keepers (Telegram)', e)); // «Заканчивается», rating
   }, 20000); };
+  const panel = () => setTimeout(() => AC.panelAll().then(n => n && console.info('«Панель»: кнопка у', n, 'чатов')).catch(e => console.warn('«Панель»', e)), 25000);
+  Promise.resolve(CRMLocal.ready).then(panel); addEventListener('crm:login', panel);
   addEventListener('crm:login', later); // signed in on an open page: the agents get their cabinets without waiting for new data
   for (const k of ['importSnap', 'importFast', 'put']) { const orig = LX[k]; if (typeof orig === 'function') LX[k] = function (...a) { const r = orig.apply(this, a); later(); return r; }; }
   Promise.resolve(CRMLocal.ready).then(later);
@@ -226,8 +241,8 @@ EXT_PAGES.access = async el => {
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => { const l = AC.link(A.agents[b.dataset.copy].code); try { await navigator.clipboard.writeText(l); toast('Ссылка скопирована'); } catch { prompt('Скопируйте ссылку', l); } });
   el.querySelectorAll('[data-tgc]').forEach(b => b.onclick = async () => {
     const n = b.dataset.tgc, v = A.agents[n];
-    if (!confirm(`Включить ${n} кнопку «Мой кабинет» в боте и отправить ему сообщение?`)) return;
-    try { await AC.publish({ force: true }); await AC.connectTg(n); v.tgAt = new Date().toISOString(); CRMLocal.touch(); toast('Готово: у агента в боте появилась кнопка «Мой кабинет»'); re(); } catch (e) { toast(e.message); }
+    if (!confirm(`Отправить ${n} в боте сообщение с кнопкой «Открыть мой кабинет»? Внизу у него будет «Панель» (вход по логину).`)) return;
+    try { await AC.publish({ force: true }); await AC.connectTg(n); v.tgAt = new Date().toISOString(); CRMLocal.touch(); toast('Готово: агенту отправлена кнопка «Открыть мой кабинет», внизу у него «Панель»'); re(); } catch (e) { toast(e.message); }
   });
   el.querySelectorAll('[data-send]').forEach(b => b.onclick = async () => {
     const n = b.dataset.send, v = A.agents[n], chat = tg.chats[n];

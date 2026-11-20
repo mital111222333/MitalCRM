@@ -160,7 +160,7 @@ const WC = {
   },
   async connect(who) {
     const s = WC.cfg().stores[who], url = AC.miniUrl();
-    await TG.call('setChatMenuButton', { chat_id: Number(who), menu_button: { type: 'web_app', text: 'Кабинет склада', web_app: { url } } });
+    await TG.call('setChatMenuButton', { chat_id: Number(who), menu_button: AC.panelBtn() });
     await TG.call('sendMessage', { chat_id: Number(who), parse_mode: 'HTML', text: `<b>Кабинет склада ${esc(s.wh)}</b>\nКаждое утро до ${esc(WC.cfg().deadline || '10:00')} пересчитайте товары и отправьте сверку — прямо здесь, в Telegram.`, reply_markup: { inline_keyboard: [[{ text: '📦 Открыть кабинет склада', web_app: { url } }]] } });
   },
   async notify(who, html) {
@@ -297,11 +297,11 @@ EXT_PAGES.wcount = async el => {
     if (!WC.branchOf(wh)) toast(`Внимание: для склада ${wh} нет связи со складом LINKO — сверка начнёт сравнивать, когда автозагрузка его узнает`);
     c.stores[who] = { name: name.slice(0, 60), wh, on: true, tgAt: '' }; await save(); re();
   };
-  el.querySelectorAll('[data-tgc]').forEach(b => b.onclick = async () => { const who = b.dataset.tgc; try { if (WC._lastTg) delete WC._lastTg[who]; WC._lastSj = null; await WC.publish(); await WC.connect(who); c.stores[who].tgAt = new Date().toISOString(); CRMLocal.touch(); toast('Готово: у завсклада в боте кнопка «Кабинет склада»'); re(); } catch (e) { toast(e.message); } });
+  el.querySelectorAll('[data-tgc]').forEach(b => b.onclick = async () => { const who = b.dataset.tgc; try { if (WC._lastTg) delete WC._lastTg[who]; WC._lastSj = null; await WC.publish(); await WC.connect(who); c.stores[who].tgAt = new Date().toISOString(); CRMLocal.touch(); toast('Готово: завскладу отправлена кнопка «Открыть кабинет склада», внизу у него «Панель»'); re(); } catch (e) { toast(e.message); } });
   el.querySelectorAll('[data-rm]').forEach(b => b.onclick = async () => {
     const who = b.dataset.rm; if (!confirm(`Убрать ${c.stores[who].name} из завскладов? Кабинет склада у него закроется.`)) return;
     delete c.stores[who]; if (WC._lastTg) delete WC._lastTg[who];
-    try { const cl = AC.cloud(); if (cl) await AC.gh(cl, 'DELETE', 'agents/tg/' + who + '.json', { message: 'CRM: кабинет склада закрыт' }); await TG.call('setChatMenuButton', { chat_id: Number(who), menu_button: { type: 'default' } }); } catch { /* already closed */ }
+    try { const cl = AC.cloud(); if (cl) await AC.gh(cl, 'DELETE', 'agents/tg/' + who + '.json', { message: 'CRM: кабинет склада закрыт' }); await TG.call('setChatMenuButton', { chat_id: Number(who), menu_button: AC.panelBtn() }); } catch { /* already closed */ }
     await save(); re();
   });
   el.querySelectorAll('[data-ph]').forEach(a => a.onclick = async e => { e.preventDefault(); try { const url = await ATK.photo(a.dataset.ph); const m = modal(`<img src="${url}" alt="Фото со склада" style="max-width:100%;border-radius:8px"><div class="bar"><span class="spacer"></span><button class="btn gray" id="phX">Закрыть</button></div>`); $('#phX', m.el).onclick = () => { URL.revokeObjectURL(url); m.close(); }; } catch (err) { toast(err.message); } });
