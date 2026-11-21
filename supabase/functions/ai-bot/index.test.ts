@@ -69,7 +69,7 @@ const XLSX = await zip({
 const FILES: Record<string, Uint8Array> = { docx1: DOCX, xlsx1: XLSX };
 
 // ───── mini PostgREST ─────
-const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [], ai_ledger: [], workspaces: [], ai_outbox: [], crm_inbox: [], workspace_secrets: [{ owner_id: 'u1', data: { tg: { token: 'CRMT' } } }] };
+const DB: Record<string, any[]> = { ai_messages: [], ai_memory: [], ai_reminders: [], ai_notebook: [], ai_events: [], ai_usage: [], ai_ledger: [], ai_client_info: [], workspaces: [], ai_outbox: [], crm_inbox: [], workspace_secrets: [{ owner_id: 'u1', data: { tg: { token: 'CRMT' } } }] };
 // the CRM workspace in Supabase Storage (newer than the GitHub copy): the same state plus one client that only it has,
 // and AG1's chat with the CRM bot (ext.tg.chats — the token itself is in workspace_secrets)
 const WS_FILE = await gz({ app: 'mitalcrm', savedAt: new Date(Date.now() + 1000).toISOString(), state: { ...crm.state, ext: { ...crm.state.ext, tg: { chats: { [AG1]: { id: 555 } } } }, ag: { ...crm.state.ag, clients: { ...crm.state.ag.clients, 'Workspace Only': { agent: AG2 } } } } });
@@ -80,6 +80,7 @@ const cmp = (k: string, a: any, b: string) => isTime(k) ? Date.parse(a) - Date.p
 function test1(row: any, k: string, expr: string): boolean {
   const i = expr.indexOf('.'), op = expr.slice(0, i), v = decodeURIComponent(expr.slice(i + 1)), a = row[k];
   if (op === 'is') return v === 'null' ? a == null : String(a) === v;
+  if (op === 'in') return v.slice(1, -1).split(',').includes(String(a)); // in.(1,2,3)
   if (a == null) return false;
   const c = cmp(k, a, v);
   if (op === 'eq') return c === 0;
@@ -403,6 +404,35 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   GEM = () => ({ __status: 503, body: { error: { code: 503, message: 'This model is currently experiencing high demand.' } } });
   await tgPost({ text: 'вопрос восемь' }); assert(lastText().includes('перегружен') && !lastText().includes('high demand'), '503 everywhere: ' + lastText());
   D.env.delete('GEMINI_FALLBACK_MODEL');
+
+  // smarter for free: hard questions think on the smart model, simple ones stay on the main one
+  for (const q of ['почему упали продажи у Adxamjon?', 'проанализируй дебиторку', 'что делать с агентом Abdulmutallib', 'nega sotuv tushdi?', 'maslahat ber', 'сравни двух агентов'])
+    assert(M.isHardQuestion(q), 'hard: ' + q);
+  for (const q of ['долг Fozilxon', 'склад', 'цена Mitanol ATF', '/today', 'план агента', 'qarz qancha'])
+    assert(!M.isHardQuestion(q), 'simple: ' + q);
+  for (const q of ['нет, неправильно', 'Не так, период с 16-го', 'ты ошибся', 'я же говорил, что он в отпуске', 'xato, bu boshqa mijoz', "yo'q, unday emas"])
+    assert(M.isCorrection(q), 'correction: ' + q);
+  for (const q of ['нет данных по клиенту?', 'долг Fozilxon', 'масляный фильтр есть на складе?', 'привет'])
+    assert(!M.isCorrection(q), 'not a correction: ' + q);
+  D.env.set('GEMINI_SMART_MODEL', 'gemini-smart-test');
+  GEM = (_b: any, url: string) => say(/gemini-smart-test/.test(url) ? 'Умный ответ' : 'Простой ответ');
+  await tgPost({ text: 'почему упали продажи у Adxamjon?' }); assert(lastText().startsWith('Умный ответ'), 'hard question → smart model: ' + lastText());
+  await tgPost({ text: 'вопрос девять' }); assert(lastText().startsWith('Простой ответ'), 'simple question → main model: ' + lastText());
+  assert(DB.ai_usage.some(r => r.model === 'gemini-smart-test' && r.requests === 1), 'smart usage counted under its own model');
+  await tgPost({ text: '/limits' }); assert(lastText().includes('🧠 Умная модель') && lastText().includes('gemini-smart-test'), '/limits shows the smart model: ' + lastText());
+  // the smart model's daily limit → the main model answers at once (no wait), and the smart one is skipped till the reset
+  GEM = (_b: any, url: string) => /gemini-smart-test/.test(url) ? { __status: 429, body: { error: { code: 429, message: 'per day', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } } } : say('Основная ответила');
+  calls = GEM_LOG.length;
+  await tgPost({ text: 'проанализируй продажи' }); assert(lastText().startsWith('Основная ответила'), 'smart limit → main model: ' + lastText());
+  eq(GEM_LOG.length - calls, 2, 'smart 429: one try, no wait, then the main model');
+  calls = GEM_LOG.length;
+  await tgPost({ text: 'nega sotuv tushdi?' }); assert(lastText().startsWith('Основная ответила'), 'smart skipped: ' + lastText());
+  eq(GEM_LOG.length - calls, 1, 'after its daily limit the smart model is not tried again today');
+  // a correction → the AI is told to fix the answer and keep a general rule
+  let seen = ''; GEM = (b: any) => { seen = JSON.stringify(b.contents.at(-1)); return say('Исправил'); };
+  await tgPost({ text: 'нет, неправильно — период считается с 16-го' }); assert(seen.includes('ЗАМЕТКА БОТА') && seen.includes('kind=rule'), 'correction note sent to the AI: ' + seen.slice(0, 200));
+  await tgPost({ text: 'вопрос десять' }); assert(!seen.includes('ЗАМЕТКА БОТА'), 'no note on an ordinary question');
+  D.env.delete('GEMINI_SMART_MODEL');
 
   // the conversation really is stored: every question has its answer row
   eq(DB.ai_messages.filter(r => r.role === 'user').length, DB.ai_messages.filter(r => r.role === 'model').length, 'question/answer pairs stored');
@@ -1412,4 +1442,74 @@ D.test('price list: another brand is never shown as the asked one', async () => 
   assert(m.retry && m.raw_lines[0].line.startsWith('Mitanol ATF'), 'Mitanol ATF from its own file, not GB ATF: ' + JSON.stringify(m));
   const o = await M.TOOLS.price_list.run(null, { product: 'Mobil ATF' }, ctx);
   eq(o.not_in_price, ['mobil'], 'marked'); assert(M.TPL.price_list(o).includes('Точно «Mobil ATF» в прайсе нет'), 'warned: ' + M.TPL.price_list(o));
+});
+
+D.test('client base: facts from the chat, CRM link, replacement with history, search, delete, Excel via /baza', async () => {
+  DB.ai_client_info = [];
+  const db = await M.loadDB(true), ctx = { chatId: 111 }, T = M.TOOLS;
+  // a CRM client: the name is taken from the CRM, CRM numbers come with the card
+  const a = await T.client_info_add.run(db, { client: 'fozilxon', facts: [
+    { category: 'supplier', subject: 'Mobil', party: 'Ravshan Oil', detail: 'отсрочка 2 недели' },
+    { category: 'oil', subject: 'Mobil Super 3000 5W-40 4л' },
+    { category: 'price', subject: 'Mobil Super 3000 5W-40 4л', party: 'Ravshan Oil', price: 14.5, unit: 'шт' },
+    { category: 'contract', subject: 'поставка', party: 'Shell дистрибьютор', to: '2027-03-01', from: 'не дата' },
+    { category: 'bogus', detail: 'хочет акцию на зиму' }, { category: 'oil' },
+  ] }, ctx);
+  eq([a.client, a.in_crm, a.saved.length, a.replaced], ['Fozilxon Fargona', true, 5, 0], 'CRM name, empty fact dropped');
+  eq(DB.ai_client_info.find((r: any) => r.category === 'price').currency, 'USD', 'price without currency → USD');
+  eq(DB.ai_client_info.find((r: any) => r.category === 'note').detail, 'хочет акцию на зиму', 'unknown category → note');
+  eq(DB.ai_client_info.find((r: any) => r.category === 'contract').valid_from, null, 'bad date not saved');
+  assert(M.TPL.client_info_add(a).includes('Записал в базу клиентов — Fozilxon Fargona') && M.TPL.client_info_add(a).includes('$14,5/шт') && M.TPL.client_info_add(a).includes('до 01.03.2027') && M.TPL.client_info_add(a).includes(' хочет акцию') && !M.TPL.client_info_add(a).includes('  · '), M.TPL.client_info_add(a));
+  // the same price again → the old row is marked replaced, history keeps it
+  const b = await T.client_info_add.run(db, { client: 'Fozilxon Fargona', facts: [{ category: 'price', subject: 'mobil super 3000 5w-40 4л', party: 'Ravshan Oil', price: 15 }] }, ctx);
+  eq(b.replaced, 1, 'replaced'); eq(b.client_facts, 5, 'still 5 current facts');
+  const card = await T.client_info.run(db, { client: 'Fozilxon' }, ctx);
+  eq([card.prices.length, card.prices[0].price, card.crm.agent, card.crm.debt > 0], [1, 15, 'Adxamjon Umarov', true], 'current price + CRM data');
+  const hist = await T.client_info.run(db, { client: 'Fozilxon', history: true }, ctx);
+  eq(hist.prices.map((x: any) => x.price), [14.5, 15], 'history shows the old price');
+  assert(M.TPL.client_info(card).includes('🗂 Fozilxon Fargona') && M.TPL.client_info(card).includes('Ravshan Oil'), M.TPL.client_info(card));
+  // a client the CRM does not know → saved as said, marked new
+  const n1 = await T.client_info_add.run(db, { client: 'Avto Lux Chilonzor', new_client: true, facts: [{ category: 'oil', subject: 'Shell Helix' }, { category: 'contact', subject: 'владелец', detail: 'Бахром +998 90 000 00 00' }] }, ctx);
+  eq([n1.client, n1.in_crm, n1.new_client], ['Avto Lux Chilonzor', false, true], 'new client');
+  // the same new client later by a slightly different spelling → the same card
+  const n2 = await T.client_info_add.run(db, { client: 'avto lux chilonzor', facts: [{ category: 'volume', detail: '20 коробок в месяц' }] }, ctx);
+  eq(n2.client, 'Avto Lux Chilonzor', 'same client');
+  // whole base + search
+  const all = await T.client_info.run(db, {}, ctx);
+  eq([all.clients_count, all.oils.length], [2, 2], 'two clients');
+  const sh = await T.client_info.run(db, { query: 'shell' }, ctx);
+  eq(sh.clients.map((x: any) => x.client).sort(), ['Avto Lux Chilonzor', 'Fozilxon Fargona'], 'search by brand / party');
+  // delete by words; the replaced row is not brought back by deleting another one
+  const d1 = await T.client_info_delete.run(db, { client: 'Avto Lux Chilonzor', query: 'shell' }, ctx);
+  assert(d1.deleted && /Shell Helix/.test(d1.text), JSON.stringify(d1));
+  const curPrice = DB.ai_client_info.find((r: any) => r.price === 15);
+  await T.client_info_delete.run(db, { id: curPrice.id }, ctx);
+  eq(DB.ai_client_info.find((r: any) => r.price === 14.5).replaced_by, null, 'deleting the new price brings the old one back');
+  // Excel: sheets with Russian names, the file goes to the chat with /baza
+  const sheets = M.resultSheets(await T.client_info.run(db, {}, ctx)).map((s: any) => s.name);
+  for (const nm of ['Клиенты', 'С кем работает', 'Цены', 'Договоры', 'Сводка']) assert(sheets.includes(nm), 'sheet ' + nm + ': ' + sheets);
+  const s0 = SENT.length;
+  const txt = await M.command('/baza', 111);
+  const doc = SENT.slice(s0).find((s: any) => s.method === 'sendDocument');
+  assert(doc && /База_клиентов/.test(doc.body.caption) && /📎 Excel/.test(txt) && /База клиентов: 2 клиентов/.test(txt), txt);
+  const one = await M.command('/baza fozilxon', 111);
+  assert(/Fozilxon Fargona/.test(one) && /Агент: Adxamjon Umarov/.test(one), one);
+  // empty base answer
+  DB.ai_client_info = [];
+  assert(/пока пуста/.test(await M.command('/база', 111)), 'empty');
+});
+
+D.test('client base through the AI: a told price is saved (no price-list self-check), «в Excel» sends the whole base', async () => {
+  DB.ai_client_info = [];
+  const g0 = GEM_LOG.length;
+  GEM = () => call('client_info_add', { client: 'Small Shop', facts: [{ category: 'price', subject: 'Castrol Magnatec 5W-30 4л', party: 'Ravshan Oil', price: 16 }, { category: 'supplier', party: 'Ravshan Oil' }] });
+  await tgPost({ text: 'Small Shop берёт Castrol у Ravshan Oil, цена 16$ за 4л' });
+  eq(DB.ai_client_info.length, 2, 'saved'); assert(lastText().includes('Записал в базу клиентов — Small Shop'), lastText());
+  eq(GEM_LOG.length - g0, 1, 'one Gemini request, no self-check about price_list');
+  const s0 = SENT.length;
+  GEM = () => call('client_info', { excel: true });
+  await tgPost({ text: 'пришли всю базу клиентов в эксель' });
+  const doc = SENT.slice(s0).find((s: any) => s.method === 'sendDocument');
+  assert(doc && /База_клиентов/.test(doc.body.caption), 'Excel sent'); assert(/Excel-файл отправлен/.test(lastText()), lastText());
+  DB.ai_client_info = []; GEM = () => say('ok');
 });

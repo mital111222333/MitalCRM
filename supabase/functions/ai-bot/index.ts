@@ -317,7 +317,7 @@ async function sb(path: string, o: { method?: string; body?: any; prefer?: strin
 // which migration creates which table — a missing table names the right file instead of the first one
 const MIGRATION_OF: Record<string, string> = {
   ai_messages: '20261118000001_mital_ai.sql', ai_memory: '20261118000001_mital_ai.sql', ai_reminders: '20261118000001_mital_ai.sql', ai_notebook: '20261118000001_mital_ai.sql', ai_events: '20261118000001_mital_ai.sql',
-  ai_ledger: '20261118000004_mital_ai_spheres.sql', ai_skills: '20261119000002_jumavoy_skills_google.sql', ai_google: '20261119000002_jumavoy_skills_google.sql', ai_tasks: '20261119000006_ai_tasks.sql',
+  ai_ledger: '20261118000004_mital_ai_spheres.sql', ai_skills: '20261119000002_jumavoy_skills_google.sql', ai_google: '20261119000002_jumavoy_skills_google.sql', ai_tasks: '20261119000006_ai_tasks.sql', ai_client_info: '20261121000002_ai_client_info.sql',
   ai_outbox: '20261119000001_bot_actions.sql', crm_inbox: '20261119000001_bot_actions.sql', 'rpc/ai_usage_add': '20261118000002_mital_ai_usage.sql',
 };
 const q = encodeURIComponent;
@@ -370,6 +370,52 @@ function ledgerBalances(rows: any[]) {
 const ledgerPerson = (raw: string, names: string[], min = 0.8) =>
   names.find(x => x.toLowerCase() === raw.toLowerCase()) || best(raw, names, (x: string) => x, 1, min)[0]?.x || '';
 const totalsBy = (list: any[]) => { const t: Record<string, number> = {}; for (const b of list) t[b.currency] = r2((t[b.currency] || 0) + Math.abs(b.sum)); return t; };
+
+// ───────────────────────────── client base (ai_client_info): what the owner tells about clients, beyond the CRM ─────────────────────────────
+// with whom the client works, which oils he has, prices, contracts, contacts, volumes. A new row with the same client +
+// category + subject + party marks the old one replaced_by (history stays). CRM numbers (debt, agent) are added when read.
+const CI_CATS: Record<string, string> = { contact: '📇 Контакты', supplier: '🚚 С кем работает', oil: '🛢 Масла у клиента', price: '💲 Цены', contract: '📄 Договоры', volume: '📦 Объёмы', equipment: '🔧 Оборудование / сервис', competitor: '⚔️ Конкуренты', note: '📝 Заметки' };
+const CI_KEY: Record<string, string> = { contact: 'contacts', supplier: 'suppliers', oil: 'oils', price: 'prices', contract: 'deals', volume: 'volumes', equipment: 'equipment', competitor: 'competitors', note: 'notes' };
+const ciRows = (chatId: number, history = false): Promise<any[]> => sb(`ai_client_info?chat_id=eq.${chatId}${history ? '' : '&replaced_by=is.null'}&order=id&limit=10000`);
+const ciKey = (r: any) => [norm(r.client), r.category, norm(r.subject), norm(r.party)].join('|');
+const ymd = (v: any) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null;
+export function ciFact(f: any) {
+  if (!f || typeof f !== 'object') return null;
+  const t = (v: any, max: number) => String(v ?? '').trim().slice(0, max);
+  const price = f.price == null || f.price === '' || !isFinite(Number(f.price)) ? null : r2(Number(f.price));
+  const cur = String(f.currency || '').toUpperCase();
+  const r = {
+    category: CI_CATS[f.category] ? f.category : 'note', subject: t(f.subject, 300), party: t(f.party, 200), detail: t(f.detail, 2000),
+    price, currency: CURRENCIES.includes(cur) ? cur : price != null ? 'USD' : null, unit: t(f.unit, 30), valid_from: ymd(f.from), valid_to: ymd(f.to),
+  };
+  return r.subject || r.party || r.detail || price != null ? r : null;
+}
+// the client's name: one already in the base → the same; else the CRM name; else as said (a new client, not in the CRM)
+export function ciResolve(db: any, raw: string, known: string[], isNew = false): any {
+  const q = String(raw || '').trim().slice(0, 200); if (!q) return { error: 'Про какого клиента?' };
+  const own = known.find(x => norm(x) === norm(q)); if (own) return { name: own };
+  if (db?.clients && !db.meta?.data_error) {
+    const c: any = resolveClient(db, q); if (c.name) return { name: c.name, crm: c.name };
+    if (!isNew && c.candidates?.length && best(q, c.candidates, (x: string) => x, 1, 0.75).length) return { error: 'В CRM есть похожие клиенты — уточните, кто именно (или скажите, что это новый клиент)', candidates: c.candidates };
+  }
+  const near = isNew ? '' : best(q, known, (x: string) => x, 1, 0.85)[0]?.x;
+  return near ? { name: near } : { name: q, crm: null, is_new: true };
+}
+const ciOut = (r: any, withClient = false) => ({
+  ...(withClient ? { client: r.client } : {}), id: r.id, subject: r.subject || undefined, party: r.party || undefined, detail: r.detail || undefined,
+  price: r.price == null ? undefined : n(r.price), currency: r.price == null ? undefined : r.currency, unit: r.unit || undefined,
+  from: r.valid_from || undefined, to: r.valid_to || undefined, date: String(r.created_at || '').slice(0, 10), replaced: r.replaced_by ? true : undefined,
+});
+const dmy = (d: string) => d.split('-').reverse().join('.');
+const ciLine = (x: any) => [x.subject, x.party && (x.subject ? '— ' : '') + x.party].filter(Boolean).join(' ')
+  + (x.price != null ? `: ${money(x.price, x.currency)}${x.unit ? '/' + x.unit : ''}` : '') + (x.detail ? (x.subject || x.party || x.price != null ? ' · ' : '') + x.detail : '')
+  + (x.from || x.to ? ` (${x.from ? 'с ' + dmy(x.from) : ''}${x.from && x.to ? ' ' : ''}${x.to ? 'до ' + dmy(x.to) : ''})` : '') + (x.replaced ? ' [старое]' : '');
+function ciCrm(db: any, name: string) {
+  if (!name || !db?.clients || db.meta?.data_error) return undefined;
+  const info = db.clients[name] || {}, d = db.debtors.get(name) || {};
+  const ords = ordersOf(db, { client: name }), last = ords[0]?.date;
+  return { agent: info.agent || d.agent || '', phone: info.phone || d.phone || '', landmark: info.landmark || d.guide || '', address: d.address || '', debt: debtOf(db, name).total, last_order: last || undefined, days: last ? daysBetween(last, todayStr()) : undefined };
+}
 
 // ───────────────────────────── Knowledge notebook (NotebookLM-style) ─────────────────────────────
 const xmlDecode = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
@@ -636,13 +682,13 @@ function balanceFor(db: any, from?: string, to?: string) {
   return { from, to: asOf, period: `${dm(from)} — ${dm(asOf)}`, byAgent };
 }
 const WRITES = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'reminder_add', 'reminder_set', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'send_once_contract', 'save_photo', 'send_saved_file', 'message_agent', 'crm_task', 'crm_note', 'message_client',
-  'skill_add', 'skill_delete', 'calendar_add', 'oilbook_action']);
+  'skill_add', 'skill_delete', 'calendar_add', 'oilbook_action', 'client_info_add', 'client_info_delete']);
 // tools that do not need the CRM data: when GitHub / LINKO is down they keep working (reminders, personal money, tasks,
 // notebook, the outside world, Google); every other tool then answers with the data error instead of zeros
 const NO_CRM = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel',
   'personal_debt_add', 'personal_debts', 'personal_debt_delete', 'notebook_search', 'save_photo', 'send_saved_file', 'web_research', 'open_page', 'weather', 'promo_calc', 'price_list',
   'currency_rates', 'news', 'skill_use', 'skill_add', 'skill_list', 'skill_delete', 'calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search',
-  'oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action']);
+  'oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action', 'client_info_add', 'client_info', 'client_info_delete']);
 
 // ───────────────────────────── actions ─────────────────────────────
 // Anything that reaches another person is only a DRAFT until the owner presses «✅ Отправить» (ai_outbox + inline buttons → onButton).
@@ -1544,6 +1590,106 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       const isImg = /^image\//.test(hit.mime || '');
       await tg(isImg ? 'sendPhoto' : 'sendDocument', { chat_id: ctx.chatId, [isImg ? 'photo' : 'document']: hit.tg_file_id, caption: `📎 ${hit.title}`.slice(0, 1000) });
       return { sent: hit.title };
+    },
+  },
+  client_info_add: {
+    desc: 'БАЗА КЛИЕНТОВ — ЗАПИСАТЬ, что пользователь рассказал о клиенте сверх CRM: с кем клиент работает (поставщики, дистрибьюторы), какие масла / бренды у него стоят, цены (наши, чужие, закупочные, продажные), договоры (с нами и с другими), контакты (владелец, ЛПР, телефон, адрес), объёмы (сколько берёт в месяц), оборудование / сервис, конкуренты рядом, прочие заметки. Разложи ВСЁ сказанное на отдельные факты (один факт = один бренд / одна цена / один договор). Один клиент — один вызов; про двух клиентов — два вызова. Не путай с remember: всё про конкретного клиента — сюда.',
+    params: {
+      client: { type: 'string', description: 'клиент (точка, магазин, автосервис), как назвал пользователь' },
+      new_client: { type: 'boolean', description: 'true — пользователь сказал, что это новый клиент / его нет в CRM' },
+      facts: {
+        type: 'array', description: 'факты о клиенте',
+        items: {
+          type: 'object',
+          properties: {
+            category: { type: 'string', enum: Object.keys(CI_CATS), description: 'contact — контакты (владелец, телефон, адрес, ЛПР); supplier — с кем работает / у кого берёт; oil — какие масла / бренды у него есть; price — цена товара; contract — договор; volume — объём закупок / продаж; equipment — оборудование, подъёмник, сервис; competitor — конкуренты рядом; note — прочее' },
+            subject: { type: 'string', description: 'о чём: бренд / товар как можно точнее («Mobil Super 3000 5W-40 4л»), или тема («владелец», «телефон», «договор на поставку»)' },
+            party: { type: 'string', description: 'с кем: поставщик, вторая сторона договора, чья цена («мы» / «MITAL», «Ravshan Oil», «у Shell-дистрибьютора»)' },
+            detail: { type: 'string', description: 'подробности словами пользователя: условия, отсрочка, бонусы, имя и телефон, что не так, мнение' },
+            price: { type: 'number', description: 'цена числом, ТОЛЬКО если пользователь её назвал' },
+            currency: { type: 'string', enum: CURRENCIES, description: '$ / доллар = USD; сум / so‘m = UZS. Не сказано — USD' },
+            unit: { type: 'string', description: 'за что цена: шт, л, коробка, бочка' },
+            from: { type: 'string', description: 'YYYY-MM-DD — с какой даты (договор, цена), если сказано' },
+            to: { type: 'string', description: 'YYYY-MM-DD — до какой даты (конец договора), если сказано' },
+          },
+          required: ['category'],
+        },
+      },
+    },
+    async run(db, a, ctx) {
+      if (!sbOn()) return { error: NO_DB };
+      const facts = (Array.isArray(a.facts) ? a.facts : []).map(ciFact).filter(Boolean) as any[];
+      if (!facts.length) return { error: 'Что записать о клиенте? Скажите: с кем работает, какие масла, цены, договоры, контакты.' };
+      const rows = await ciRows(ctx.chatId);
+      const c = ciResolve(db, a.client, [...new Set(rows.map((r: any) => r.client as string))], !!a.new_client); if (c.error) return c;
+      const crm = c.crm !== undefined ? c.crm : rows.find((r: any) => r.client === c.name && r.crm_client)?.crm_client || null;
+      const saved: any[] = await sb('ai_client_info', { method: 'POST', prefer: 'return=representation', body: facts.map(f => ({ chat_id: ctx.chatId, client: c.name, crm_client: crm, ...f })) });
+      let replaced = 0;
+      for (const s of saved) {
+        if (s.category === 'note' || (!s.subject && !s.party)) continue; // notes pile up, they never replace each other
+        const old = rows.filter((r: any) => ciKey(r) === ciKey(s)).map((r: any) => r.id);
+        if (old.length) { await sb(`ai_client_info?chat_id=eq.${ctx.chatId}&id=in.(${old.join(',')})`, { method: 'PATCH', body: { replaced_by: s.id } }); replaced += old.length; }
+      }
+      const total = rows.filter((r: any) => r.client === c.name).length + saved.length - replaced;
+      return { client: c.name, in_crm: !!crm, new_client: !crm || undefined, saved: saved.map((r: any) => ({ category: r.category, ...ciOut(r) })), replaced, client_facts: total };
+    },
+  },
+  client_info: {
+    desc: 'БАЗА КЛИЕНТОВ — ПОКАЗАТЬ всё, что записано о клиентах (поставщики, масла, цены, договоры, контакты, объёмы, заметки) + из CRM агент, телефон, долг, последний заказ. client — один клиент («всё про X», «полная инфа по X», «досье»); без client — вся база по всем клиентам. query — поиск по базе («у кого стоит Mobil», «кто работает с Ravshan Oil», «у кого договор с Shell»). «Пришли базу клиентов в Excel» → без client, excel=true.',
+    params: {
+      client: { type: 'string' }, query: { type: 'string', description: 'слово для поиска: бренд, поставщик, товар' },
+      category: { type: 'string', enum: Object.keys(CI_CATS), description: 'только одна категория, если спросили именно её' },
+      history: { type: 'boolean', description: 'true — показать и старые (заменённые) записи: «что было раньше», «история цен»' },
+    },
+    async run(db, a, ctx) {
+      if (!sbOn()) return { error: NO_DB };
+      let rows = await ciRows(ctx.chatId, !!a.history);
+      const names = [...new Set(rows.map((r: any) => r.client as string))];
+      if (a.category && CI_CATS[a.category]) rows = rows.filter((r: any) => r.category === a.category);
+      if (a.client) {
+        const c = ciResolve(db, a.client, names); if (c.error) return c;
+        const mine = rows.filter((r: any) => r.client === c.name), crmName = c.crm || mine.find((r: any) => r.crm_client)?.crm_client || '';
+        const out: any = { client: c.name, in_crm: !!crmName, crm: ciCrm(db, crmName), facts: mine.filter((r: any) => !r.replaced_by).length };
+        if (!mine.length) out.empty = 'В базе клиентов о нём пока ничего не записано';
+        for (const k of Object.keys(CI_CATS)) { const l = mine.filter((r: any) => r.category === k); if (l.length) out[CI_KEY[k]] = l.map((r: any) => ciOut(r)); }
+        out.updated = mine.length ? String(mine.at(-1).created_at).slice(0, 10) : undefined;
+        return out;
+      }
+      if (a.query) {
+        const words = norm(a.query).split(/\s+/).filter(Boolean);
+        rows = rows.filter((r: any) => { const t = norm(`${r.client} ${r.subject} ${r.party} ${r.detail}`); return words.every((w: string) => t.includes(w)); });
+      }
+      const by = new Map<string, any[]>(); for (const r of rows) by.set(r.client, [...(by.get(r.client) || []), r]);
+      const join = (l: any[], cat: string) => [...new Set(l.filter((r: any) => r.category === cat && !r.replaced_by).map((r: any) => [r.subject, r.party].filter(Boolean).join(' — ')).filter(Boolean))].join('; ') || undefined;
+      const clients = [...by.entries()].map(([name, l]) => {
+        const crmName = l.find((r: any) => r.crm_client)?.crm_client || '', crm = ciCrm(db, crmName);
+        return { client: name, in_crm: !!crmName, agent: crm?.agent || undefined, phone: crm?.phone || undefined, debt: crm ? crm.debt : undefined,
+          suppliers: join(l, 'supplier'), oils: join(l, 'oil'), deals: join(l, 'contract'), facts: l.length, updated: String(l.at(-1).created_at).slice(0, 10) };
+      }).sort((x, y) => y.updated.localeCompare(x.updated));
+      const out: any = { query: a.query || undefined, clients_count: clients.length, facts_count: rows.length, clients };
+      for (const k of Object.keys(CI_CATS)) { const l = rows.filter((r: any) => r.category === k); if (l.length) out[CI_KEY[k]] = l.map((r: any) => ciOut(r, true)); }
+      if (!rows.length) out.empty = a.query ? `В базе клиентов нет записей со словами «${a.query}»` : 'База клиентов пока пуста. Расскажите мне о клиенте: с кем работает, какие масла, цены, договоры — я запишу.';
+      return out;
+    },
+  },
+  client_info_delete: {
+    desc: 'БАЗА КЛИЕНТОВ — удалить ошибочную запись: «удали запись 12», «убери у X Mobil — это ошибка». id — номер записи; или client + query (слова из записи).',
+    params: { id: { type: 'number' }, client: { type: 'string' }, query: { type: 'string' } },
+    async run(db, a, ctx) {
+      if (!sbOn()) return { error: NO_DB };
+      let id = n(a.id);
+      if (!id) {
+        const rows = await ciRows(ctx.chatId), c = ciResolve(db, a.client, [...new Set(rows.map((r: any) => r.client as string))]); if (c.error) return c;
+        const words = norm(a.query).split(/\s+/).filter(Boolean);
+        const hits = rows.filter((r: any) => r.client === c.name && words.every((w: string) => norm(`${r.subject} ${r.party} ${r.detail}`).includes(w)));
+        if (!hits.length) return { error: `У «${c.name}» такой записи нет` };
+        if (hits.length > 1) return { error: 'Подходит несколько записей — назовите номер', candidates: hits.map((r: any) => `#${r.id} ${CI_CATS[r.category]}: ${ciLine(ciOut(r))}`) };
+        id = hits[0].id;
+      }
+      const del = await sb(`ai_client_info?chat_id=eq.${ctx.chatId}&id=eq.${id}`, { method: 'DELETE', prefer: 'return=representation' });
+      if (!del?.length) return { error: `Записи #${id} нет` };
+      await sb(`ai_client_info?chat_id=eq.${ctx.chatId}&replaced_by=eq.${id}`, { method: 'PATCH', body: { replaced_by: null } }); // the older row comes back
+      return { deleted: id, client: del[0].client, text: `${CI_CATS[del[0].category]}: ${ciLine(ciOut(del[0]))}` };
     },
   },
   remember: {
@@ -2857,7 +3003,7 @@ const SERVICE = {
   excel: { type: 'boolean', description: 'true, если пользователь просит отчёт / список / таблицу ФАЙЛОМ EXCEL («в Excel», «эксель», «xlsx», «таблицей файлом», «excel qilib yubor», «jadval fayl»). Бот сам сделает файл из результата функции и пришлёт его' },
 };
 const REQUIRED: Record<string, string[]> = {
-  task_add: ['title'], client_card: ['client'], agent_report: ['agent'], find_client: ['query'], notebook_search: ['query'],
+  task_add: ['title'], client_card: ['client'], client_info_add: ['client', 'facts'], agent_report: ['agent'], find_client: ['query'], notebook_search: ['query'],
   remember: ['text', 'kind'], forget: ['id'], reminder_add: ['at', 'text'], reminder_set: ['id'], reminder_cancel: ['id'],
   personal_debt_add: ['person', 'action', 'amount'], personal_debt_delete: ['id'],
   crm_query: ['path'], promo_calc: ['items'],
@@ -3015,6 +3161,29 @@ const TPL: Record<string, (r: any) => string> = {
     'ℹ️ В Telegram текст вставьте сами (скопируйте сообщение выше). Если ссылка Telegram не открывает чат — у клиента скрыт номер, тогда WhatsApp или звонок.'].join('\n'),
   save_photo: r => `📸 Сохранил в блокнот${r.sphere && r.sphere !== 'work' ? ` (${SPH[r.sphere]})` : ''}: «${r.title}». Найти: «пришли фото ${r.title}».`,
   send_saved_file: r => `📎 Отправил: ${r.sent}`,
+  client_info_add: r => {
+    if (r.error) return '⚠️ ' + r.error;
+    return `🗂 Записал в базу клиентов — ${r.client}${r.new_client ? ' (в CRM такого клиента нет — записал как нового)' : ''}:\n`
+      + lines(r.saved, (x: any) => `• ${CI_CATS[x.category].split(' ')[0]} #${x.id} ${ciLine(x)}`, 40)
+      + (r.replaced ? `\n♻️ Обновлено прежних записей: ${r.replaced} (старые остались в истории)` : '')
+      + `\nВсего о клиенте: ${r.client_facts} · /baza ${r.client}`;
+  },
+  client_info: r => {
+    if (r.error) return '⚠️ ' + r.error;
+    const sect = (o: any, withClient: boolean, max: number) => Object.keys(CI_CATS).filter(k => o[CI_KEY[k]]?.length)
+      .map(k => `${CI_CATS[k]}:\n` + lines(o[CI_KEY[k]], (x: any) => `• ${withClient ? x.client + ': ' : ''}${ciLine(x)} #${x.id}`, max) + (o[CI_KEY[k]].length > max ? `\n…и ещё ${o[CI_KEY[k]].length - max}` : '')).join('\n\n');
+    if (r.client) {
+      const c = r.crm, head = `🗂 ${r.client}${r.in_crm ? '' : ' (нет в CRM)'}`;
+      const crm = c ? `\n👤 Агент: ${c.agent || '—'}${c.phone ? ' · 📞 ' + c.phone : ''}${c.landmark ? ' · 📍 ' + c.landmark : ''}\n💰 Долг: ${$(c.debt)}${c.last_order ? ` · последний заказ ${dm(c.last_order)} (${c.days} дн. назад)` : ''}` : '';
+      return head + crm + '\n\n' + (r.empty ? r.empty + '. Расскажите о нём — я запишу.' : sect(r, false, 30) + `\n\nОбновлено ${dm(r.updated)} · Excel: «пришли в Excel»`);
+    }
+    if (r.empty) return '🗂 ' + r.empty;
+    if (r.query) return `🔎 База клиентов, «${r.query}»: ${r.clients_count} клиент(ов)\n\n` + sect(r, true, 25);
+    return `🗂 База клиентов: ${r.clients_count} клиентов, ${r.facts_count} записей\n`
+      + lines(r.clients, (x: any) => `• ${x.client}${x.in_crm ? '' : ' (нет в CRM)'}${x.agent ? ' · ' + x.agent : ''} — ${[x.suppliers && 'работает с: ' + x.suppliers, x.oils && 'масла: ' + x.oils, x.deals && 'договоры: ' + x.deals].filter(Boolean).join(' | ') || x.facts + ' зап.'}`, 30)
+      + (r.clients.length > 30 ? `\n…и ещё ${r.clients.length - 30}` : '') + '\n\nПро одного: /baza имя · всё файлом: «пришли базу клиентов в Excel»';
+  },
+  client_info_delete: r => r.error ? '⚠️ ' + r.error : `🗑 Удалил запись #${r.deleted} у ${r.client}: ${r.text}`,
   remember: r => `🧠 Запомнил${r.kind === 'rule' ? ' правило' : ''} #${r.saved}${r.sphere && r.sphere !== 'work' ? ` (${SPH[r.sphere]})` : ''}: ${r.text}${r.until ? ` (до ${dm(r.until)})` : ''}`,
   forget: r => `🗑 Забыл #${r.deleted}: ${r.text}`,
   bot_help: () => HELP,
@@ -3118,6 +3287,9 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 26. УЗБЕКСКИЙ: пользователь часто говорит по-узбекски (латиницей или кириллицей) или смешивает с русским — понимай его так же точно, как русский, и отвечай на том же языке. Словарь: hisobla / hisoblab ber — посчитай; yubor / jo'nat — пришли; ayt — скажи; ko'rsat — покажи; narx — цена; qoldiq — остаток; ombor — склад; qarz — долг; to'lov — оплата; chegirma — скидка; karobka — коробка; dona — штука; mijoz — клиент; reja — план; sotuv — продажи; bugun — сегодня; kecha — вчера; ertaga — завтра; hafta — неделя; oy — месяц; qizil — Red; binafsha — Purple. Отвечай на ПОСЛЕДНЕЕ сообщение пользователя: не путай его с прошлыми вопросами из истории.
 27. ПРОВЕРЯЙ СЕБЯ ПЕРЕД ОТВЕТОМ. Цены, суммы, долги, остатки — только из функций, вызванных для ЭТОГО вопроса; цифры из прошлых ответов в истории могли устареть — вызови функцию снова. Не пиши «сохранил / запомнил / записал», если функция сохранения не вызывалась. Если функция ничего не нашла — попробуй другое написание (латиница / кириллица, без цвета или объёма) или другую функцию (price_list → notebook_search), и только потом говори «не нашёл», называя, где искал.
 28. EXCEL: «пришли в Excel / эксель / xlsx / таблицей файлом», «excel qilib yubor», «jadval fayl» → вызови функцию с данными для отчёта (debtors, agents_overview, agent_report, collect_today, stock, price_list, crm_query…) с excel=true: бот сам сделает файл из её результата и пришлёт. Сам таблицу в тексте не рисуй, цифры в файле считает код.
+29. БАЗА КЛИЕНТОВ: пользователь рассказывает о клиенте то, чего нет в CRM — с кем работает, у кого берёт, какие масла / бренды у него стоят, по каким ценам (наши и чужие), договоры, владелец и телефон, объёмы, конкуренты — → client_info_add: разложи на отдельные факты, ничего не теряй, цены и даты — только названные. Не remember. «Всё про клиента X», «досье / полная инфа по X», «что знаешь о X» → client_info с client (там и CRM: агент, долг, заказы). «У кого стоит Mobil / кто работает с X» → client_info с query. «Пришли базу клиентов / всю инфу в Excel» → client_info без client, excel=true. Ошибочная запись → client_info_delete.
+31. УЧИСЬ НА ПОПРАВКАХ. Если пользователь говорит, что ты ошибся («нет, не так», «неправильно», «я же говорил», «xato», «unday emas») — исправь ответ и, если поправка — общее правило на будущее, сохрани его remember kind=rule и напиши «📌 Запомнил правило: …». Перед ответом сверяйся с ПРАВИЛАМИ ниже: одну и ту же ошибку дважды не повторяй.
+32. СЛОЖНЫЙ ВОПРОС («почему», анализ, сравнение, совет, план): сначала собери цифры функциями (несколько сразу, explain=true), потом коротко: 1) что видно по цифрам, 2) главная причина, 3) 2–3 конкретных действия с именами клиентов и агентов. Догадку называй догадкой.
 ${skills.length ? `\nНАВЫКИ (название — когда применять):\n${skills.map(s => `${s.name} — ${s.description}`).join('\n')}\n` : ''}${memText}`;
 }
 
@@ -3192,7 +3364,36 @@ export const retrySeconds = (d: any) => { const x = (d?.error?.details || []).fi
 // GEMINI_FALLBACK_MODEL: a second free model with its own quota, used when the main one says 429 (per minute after one
 // wait, or the daily limit). «off» switches it off. If the fallback fails too, the user gets the usual limit message.
 const fallbackModel = () => env('GEMINI_FALLBACK_MODEL', 'gemini-2.5-flash-lite');
+// GEMINI_SMART_MODEL: a stronger free model (it thinks before answering) for hard questions — analysis, «почему»,
+// advice, plans, the user's corrections. Its free daily quota is smaller than Flash-Lite's: on 429 (or an unknown model
+// name) the same question goes on the main model at once, without waiting, and after a «per day» 429 the smart model
+// is skipped until Google resets the quota. «off» switches it off. Simple questions always stay on the main model.
+const smartModel = () => env('GEMINI_SMART_MODEL', 'gemini-2.5-flash');
+let SMART_SPENT = ''; // quotaDay() on which the smart model said «daily limit»
+export const smartOn = () => { const m = smartModel(); return !!m && m !== 'off' && m !== CFG.model() && SMART_SPENT !== quotaDay(); };
+// hard = the AI has to think, not just fetch a number: «почему упали продажи», «что делать с агентом», «сравни», «nega»…
+const HARD_RE = /почему|отчего|из-за чего|анализ|проанализ|разбер|сравни|сравнен|объясни|причин|посоветуй|совет|что (мне )?делать|что предлагаешь|как (мне )?(улучшить|увеличить|поднять|исправить|решить|лучше)|стратег|план действий|составь план|оцени|выводы?(?![а-я])|идеи|придумай|продумай|подумай|рекоменд|tahlil|nega\b|nima uchun|maslahat|solishtir|qanday qilib|nima qilay|nima qilish kerak|taklif|strategiya|fikring/i;
+export function isHardQuestion(text: string) {
+  const t = String(text || '').trim();
+  if (!t || t.startsWith('/')) return false;
+  return HARD_RE.test(t) || t.length >= 220;
+}
+// the user corrects the previous answer: «нет, не так», «неправильно», «ты ошибся», «xato», «yo'q, unday emas»…
+const CORRECTION_RE = /^\s*(нет\s*[,.!—–-]|не так|не то(?![а-я])|неверно|ошибка|ошибся|опять не|снова не|yo'?q\s*[,.!—–-]|йўқ\s*[,.!—–-]|xato|noto'?g'?ri|нотўғри)|неправильно|не правильно|ты ошиб|ты не (так|то|понял)|я же (сказал|говорил|писал)|не надо так|сколько (раз|можно) (говорить|повторять)|xato qilding|unday emas|tushunmading|men aytdim-?ku/i;
+export const isCorrection = (text: string) => { const t = String(text || '').trim(); return !!t && !t.startsWith('/') && t.length <= 600 && CORRECTION_RE.test(t); };
+export const CORRECTION_NOTE = 'ЗАМЕТКА БОТА (пишет бот, не пользователь): похоже, пользователь поправляет твой прошлый ответ. 1) Пойми, в чём ошибка, и дай исправленный ответ (цифры снова из функций). 2) Если из поправки следует ОБЩЕЕ правило на будущее — как считать, что показывать, как понимать слово, имя, товар или период — сохрани его через remember kind=rule одной короткой фразой и в конце ответа добавь строку «📌 Запомнил правило: …». Разовую поправку (опечатка, другой клиент, другая дата) правилом не сохраняй. Если поправка противоречит правилу 1 (числа только из функций) — не сохраняй и объясни почему.';
 async function gemini(body: any, model = CFG.model(), canFallback = true): Promise<any> {
+  // the smart model never makes the user wait: any trouble with it → the same request on the main model
+  if (canFallback && model === smartModel() && model !== CFG.model()) {
+    if (!smartOn()) return gemini(body, CFG.model(), true);
+    try { return await gemini(body, model, false); } catch (e) {
+      const m = (e as Error).message;
+      if (/Дневной лимит/.test(m)) SMART_SPENT = quotaDay();
+      console.warn('smart model failed → main model:', model, redact(m).slice(0, 200));
+      return gemini(body, CFG.model(), true);
+    }
+  }
+  const isSmart = model === smartModel() && model !== CFG.model();
   const search = !!body.tools?.some((t: any) => t.google_search);
   // the key goes in a header, not in the URL: a network error prints the whole URL, and it reached the logs
   const once1 = () => fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -3208,7 +3409,7 @@ async function gemini(body: any, model = CFG.model(), canFallback = true): Promi
   };
   let { r, d } = await call();
   // the per-minute limit (free tier ~15 a minute) passes by itself: wait as long as Google asks (≤ 20 s) and try once more
-  if (r.status === 429 && !search && !perDayLimit(d)) {
+  if (r.status === 429 && !search && !isSmart && !perDayLimit(d)) {
     const s = retrySeconds(d);
     if (s <= 20) { console.warn('gemini 429 per minute, waiting', s || 5, 's'); await sleep(Math.max(2, s || 5) * 1000); ({ r, d } = await call()); }
   }
@@ -3252,6 +3453,7 @@ async function limitsText() {
     `Сегодня: ${cur.requests} из ~${lim} запросов (${pct}%)\n${bar}  осталось ~${left}`,
     cur.limited ? `⛔ Отказов из-за лимита сегодня: ${cur.limited}` : '',
     (() => { const t = rows.find(r => r.day === today && /tts/i.test(r.model)); return t ? `🔊 Голосовые ответы сегодня: ${t.requests}${t.limited ? ` · отказов из-за лимита: ${t.limited}` : ''} (${t.model}, у озвучки свой лимит)` : ''; })(),
+    (() => { const sm = smartModel(); if (!sm || sm === 'off' || sm === model) return ''; const s = rows.find(r => r.day === today && r.model === sm); return `🧠 Умная модель для сложных вопросов (${sm}, свой бесплатный лимит): сегодня ${s ? s.requests : 0} запросов${s?.limited ? ` · отказов из-за лимита: ${s.limited}` : ''}${SMART_SPENT === today ? ' · лимит на сегодня кончился, сложные вопросы идут на основную модель' : ''}`; })(),
     `Токены сегодня: ${k(n(cur.tokens_in))} вход / ${k(n(cur.tokens_out))} ответ`,
     `🔄 Обновится в ${rs.at} по Ташкенту (через ${rs.in})`,
     byDay.size > 1 ? 'За 7 дней:\n' + [...byDay.entries()].map(([d, v]) => `• ${dm(d)} — ${v}`).join('\n') : '',
@@ -3294,6 +3496,9 @@ const COL: Record<string, string> = {
   plan: 'План', fact: 'Факт', percent: 'Процент', status: 'Статус', id: '№', days: 'Дней', rows: 'Список', found: 'Найдено', ret: 'Возврат',
   disc: 'Скидка', left: 'Остаток', brand: 'Бренд', note: 'Примечание', warning: 'Внимание', filter: 'Фильтр', last_order: 'Последний заказ',
   last_pay: 'Последняя оплата', promised: 'Обещано', promise: 'Обещание', promise_to_pay: 'Обещание оплаты', next_payment: 'Следующий платёж', by_age: 'По срокам', debt_by: 'Долг по срокам', d: 'Дата', s: 'Сумма', items: 'Товары', bonus: 'Бонус', city: 'Город', title: 'Название', text: 'Текст', person: 'Человек', amount: 'Сумма',
+  subject: 'Что', party: 'С кем', detail: 'Подробно', unit: 'Ед.', currency: 'Валюта', updated: 'Обновлено', in_crm: 'В CRM', crm: 'CRM', facts: 'Записей',
+  contacts: 'Контакты', suppliers: 'С кем работает', oils: 'Масла', prices: 'Цены', deals: 'Договоры', volumes: 'Объёмы', equipment: 'Оборудование', competitors: 'Конкуренты', notes: 'Заметки',
+  clients_count: 'Клиентов', facts_count: 'Записей', replaced: 'Старая запись', query: 'Поиск', empty: 'Примечание',
 };
 const colName = (k: string) => k.split('.').map(p => COL[p] || p).join(' · ');
 const cellOf = (v: any) => v == null ? '' : typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 'да' : 'нет') : Array.isArray(v) ? v.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(', ') : typeof v === 'object' ? JSON.stringify(v) : String(v);
@@ -3364,7 +3569,7 @@ export function makeXlsx(sheets: { name: string; rows: any[][] }[]): Uint8Array 
   ];
   return zipStore(files);
 }
-const XLS_TITLE: Record<string, string> = { debtors: 'Должники', agents_overview: 'Агенты', agent_report: 'Отчёт агента', client_card: 'Клиент', collect_today: 'Дожимать сегодня', price_list: 'Прайс', stock: 'Склад', stock_running_out: 'Склад заканчивается', sleeping_clients: 'Спящие клиенты', stopped_clients: 'Ушедшие клиенты', plan_forecast: 'План', promises: 'Обещания', crm_query: 'Данные CRM', orders: 'Заказы', personal_debts: 'Мои долги', task_list: 'Задачи' };
+const XLS_TITLE: Record<string, string> = { client_info: 'База клиентов', debtors: 'Должники', agents_overview: 'Агенты', agent_report: 'Отчёт агента', client_card: 'Клиент', collect_today: 'Дожимать сегодня', price_list: 'Прайс', stock: 'Склад', stock_running_out: 'Склад заканчивается', sleeping_clients: 'Спящие клиенты', stopped_clients: 'Ушедшие клиенты', plan_forecast: 'План', promises: 'Обещания', crm_query: 'Данные CRM', orders: 'Заказы', personal_debts: 'Мои долги', task_list: 'Задачи' };
 async function sendExcel(chatId: number, tool: string, args: any, result: any): Promise<string | null> {
   const sheets = resultSheets(result).filter(s => s.rows.length > 1);
   if (!sheets.length) return null;
@@ -3380,7 +3585,11 @@ async function sendExcel(chatId: number, tool: string, args: any, result: any): 
 
 export async function ask(db: any, chatId: number, userParts: any[], qText: string, media?: { file_id: string; mime: string }) {
   const [hist, mem, skills] = await Promise.all([getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
-  const contents: any[] = [...hist, { role: 'user', parts: userParts }];
+  // a correction of the previous answer: the AI is told to fix it and to keep a general rule from it (learning)
+  const fix = hist.length > 0 && isCorrection(qText);
+  const contents: any[] = [...hist, { role: 'user', parts: fix ? [...userParts, { text: CORRECTION_NOTE }] : userParts }];
+  // hard questions and corrections think on the smart model (free, smaller quota); the rest stays on the main one
+  const model = (fix || isHardQuestion(qText)) && smartOn() ? smartModel() : CFG.model();
   const used: string[] = [], sys = systemPrompt(db, mem, skills), files: string[] = [];
   const wantXls = EXCEL_Q.test(qText);
   let requests = 0, checked = false;
@@ -3389,7 +3598,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
     const d = await gemini({
       systemInstruction: { parts: [{ text: sys }] }, contents,
       tools: [{ functionDeclarations: declarations }], generationConfig: { temperature: 0.1 },
-    });
+    }, model);
     const content = d.candidates?.[0]?.content;
     if (!content?.parts?.length) throw new Error('Gemini не ответил' + (d.promptFeedback?.blockReason ? ': ' + d.promptFeedback.blockReason : ''));
     contents.push(content);
@@ -3459,7 +3668,7 @@ export function isLimitsQuestion(text: string) {
 async function command(text: string, chatId: number): Promise<string | null> {
   // «сколько осталось лимитов?» in plain words is answered without spending a request
   if (/^\/limits?\b/i.test(text) || isLimitsQuestion(text)) return limitsText();
-  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
   const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
@@ -3473,6 +3682,12 @@ async function command(text: string, chatId: number): Promise<string | null> {
   if (cmd === 'skills' || cmd === 'skill') return skillCommand(chatId, arg);
   if (cmd === 'tasks') { const sp = Object.keys(SPH).find(k => arg && norm(SPH[k]).includes(norm(arg))); return run('task_list', sp ? { sphere: sp } : {}); }
   if (cmd === 'task') return arg ? run('task_add', { title: arg }) : 'Напишите задачу: /task позвонить Азизу (срок и важность можно сказать словами без /)';
+  if (cmd === 'baza' || cmd === 'база') { // the client base: text + the Excel file at once; CRM numbers if the CRM is up
+    const bdb = await loadDB().catch(() => null), a = arg ? { client: arg } : {}, r = await TOOLS.client_info.run(bdb, a, ctx);
+    let xl = '';
+    if (!r.error && !r.empty) { try { const f = await sendExcel(chatId, 'client_info', a, r); if (f) xl = `\n\n📎 Excel: ${f}`; } catch (e) { xl = '\n\n⚠️ Не получилось отправить Excel: ' + redact((e as Error).message); } }
+    return (ambiguity(r) || TPL.client_info(r)) + xl;
+  }
   if (cmd === 'memory') return run('memory_list', {});
   if (cmd === 'reminders') return run('reminder_list', {});
   if (cmd === 'my') return run('personal_debts', arg ? { person: arg } : {});
@@ -4033,6 +4248,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /dolg — должники · /agents — итоги агентов
 /plan — прогноз плана · /stop — перестали брать
 /k имя — карточка · /sleep — давно не брали
+/baza — база клиентов в Excel · /baza имя — досье (с кем работает, масла, цены, договоры)
 /sklad — что заканчивается · /sklad товар — остатки
 /oil — сводка OilBook · /oil точка — карточка точки
 /memory — что я помню · /forget N — забыть
@@ -4048,7 +4264,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 Каждый день в ${CFG.hour('MORNING_HOUR', 8)}:00 присылаю план (с погодой, курсом и новостями; голосом, если не /voice off), в ${CFG.hour('EVENING_HOUR', 19)}:00 — итог дня.`;
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
-  ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'], ['oil', 'OilBook: сводка / /oil точка'],
+  ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['baza', 'База клиентов в Excel / /baza имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'], ['oil', 'OilBook: сводка / /oil точка'],
   ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
   ['weather', 'Погода: /weather город'], ['kurs', 'Курс ЦБ'], ['news', 'Новости: /news тема'], ['cal', 'Google Календарь: /cal завтра'], ['google', 'Подключить Google'], ['skills', 'Навыки'],
   ['voice', 'Голосовые ответы: авто / on / off'], ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
