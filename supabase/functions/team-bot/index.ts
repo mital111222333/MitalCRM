@@ -311,16 +311,18 @@ export async function usage(chatId: number, add = 0): Promise<number> {
 }
 // a key whose DAILY limit is spent is skipped until the quota resets (Pacific midnight; 1 hour is enough to re-check)
 const SPENT = new Map<string, number>();
+export const _resetSpent = () => SPENT.clear(); // tests only
 const perDay = (d: any) => /per.?day|PerDay|daily/i.test(JSON.stringify(d?.error || {}));
 export const NO_KEY = 'Yordamchi hali sozlanmagan (Gemini kaliti yoʻq) — rahbaringizga ayting.\nАссистент ещё не настроен (нет ключа Gemini) — скажите руководителю.';
 const BUSY = 'Hozir soʻrovlar juda koʻp — bir daqiqadan keyin yana yozing.\nСейчас слишком много вопросов — напишите через минуту.';
 const ALL_SPENT = 'Bugun butun jamoaning AI limiti tugadi — ertaga davom etamiz.\nЛимит ИИ на всю команду на сегодня исчерпан — продолжим завтра.';
+const OVERLOADED = 'Google AI hozir band (vaqtincha) — 1–2 daqiqadan keyin yana yozing.\nGoogle ИИ сейчас перегружен (это временно) — напишите через 1–2 минуты.';
 let KEY_I = 0;
 export async function gemini(body: any): Promise<any> {
   const keys = CFG.gKeys();
   if (!keys.length) throw Object.assign(new Error('no key'), { user: NO_KEY });
   const models = [CFG.model(), CFG.fallback()].filter((m, i, a) => m && m !== 'off' && a.indexOf(m) === i);
-  let busy = false;
+  let busy = false, overloaded = false;
   // start with the next key each time: the load is spread over all keys, not one key emptied first
   const start = KEY_I++ % keys.length;
   for (let k = 0; k < keys.length; k++) {
@@ -331,8 +333,10 @@ export async function gemini(body: any): Promise<any> {
       const once1 = () => fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify(body) }, 90000);
       let r = await once1();
-      for (const wait of [1500, 4000]) { if (r.status !== 500 && r.status !== 503) break; await r.body?.cancel().catch(() => {}); await sleep(wait); r = await once1(); }
+      // 500/503 «high demand»: one retry, then the next model (the fallback is another model, usually not overloaded)
+      for (const wait of [2000]) { if (r.status !== 500 && r.status !== 503) break; await r.body?.cancel().catch(() => {}); await sleep(wait); r = await once1(); }
       const d = await r.json().catch(() => ({}));
+      if (r.status === 500 || r.status === 503) { overloaded = true; console.warn('gemini overloaded', model, r.status); continue; }
       if (r.status === 429) {
         if (perDay(d)) SPENT.set(tag, Date.now() + 3600e3); else busy = true;
         console.warn('gemini 429', model, '…' + key.slice(-4), perDay(d) ? 'daily' : 'per minute');
@@ -342,7 +346,7 @@ export async function gemini(body: any): Promise<any> {
       return d;
     }
   }
-  throw Object.assign(new Error('limit'), { user: busy ? BUSY : ALL_SPENT });
+  throw Object.assign(new Error('limit'), { user: overloaded ? OVERLOADED : busy ? BUSY : ALL_SPENT });
 }
 export function cleanAnswer(t: string) { return t.replace(/\*\*|__|^#+\s*/gm, '').replace(/^\s*[-*]\s+/gm, '• ').trim(); }
 

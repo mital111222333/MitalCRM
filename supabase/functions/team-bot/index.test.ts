@@ -57,7 +57,7 @@ function reset() {
     if (m === 'getMe') return J({ ok: true, result: { username: 'mital_team_bot' } });
     return J({ ok: true, result: {} });
   }
-  if (url.includes('generativelanguage')) { (state.keys ||= []).push(init.headers['x-goog-api-key']); if (state.quota429?.includes(init.headers['x-goog-api-key'])) return J({ error: { code: 429, message: 'Quota exceeded: GenerateRequestsPerDayPerProjectPerModel' } }, 429); const r = state.gemini.shift() || { candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] } }] }; state.lastGeminiBody = body; return J(r); }
+  if (url.includes('generativelanguage')) { (state.keys ||= []).push(init.headers['x-goog-api-key']); if (state.over503 && (state.over503 === '*' || url.includes(state.over503))) return J({ error: { code: 503, message: 'This model is currently experiencing high demand.' } }, 503); if (state.quota429?.includes(init.headers['x-goog-api-key'])) return J({ error: { code: 429, message: 'Quota exceeded: GenerateRequestsPerDayPerProjectPerModel' } }, 429); const r = state.gemini.shift() || { candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] } }] }; state.lastGeminiBody = body; return J(r); }
   if (url === 'https://sb.test/auth/v1/user') { const tok = String(init.headers?.Authorization || '').replace('Bearer ', ''); return tok === 'tokA' ? J({ id: A }) : tok === 'tokB' ? J({ id: B }) : J({}, 401); }
   const path = url.replace('https://sb.test/rest/v1/', '');
   if (path.startsWith('team_users?chat_id=eq.') && method === 'GET') { const id = +path.match(/chat_id=eq\.(\d+)/)![1]; return J(state.users.filter((u: any) => u.chat_id === id)); }
@@ -209,4 +209,13 @@ Deno.test('keys: no team key → never falls back to the owner key', async () =>
   let msg = ''; try { await M.gemini({ contents: [] }); } catch (e) { msg = (e as any).user; }
   E.set('TEAM_GEMINI_KEY', 'keyAAAAAA1, keyBBBBBB2');
   eq(msg, M.NO_KEY); ok(!(state.keys || []).length, 'no request was sent');
+});
+Deno.test('503 high demand: the fallback model answers', async () => {
+  reset(); M._resetSpent(); state.over503 = 'gemini-3.1-flash-lite';
+  const d = await M.gemini({ contents: [] }); ok(d.candidates, 'fallback answered');
+});
+Deno.test('503 everywhere: a plain «overloaded» message, not Google text', async () => {
+  reset(); M._resetSpent(); state.over503 = '*';
+  let msg = ''; try { await M.gemini({ contents: [] }); } catch (e) { msg = (e as any).user; }
+  ok(msg.includes('перегружен') && !msg.includes('high demand'), msg);
 });
