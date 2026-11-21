@@ -8,7 +8,7 @@ import vm from 'node:vm';
 // the bundle returns only the engine; the test build also hands out the module loader to reach util/parse/agents directly
 const src = readFileSync(new URL('../engine.bundle.js', import.meta.url), 'utf8');
 assert.ok(src.includes("return load('engine');"), 'engine.bundle.js changed shape: update the loader in this test');
-const ctx = { window: {}, TextDecoder, TextEncoder, DecompressionStream, Blob, Response, console };
+const ctx = { window: {}, TextDecoder, TextEncoder, DecompressionStream, Blob, Response, console, URL, URLSearchParams };
 vm.createContext(ctx);
 vm.runInContext(src.replace("return load('engine');", 'return { load, engine: load("engine") };'), ctx);
 const { load } = ctx.window.CRMEngine;
@@ -111,4 +111,33 @@ test('state survives export → import unchanged (what every cloud save does)', 
   const e3 = createEngine(); e3.importState(e2.exportState());
   assert.equal(e3.exportState(), e2.exportState());
   assert.deepEqual({ ...e3.summary() }, { wh: 0, ag: 0, clients: 1, tasks: 1 });
+});
+
+// a history file (a closed period older than the newest one) goes to the reports only: it never moves a client back to an old agent
+test('history upload: stored for its period, client cards untouched', async () => {
+  const csv = rows => new TextEncoder().encode([header.join(';'), ...rows.map(r => r.join(';'))].join('\n'));
+  const e = createEngine();
+  const up = (q, rows) => e.request('POST', '/api/ag/upload?' + new URLSearchParams({ file: 'balance.csv', ...q }), { raw: csv(rows) }).then(r => r.json);
+  const cur = await up({ date: '2026-11-20', from: '2026-11-16', to: '2026-11-20' }, [[1, 'Бозор', 'Рынок', 'Агент Б', 500, -100, 0, 50, 450]]);
+  assert.equal(cur.ok, true); assert.equal(cur.history, false);
+  e.getState().ag.clients['Бозор'].phone = '+998 90 111 11 11';
+  const old = await up({ date: '2026-02-15', from: '2026-01-16', to: '2026-02-15' }, [
+    [1, 'Бозор', 'Магазин', 'Агент А', 0, '-1 000,50', 0, '400,25', '-600,25'],
+    [2, 'Старый клиент', 'Магазин', 'Агент А', 0, -10, 0, 0, -10],
+  ]);
+  assert.equal(old.ok, true); assert.equal(old.history, true);
+  assert.deepEqual({ ...old.period }, { from: '2026-01-16', to: '2026-02-15' });
+  const S = e.getState(), c = S.ag.clients['Бозор'];
+  assert.equal(c.agent, 'Агент Б'); assert.equal(c.type, 'Рынок'); assert.equal(c.phone, '+998 90 111 11 11');
+  const h = S.ag.uploads.find(u => u.period_from === '2026-01-16');
+  assert.equal(h.taken_at, '2026-02-15');
+  assert.equal(cents(h.sold), 101050); assert.equal(cents(h.paid), 40025);
+  assert.equal(h.rows.find(r => r.client === 'Бозор').agent, 'Агент А'); // history keeps who worked the client then
+  assert.ok(S.ag.clients['Старый клиент']);
+  // a repeated file for the same period replaces the earlier one
+  await up({ date: '2026-02-15', from: '2026-01-16', to: '2026-02-15' }, [[1, 'Бозор', 'Магазин', 'Агент А', 0, -5, 0, 0, -5]]);
+  assert.equal(e.getState().ag.uploads.filter(u => u.period_from === '2026-01-16').length, 1);
+  // the newest period still updates the cards as before
+  const nw = await up({ date: '2026-11-21', from: '2026-11-16', to: '2026-11-21' }, [[1, 'Бозор', 'Рынок', 'Агент В', 450, 0, 0, 0, 450]]);
+  assert.equal(nw.history, false); assert.equal(e.getState().ag.clients['Бозор'].agent, 'Агент В');
 });

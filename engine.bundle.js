@@ -794,7 +794,11 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
     // mode: "overwrite" takes План/Пул/Заметки from the file (use for the Google workbook), "keep" never touches them
     const overwrite = q.mode === 'overwrite' || (q.mode !== 'keep' && parsed.workbook && parsed.hasPlan);
     const { rows } = parsed, sum = k => rows.reduce((a, r) => a + r[k], 0);
-    const renamed = parsed.workbook ? [] : agRenames(rows, from, date);
+    // history: a balance of a period older than the newest one in the CRM (or history=1). It is stored for the reports only —
+    // agents, numbers, phones, plans and names of clients stay as the current LINKO has them (an old file must not move a client back).
+    const newest = S.ag.uploads.reduce((m, u) => (!u.synth && u.period_from > m ? u.period_from : m), '');
+    const history = q.history === '1' || (!!newest && from < newest);
+    const renamed = parsed.workbook || history ? [] : agRenames(rows, from, date);
     let created = 0, agentChanges = 0, planUpdates = 0, tasksImported = 0;
     const before = S.ag.uploads.length;
     S.ag.uploads = S.ag.uploads.filter(u => !(u.taken_at === date && u.period_from === from && u.period_to === to));
@@ -804,7 +808,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
       if (!c) {
         S.ag.clients[r.name] = { name: r.name, num: r.num, agent: r.agent, type: r.type, landmark: r.landmark, phone: r.phone, zone: r.zone, plan: r.plan || 0, pool: r.pool || 0, note: r.note || '', added: date, first: !before };
         created++;
-      } else {
+      } else if (!history) {
         if (r.agent && r.agent !== c.agent) { agentChanges++; c.agent = r.agent; }
         if (r.num !== null) c.num = r.num;
         for (const k of ['type', 'landmark', 'phone', 'zone']) if (r[k]) c[k] = r[k];
@@ -814,7 +818,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
       }
       stored.push({ client: r.name, agent: r.agent || oldAgent || '', b0: r.b0, sold: r.sold, ret: r.ret, paid: r.paid, other_in: r.oin, other_out: r.oout, b1: r.b1 });
     }
-    if (parsed.workbook && q.tasks !== '0') {
+    if (parsed.workbook && !history && q.tasks !== '0') {
       const known = new Set(rows.map(r => r.name));
       for (const t of parseTasks(sheets)) {
         if (!known.has(t.client) || S.ag.tasks.some(x => x.client === t.client && x.created === t.created && x.kind === t.kind && x.target === t.target)) continue;
@@ -822,7 +826,7 @@ function createEngine({ state, onChange = () => {}, user = 'вы' } = {}) {
       }
     }
     S.ag.uploads.push({ id, taken_at: date, period_from: from, period_to: to, file: (q.file || '').slice(0, 200), uploaded_at: new Date().toISOString(), uploaded_by: user, clients: rows.length, sold: sum('sold'), paid: sum('paid'), returned: sum('ret'), b1: sum('b1'), rows: stored });
-    return ok({ ok: true, id, clients: rows.length, created, renamed, agent_changes: agentChanges, plan_updates: planUpdates, tasks_imported: tasksImported, replaced, source: parsed.workbook ? 'workbook' : 'export', overwrite, date, period: { from, to }, detected });
+    return ok({ ok: true, id, clients: rows.length, created, renamed, agent_changes: agentChanges, plan_updates: planUpdates, tasks_imported: tasksImported, replaced, source: parsed.workbook ? 'workbook' : 'export', overwrite: overwrite && !history, date, period: { from, to }, detected, history });
   }
 
   // plan file for a plan period: №, Клиент, (Агент), План, Пул — matched to clients by № first, then by name

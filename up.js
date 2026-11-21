@@ -47,6 +47,17 @@ EXT_PAGES.up = async el => {
       <p class="mut" style="margin-bottom:0">Выгружайте из LINKO баланс <b>с ${UI.dateRu(from)} по сегодня</b>. ${when(lastAg)}</p>
       <div id="upAgMsg" role="status" style="margin-top:8px"></div>`, { cls: 'w12' })}
     ${(() => {
+      // the last 24 closed periods, newest first; the ones already in the CRM are marked
+      const pers = []; let p = from;
+      for (let i = 0; i < 24; i++) { p = PLAN.from(UI.localDate(Date.parse(p + 'T12:00:00') - 864e5), day); pers.push(p); }
+      const have = new Set(S.ag.uploads.filter(u => !u.synth && u.taken_at <= PLAN.end(u.period_from)).map(u => u.period_from));
+      const first = pers.find(x => !have.has(x)) || pers[0];
+      return UI.panel('📚 История из LINKO (прошлые периоды)', `<p class="mut" style="margin-top:0">Для аналитики по прошлым месяцам: выберите период, выгрузите в LINKO «Баланс клиентов» <b>ровно за этот период</b> (например, 16.01 — 15.02) и перетащите файл сюда. Файл попадает только в историю и отчёты — агенты, телефоны, планы и названия клиентов остаются как сейчас.</p>
+        <div class="form"><label>Период файла<select id="upHist">${pers.map(x => `<option value="${x}" ${x === first ? 'selected' : ''}>${UI.dateRu(x)} — ${UI.dateRu(PLAN.end(x))}${have.has(x) ? ' ✓ уже загружен' : ''}</option>`).join('')}</select></label></div>
+        <div class="dz sm" id="upHistDz" tabindex="0" role="button" style="margin-top:12px"><b>Файл «balance…» за выбранный период</b>перетащите или нажмите</div>
+        <div id="upHistMsg" role="status" style="margin-top:8px"></div>`, { cls: 'w12', sub: 'Один файл на один период 16–15. Повторная загрузка за тот же период заменяет прежнюю' });
+    })()}
+    ${(() => {
       const next = PLAN.from(UI.localDate(Date.parse(PLAN.end(from) + 'T12:00:00') + 864e5), day), meta = CRMLocal.ext().clientPlansMeta || {}, CP = CRMLocal.ext().clientPlans || {};
       const info = per => { const P = CP[per]; if (!P) return 'план ещё не загружен'; const v = Object.values(P); return `загружен${meta[per] ? ' ' + new Date(meta[per].at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}: продажи $${UI.fmt0(v.reduce((a, e) => a + e.plan, 0))} (${v.filter(e => e.plan > 0).length} кл.), сбор $${UI.fmt0(v.reduce((a, e) => a + e.pool, 0))} (${v.filter(e => e.pool > 0).length} кл.)`; };
       return UI.panel('🎯 План по клиентам на период', `<p class="mut" style="margin-top:0">Файл с колонками <b>№, Клиент, Агент, План, Пул</b> (план продаж и план сбора денег в $). Загружайте 16-го числа на новый период — дальше отчёты сравнивают оплаты и продажи с этим планом. Повторная загрузка на тот же период заменяет план.</p>
@@ -73,6 +84,18 @@ EXT_PAGES.up = async el => {
         show(box, true, `✓ ${f.name}: ${d.clients} клиентов на ${UI.dateRu(date)}, период ${UI.dateRu(pf)}–${UI.dateRu(date)}${d.created ? ` · новых клиентов ${d.created}` : ''}${d.agent_changes ? ` · сменился агент у ${d.agent_changes}` : ''}${d.replaced ? ' · заменила загрузку за этот день' : ''}. <a href="#/my">Открыть «Мой день» →</a>`);
       } catch (e) { show(box, false, '✕ ' + esc(e.message)); }
     }
+  });
+  UI.bindDrop($('#upHistDz', el), async files => {
+    const box = $('#upHistMsg', el), sel = $('#upHist', el), f = files[0], pf = sel.value, pe = PLAN.end(pf);
+    if (files.length > 1) return show(box, false, '✕ По одному файлу: сначала выберите период, потом перетащите файл именно за него.');
+    box.className = 'mut'; box.textContent = `Загружаю ${f.name} в историю ${UI.dm(pf)}–${UI.dm(pe)}…`;
+    try {
+      const d = await UI.rawUpload(`/api/ag/upload?file=${encodeURIComponent(f.name)}&date=${pe}&from=${pf}&to=${pe}&history=1`, f);
+      if (d.error) return show(box, false, '✕ ' + esc(d.error));
+      const u = CRMLocal.engine.getState().ag.uploads.find(x => x.id === d.id) || {};
+      show(box, true, `✓ История ${UI.dateRu(pf)} — ${UI.dateRu(pe)}: ${d.clients} клиентов · продажи $${UI.fmt0(u.sold || 0)} · возврат $${UI.fmt0(u.returned || 0)} · оплачено $${UI.fmt0(u.paid || 0)} · баланс на конец $${UI.fmt0(u.b1 || 0)}${d.created ? ` · клиентов, которых сейчас нет в CRM: ${d.created}` : ''}${d.replaced ? ' · заменила прежнюю загрузку за этот период' : ''}. Сверьте эти суммы с итогом LINKO. <a href="#/rdyn">Открыть «Динамику по месяцам» →</a>`);
+      const o = [...sel.options].find(x => x.value === pf); if (o && !o.text.includes('✓')) o.text += ' ✓ уже загружен';
+    } catch (e) { show(box, false, '✕ ' + esc(e.message)); }
   });
   const perSel = $('#upPer', el);
   perSel.onchange = () => { const P = (CRMLocal.ext().clientPlans || {})[perSel.value]; $('#upPlanInfo', el).textContent = P ? `На этот период план уже загружен: ${Object.keys(P).length} клиентов. Новая загрузка его заменит.` : 'На этот период план ещё не загружен.'; };
