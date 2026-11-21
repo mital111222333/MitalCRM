@@ -178,26 +178,28 @@
   try { localStorage.setItem('token', 'local'); } catch { /* storage blocked: the page will show the sign-in form */ }
 
   // ---------- menu: only the two sections that work without a server, plus the data page ----------
-  // The menu: 7 sections, 18 entries. An entry whose route opens a hub (HUBS) shows the hub's tabs above the page,
-  // so related screens live together instead of as separate menu lines.
+  // The menu (2026-11-20): 7 sections, 16 entries, one line per hub. An entry whose route opens a hub (HUBS) shows the hub's tabs
+  // above the page, so related screens live together instead of as separate menu lines (Спецпредложения, Сроки, Календарь оплат,
+  // Страница агента and Сверка складов are tabs of their hubs now; every screen is also found by the quick search, Ctrl+K).
   window.EXT_MENU = {
-    'Сегодня': { '': [['Мой день', 'my'], ['Сигналы', 'signals']] },
-    'Деньги': { '': [['Дебиторка', 'collect'], ['Оплаты по дням', 'lxpay'], ['Календарь оплат', 'pcal'], ['Договоры', 'contracts'], ['Спецпредложения', 'specs'], ['Сроки и договоры', 'invo']] },
-    'Команда': { '': [['Лидерборд', 'leaders'], ['Страница агента', 'agent'], ['Контроль агентов', 'disc'], ['Задания', 'atk'], ['Зарплата', 'pay']] },
+    'Сегодня': { '': [['Пульс', 'pulse'], ['Мой день', 'my'], ['Сигналы', 'signals']] },
+    'Деньги': { '': [['Дебиторка', 'collect'], ['Оплаты', 'lxpay'], ['Договоры', 'contracts']] },
     'Продажи': { '': [['Заказы по дням', 'lxday'], ['Клиенты и план', 'aclients'], ['Рост продаж', 'abc']] },
-    'Склад': { '': [['Остатки', 'whstock'], ['Сверка складов', 'wcount']] },
+    'Команда': { '': [['Лидерборд', 'leaders'], ['Контроль агентов', 'disc'], ['Задания', 'atk'], ['Зарплата', 'pay']] },
+    'Склад': { '': [['Склад', 'whstock']] },
     'Анализ': { '': [['Аналитика', 'ranalytics']] },
     'Настройки': { '': [['Настройки', 'cloud']] },
   };
   window.HUBS = [
     [['my', 'Мой день'], ['dayplan', 'План агентов на день']],
     [['collect', 'Очередь сбора'], ['lbal', '⚡ Баланс сейчас'], ['debt', 'Должники по агентам'], ['lxage', 'Просрочка'], ['rdebt', 'План сбора'], ['debtprev', 'Прошлый период']],
+    [['lxpay', 'Оплаты по дням'], ['pcal', 'Календарь оплат']],
     [['contracts', 'Договоры'], ['specs', 'Спецпредложения'], ['invo', 'Накладные: сроки'], ['inst', 'Рассрочка'], ['credit', 'Кредитный стоп']],
-    [['leaders', 'Лидерборд'], ['agents', 'Сводка']],
+    [['leaders', 'Лидерборд'], ['agents', 'Сводка'], ['agent', 'Страница агента']],
     [['disc', 'Дисциплина'], ['gps', 'Где агенты'], ['visits', 'Визиты'], ['amap', 'Маршруты']],
     [['atk', 'Задания агентам'], ['atasks', 'Задания по клиентам']],
     [['abc', 'ABC клиентов'], ['anew', 'Новые точки'], ['rsleep', 'Спящие клиенты'], ['wake', 'Возврат спящих'], ['assort', 'Ассортимент'], ['lxcross', 'Кому что предложить'], ['lxbrand', 'Бренды и товары']],
-    [['whstock', 'Остатки'], ['whlow', 'Заканчивается'], ['whmove', 'Движение'], ['whorder', 'Заявка в Ташкент'], ['wh', 'Обзор']],
+    [['whstock', 'Остатки'], ['whlow', 'Заканчивается'], ['whmove', 'Движение'], ['wcount', 'Сверка складов'], ['whorder', 'Заявка в Ташкент'], ['wh', 'Обзор']],
     [['ranalytics', 'Аналитика'], ['rdyn', 'По периодам'], ['rdays', 'По дням и неделям'], ['lxprof', 'Прибыль по товарам'], ['ai', 'ИИ-ассистент']],
     [['cloud', 'Синхронизация'], ['users', 'Пользователи'], ['tg', 'Telegram агентам'], ['access', 'Доступ агентов'], ['chat', 'Чаты Telegram'], ['up', 'Загрузить вручную'], ['aup', 'Загрузки баланса'], ['whup', 'Загрузки склада'], ['archive', 'Архив'], ['data', 'Резервная копия']],
   ];
