@@ -390,8 +390,9 @@ window.CLOUD = (() => {
     if (remote.missing) throw new Error('В базе ещё нет ваших данных');
     const local = JSON.parse(JSON.stringify(CRMLocal.engine.getState())), there = JSON.parse(JSON.stringify(remote.state));
     const diffs = [];
+    const SKIP = new Set(['ext.linkoAuto.checkedAt', 'ext.linkoAuto.seenAt']); // "last time LINKO was polled": changes every check without a save, not data
     (function walk(a, b, path) {
-      if (diffs.length >= 8) return;
+      if (diffs.length >= 8 || SKIP.has(path)) return;
       if (stable(a) === stable(b)) return;
       if (a && b && typeof a === 'object' && typeof b === 'object' && Array.isArray(a) === Array.isArray(b)) {
         if (Array.isArray(a) && a.length !== b.length) return diffs.push(`${path} (${a.length} здесь, ${b.length} в базе)`);
