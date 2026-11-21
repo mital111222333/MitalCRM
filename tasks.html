@@ -34,7 +34,7 @@ form.add input[name=title]{border:0;background:transparent;outline:none;min-widt
 .card .t{font-weight:600;word-break:break-word}.card.done .t{text-decoration:line-through;color:var(--mut)}
 .note{color:var(--mut);font-size:13px;white-space:pre-wrap}
 .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;font-size:12px;color:var(--mut)}
-.tag{background:var(--bg);border-radius:6px;padding:1px 6px}.tag.late{color:var(--red)}.tag.today{color:#a86a00}
+.tag{background:var(--bg);border-radius:6px;padding:1px 6px}.tag.rem{color:var(--acc);font-weight:600}.tag.late{color:var(--red)}.tag.today{color:#a86a00}
 .pg{margin-top:8px;display:flex;gap:8px;align-items:center}.pg input{flex:1}.pg span{font-size:12px;color:var(--mut)}
 .acts{display:flex;gap:6px;margin-top:8px}.acts button{flex:1;border:1px solid var(--line);background:var(--bg);border-radius:9px;padding:6px 4px;font-size:13px;cursor:pointer}
 .acts .go{background:var(--acc);color:var(--acc-tx);border-color:var(--acc)}.acts .ok{background:var(--green);color:#fff;border-color:var(--green)}
@@ -84,6 +84,10 @@ dialog input,dialog select,dialog textarea{border:1px solid var(--line);backgrou
   let tasks = [], today = '', sphere = ls.get('tk_sphere') || '', tab = ls.get('tk_tab') || 'doing', editing = null, drag = 0;
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const dm = d => d ? d.slice(8, 10) + '.' + d.slice(5, 7) : '';
+  // a card made from a reminder: its time in Tashkent, 🔁 for a repeating one
+  const at = iso => { try { return new Intl.DateTimeFormat('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(iso)); } catch { return ''; } };
+  const remTag = t => t.remind ? `<span class="tag rem">⏰ ${t.remind.sent && !t.remind.repeat ? 'было ' : ''}${at(t.remind.at)}${t.remind.repeat ? ' 🔁' : ''}</span>` : '';
+  const inView = t => sphere === 'rem' ? !!t.remind : !sphere || (t.sphere || 'work') === sphere;
   const haptic = ok => { try { ok ? TG.HapticFeedback.notificationOccurred('success') : TG.HapticFeedback.impactOccurred('light'); } catch {} };
   const toast = t => { if (!t) return; const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('on'), 2000); };
   if (TG) { TG.ready(); TG.expand(); }
@@ -102,16 +106,16 @@ dialog input,dialog select,dialog textarea{border:1px solid var(--line);backgrou
     const acts = t.status === 'todo' ? '<button class="go" data-a="doing">▶ В процесс</button><button class="ok" data-a="done">✓ Готово</button>'
       : t.status === 'doing' ? '<button data-a="todo">↩</button><button class="ok" data-a="done">✓ Готово</button>' : '<button data-a="doing">↺ Вернуть</button>';
     return `<article class="card p${t.priority || 0} ${t.status}" draggable="true" data-id="${t.id}"><div class="t">${t.priority == 2 ? '🔥 ' : t.priority == 1 ? '❗ ' : ''}${esc(t.title)}</div>
-      ${t.note ? `<div class="note">${esc(t.note)}</div>` : ''}<div class="meta">${t.due ? `<span class="tag ${late ? 'late' : now ? 'today' : ''}">${late ? '⚠️ ' : '📅 '}${now ? 'сегодня' : dm(t.due)}</span>` : ''}${!sphere && t.sphere && t.sphere !== 'work' ? `<span class="tag">${SPH[t.sphere] || ''}</span>` : ''}<span>#${t.id}</span></div>
+      ${t.note ? `<div class="note">${esc(t.note)}</div>` : ''}<div class="meta">${remTag(t)}${t.due && !t.remind ? `<span class="tag ${late ? 'late' : now ? 'today' : ''}">${late ? '⚠️ ' : '📅 '}${now ? 'сегодня' : dm(t.due)}</span>` : ''}${(!sphere || sphere === 'rem') && t.sphere && t.sphere !== 'work' ? `<span class="tag">${SPH[t.sphere] || ''}</span>` : ''}<span>#${t.id}</span></div>
       ${t.status === 'doing' ? `<div class="pg"><input type="range" min="0" max="100" step="10" value="${t.progress || 0}" data-pg><span>${t.progress || 0}%</span></div>` : ''}<div class="acts">${acts}</div></article>`;
   }
   function draw() {
-    const list = tasks.filter(t => !sphere || (t.sphere || 'work') === sphere), by = s => list.filter(t => t.status === s);
+    const list = tasks.filter(inView), by = s => list.filter(t => t.status === s);
     const n = { todo: by('todo').length, doing: by('doing').length, done: by('done').length }, total = list.length || 1;
     const late = list.filter(t => t.status !== 'done' && t.due && t.due < today).length;
     $('#stat').textContent = list.length ? `готово ${n.done} из ${list.length} · ${Math.round(n.done / total * 100)}%${late ? ' · ⚠️ просрочено ' + late : ''}` : 'задач нет';
     $('#bar').innerHTML = COLS.slice().reverse().map(([s, , c]) => `<i style="width:${n[s] / total * 100}%;background:${c}"></i>`).join('');
-    $('#chips').innerHTML = [['', 'Все'], ...Object.entries(SPH)].map(([k, v]) => `<button class="chip" data-s="${k}" aria-pressed="${k === sphere}">${v}</button>`).join('');
+    $('#chips').innerHTML = [['', 'Все'], ['rem', `⏰ Напоминания · ${tasks.filter(t => t.remind && t.status !== 'done').length}`], ...Object.entries(SPH)].map(([k, v]) => `<button class="chip" data-s="${k}" aria-pressed="${k === sphere}">${v}</button>`).join('');
     $('#tabs').innerHTML = COLS.map(([s, l]) => `<button data-tab="${s}" aria-selected="${s === tab}">${l} · ${n[s]}</button>`).join('');
     $('#board').innerHTML = COLS.map(([s, l]) => `<section class="col ${s === tab ? 'show' : ''}" data-col="${s}"><h2><span>${l}</span><span>${n[s]}</span></h2><div class="list">${by(s).map(card).join('') || `<div class="empty">${s === 'done' ? 'Готовые за 7 дней' : 'Пусто'}</div>`}</div></section>`).join('');
   }
@@ -150,7 +154,7 @@ dialog input,dialog select,dialog textarea{border:1px solid var(--line);backgrou
     if (ef.status.value !== editing.status) body.status = ef.status.value; else body.progress = +ef.progress.value;
     dlg.close(); run(body, 'Сохранено');
   };
-  $('#del').onclick = () => { if (editing && confirm('Удалить задачу?')) { dlg.close(); run({ op: 'del', id: editing.id }, '🗑 Удалено'); } };
+  $('#del').onclick = () => { if (editing && confirm(editing.remind ? 'Удалить карточку? Напоминание тоже отменится.' : 'Удалить задачу?')) { dlg.close(); run({ op: 'del', id: editing.id }, editing.remind ? '❌ Напоминание отменено' : '🗑 Удалено'); } };
   if (!TG || !TG.initData || !API.startsWith('http')) { $('#board').innerHTML = '<div class="msg">Откройте доску из бота JUMAVOY: /tasks → «📋 Доска».</div>'; $('#add').hidden = true; $('#stat').textContent = ''; return; }
   run({ op: 'list' });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) run({ op: 'list' }); });

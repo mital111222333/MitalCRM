@@ -635,11 +635,11 @@ function balanceFor(db: any, from?: string, to?: string) {
   const asOf = grace ? to! : u.period_to;
   return { from, to: asOf, period: `${dm(from)} — ${dm(asOf)}`, byAgent };
 }
-const WRITES = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'reminder_add', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'send_once_contract', 'save_photo', 'send_saved_file', 'message_agent', 'crm_task', 'crm_note', 'message_client',
+const WRITES = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'reminder_add', 'reminder_set', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'send_once_contract', 'save_photo', 'send_saved_file', 'message_agent', 'crm_task', 'crm_note', 'message_client',
   'skill_add', 'skill_delete', 'calendar_add', 'oilbook_action']);
 // tools that do not need the CRM data: when GitHub / LINKO is down they keep working (reminders, personal money, tasks,
 // notebook, the outside world, Google); every other tool then answers with the data error instead of zeros
-const NO_CRM = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_cancel',
+const NO_CRM = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel',
   'personal_debt_add', 'personal_debts', 'personal_debt_delete', 'notebook_search', 'save_photo', 'send_saved_file', 'web_research', 'open_page', 'weather', 'promo_calc', 'price_list',
   'currency_rates', 'news', 'skill_use', 'skill_add', 'skill_list', 'skill_delete', 'calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search',
   'oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action']);
@@ -681,6 +681,7 @@ async function onButton(q: any) {
   const chatId = q.message?.chat?.id, uid = String(q.from?.id || ''), answer = (text = '') => tg('answerCallbackQuery', { callback_query_id: q.id, text: text.slice(0, 190) });
   if (!CFG.allowed().includes(uid)) return answer('Нет доступа');
   if (/^tk:/.test(String(q.data || '')) && chatId) return taskButton(q, chatId, answer);
+  if (/^rm:/.test(String(q.data || '')) && chatId) return remindButton(q, chatId, answer);
   const m = String(q.data || '').match(/^ob:(send|cancel):(\d+)$/); if (!m || !chatId) return answer();
   const now = new Date().toISOString();
   // claimed by a conditional update: a double tap never sends twice
@@ -869,10 +870,19 @@ function taskSort(a: any, b: any) {
 async function taskRows(chatId: number, sphere?: string) {
   const since = new Date(Date.now() - DONE_DAYS * 864e5).toISOString();
   const rows = await sb(`ai_tasks?chat_id=eq.${chatId}&or=(status.eq.todo,status.eq.doing,done_at.gte.${q(since)})&order=id&limit=300`);
-  return (sphere ? rows.filter((r: any) => (r.sphere || 'work') === sphere) : rows).sort(taskSort);
+  return withRemind(chatId, (sphere ? rows.filter((r: any) => (r.sphere || 'work') === sphere) : rows).sort(taskSort));
+}
+// a card made from a reminder carries its time: remind = the nearest waiting reminder of that card (else the last sent one)
+async function withRemind(chatId: number, rows: any[]) {
+  if (!rows.length) return rows;
+  const rs = await sb(`ai_reminders?chat_id=eq.${chatId}&task_id=gt.0&select=id,task_id,due_at,repeat,sent_at&order=due_at&limit=500`).catch(() => []);
+  const by = new Map<number, any>();
+  for (const r of rs) { const cur = by.get(r.task_id); if (!cur || (cur.sent_at && !r.sent_at)) by.set(r.task_id, r); }
+  return rows.map(t => { const r = by.get(t.id); return r ? { ...t, remind: { id: r.id, at: r.due_at, repeat: r.repeat || undefined, sent: !!r.sent_at } } : t; });
 }
 const dueTag = (t: any, today = todayStr()) => !t.due || t.status === 'done' ? '' : t.due < today ? ` · ⚠️ просрочено (${dm(t.due)})` : t.due === today ? ' · 📌 сегодня' : ` · до ${dm(t.due)}`;
-const taskLine = (t: any) => `#${t.id} ${PRIO[t.priority || 0]}${t.title}${dueTag(t)}${t.status === 'doing' && t.progress > 0 ? ` · ${t.progress}%` : ''}${sphTag(t.sphere)}`;
+const remTag = (t: any) => t.remind && t.status !== 'done' ? ` · ⏰ ${nowTime(t.remind.at)}${t.remind.repeat ? ' 🔁' : ''}` : '';
+const taskLine = (t: any) => `#${t.id} ${PRIO[t.priority || 0]}${t.title}${t.remind ? remTag(t) : dueTag(t)}${t.status === 'doing' && t.progress > 0 ? ` · ${t.progress}%` : ''}${sphTag(t.sphere)}`;
 export const progressBar = (pct: number, w = 10) => '▓'.repeat(Math.round(pct / 100 * w)) + '░'.repeat(w - Math.round(pct / 100 * w));
 export function boardText(rows: any[], sphere?: string) {
   const by = (s: string) => rows.filter(r => r.status === s), done = by('done').length, total = rows.length;
@@ -944,6 +954,66 @@ async function taskButton(q: any, chatId: number, answer: (t?: string) => Promis
   const b = await sendBoard(chatId, sphere);
   await tg('editMessageText', { chat_id: chatId, message_id: q.message.message_id, text: b.text.slice(0, 4096), reply_markup: b.reply_markup, disable_web_page_preview: true });
   return answer(note || 'Обновлено');
+}
+// ── reminders are cards on the board too: each reminder gets an ai_tasks card (ai_reminders.task_id, migration
+// 20261121000001_ai_reminder_cards.sql) with the same statuses. The reminder message has buttons: done, in progress,
+// snooze, cancel. Deleting the card deletes its reminders; a one-time reminder whose card is already done is not sent.
+const localDate = (iso: string) => new Intl.DateTimeFormat('en-CA', { timeZone: CFG.tz(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+// body: { due_at, text, repeat, sphere, file_id?, file_kind? }. Without the card (no ai_tasks / no task_id column yet)
+// the reminder is still saved as before
+export async function remindCreate(chatId: number, body: any) {
+  let card: any = null;
+  try { [card] = await sb('ai_tasks', { method: 'POST', prefer: 'return=representation', body: { chat_id: chatId, title: String(body.text).slice(0, 300), note: '', status: 'todo', priority: 0, due: localDate(body.due_at), sphere: body.sphere || 'work', progress: 0, started_at: null } }); }
+  catch (e) { console.warn('reminder card', (e as Error).message); }
+  if (card?.id) {
+    try { const [r] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { ...body, chat_id: chatId, task_id: card.id } }); return r; }
+    catch (e) { console.warn('reminder task_id', (e as Error).message); await sb(`ai_tasks?id=eq.${card.id}&chat_id=eq.${chatId}`, { method: 'DELETE' }).catch(() => {}); }
+  }
+  const [r] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { ...body, chat_id: chatId } });
+  return r;
+}
+// a reminder and everything that belongs to it: its card and the other reminders of that card (repeats, snoozes)
+async function remindDelete(chatId: number, r: any) {
+  if (r.task_id) {
+    await sb(`ai_tasks?id=eq.${r.task_id}&chat_id=eq.${chatId}`, { method: 'DELETE' }).catch(() => {});
+    await sb(`ai_reminders?task_id=eq.${r.task_id}&chat_id=eq.${chatId}`, { method: 'DELETE' });
+  }
+  await sb(`ai_reminders?id=eq.${r.id}&chat_id=eq.${chatId}`, { method: 'DELETE' });
+}
+const remCard = async (chatId: number, r: any) => r?.task_id ? (await sb(`ai_tasks?id=eq.${r.task_id}&chat_id=eq.${chatId}`).catch(() => []))[0] || null : null;
+// buttons like the task buttons; snoozing only makes sense under the reminder that has just come (fired)
+export function remindKeyboard(id: number, status = 'todo', fired = false) {
+  const kb: any[] = [];
+  if (status === 'done') kb.push([{ text: '↩️ Не выполнено', callback_data: `rm:todo:${id}` }]);
+  else kb.push([{ text: '✅ Выполнено', callback_data: `rm:done:${id}` }, status === 'doing' ? { text: '↩️ Не начато', callback_data: `rm:todo:${id}` } : { text: '▶️ В процессе', callback_data: `rm:doing:${id}` }]);
+  if (fired && status !== 'done') kb.push([{ text: '⏰ Через час', callback_data: `rm:h1:${id}` }, { text: '🌅 Завтра 9:00', callback_data: `rm:t1:${id}` }]);
+  kb.push([{ text: '❌ Отменить', callback_data: `rm:cancel:${id}` }, { text: '📋 Доска', web_app: { url: tasksUrl() } }]);
+  return { inline_keyboard: kb };
+}
+const REM_ST: Record<string, string> = { done: '✅ Выполнено', doing: '▶️ В процессе', todo: '⬜ К выполнению' };
+async function remindButton(q: any, chatId: number, answer: (t?: string) => Promise<any>) {
+  const [, act, rid] = String(q.data).split(':'), id = n(rid);
+  const base = String(q.message?.text || '').replace(/\n\n— [^\n]*$/, ''), fired = /^⏰ Напоминание/.test(base);
+  const edit = (line: string, kb?: any) => tg('editMessageText', { chat_id: chatId, message_id: q.message.message_id, text: `${base}\n\n— ${line}`.slice(0, 4096), disable_web_page_preview: true, ...(kb ? { reply_markup: kb } : {}) }).catch(e => console.warn('reminder edit', e));
+  const r = (await sb(`ai_reminders?id=eq.${id}&chat_id=eq.${chatId}`))[0];
+  if (!r) { await edit('❌ Напоминание уже отменено'); return answer('Напоминание уже отменено'); }
+  const card = await remCard(chatId, r);
+  if (act === 'cancel') { await remindDelete(chatId, r); await edit('❌ Отменено'); return answer('❌ Напоминание отменено'); }
+  if (act === 'h1' || act === 't1') {
+    const at = act === 'h1' ? new Date(Date.now() + 3600e3) : localToUtc(`${addDays(todayStr(), 1)}T09:00`)!;
+    // a repeating reminder keeps its schedule: the snooze is one more one-time reminder of the same card
+    if (r.repeat) await sb('ai_reminders', { method: 'POST', body: { chat_id: chatId, due_at: at.toISOString(), text: r.text, repeat: null, sphere: r.sphere || 'work', ...(r.task_id ? { task_id: r.task_id } : {}), ...(r.file_id ? { file_id: r.file_id, file_kind: r.file_kind } : {}) } });
+    else await sb(`ai_reminders?id=eq.${r.id}&chat_id=eq.${chatId}`, { method: 'PATCH', body: { due_at: at.toISOString(), sent_at: null } });
+    if (card) await taskPatch(chatId, card.id, { due: localDate(at.toISOString()), ...(card.status === 'done' ? { status: 'todo' } : {}) }).catch(() => {});
+    const line = `⏰ Отложено до ${nowTime(at.toISOString())}`;
+    await edit(line, remindKeyboard(r.id, card?.status === 'doing' ? 'doing' : 'todo', false));
+    return answer(line);
+  }
+  if (!(TASK_ST as readonly string[]).includes(act)) return answer();
+  const t = card ? await taskPatch(chatId, card.id, { status: act }) : null, st = t?.status || act;
+  await edit(REM_ST[st] || REM_ST.todo, remindKeyboard(r.id, st, fired));
+  const left = card ? (await taskRows(chatId)).filter((x: any) => x.status !== 'done').length : null;
+  return answer(st === 'done' ? `✅ Выполнено${left != null ? ` · открытых задач: ${left}` : ''}` : REM_ST[st]);
 }
 // the Mini App: Telegram signs initData with the bot token (HMAC «WebAppData»); only ALLOWED_USERS get in, chat = user id
 async function hmacRaw(key: Uint8Array<ArrayBuffer>, data: string): Promise<Uint8Array<ArrayBuffer>> {
@@ -1513,7 +1583,7 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       const at = due && localToUtc(`${due}T10:00`);
       if (at && at.getTime() > Date.now()) {
         const text = action === 'i_borrowed' ? `Вернуть долг: ${person} — ${money(amount, currency)}` : `${person} должен вернуть вам ${money(amount, currency)}`;
-        const [r] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, due_at: at.toISOString(), text, repeat: null, sphere } });
+        const r = await remindCreate(ctx.chatId, { due_at: at.toISOString(), text, repeat: null, sphere });
         reminder = { id: r.id, at: nowTime(r.due_at) };
       }
       return { saved: row.id, person, action, amount, currency, note: note || undefined, due: due || undefined, sphere, balance: bal ? bal.sum : 0, reminder };
@@ -1621,21 +1691,38 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       const text = String(a.text || '').trim().slice(0, 1000); if (!text) return { error: 'О чём напомнить?' };
       const repeat = ['daily', 'weekly'].includes(a.repeat) ? a.repeat : null;
       const file = ctx.media ? { file_id: ctx.media.file_id, file_kind: /^image\//.test(ctx.media.mime || '') ? 'photo' : 'document' } : {};
-      const [row] = await sb('ai_reminders', { method: 'POST', prefer: 'return=representation', body: { chat_id: ctx.chatId, due_at: d.toISOString(), text, repeat, sphere: sphereOf(a.sphere), ...file } });
-      return { id: row.id, at: nowTime(row.due_at), text, repeat: repeat || undefined, with_file: !!ctx.media || undefined, sphere: sphereOf(a.sphere) };
+      const row = await remindCreate(ctx.chatId, { due_at: d.toISOString(), text, repeat, sphere: sphereOf(a.sphere), ...file });
+      KB.set(ctx.chatId, remindKeyboard(row.id));
+      return { id: row.id, at: nowTime(row.due_at), text, repeat: repeat || undefined, with_file: !!ctx.media || undefined, sphere: sphereOf(a.sphere), card: row.task_id || undefined };
     },
   },
   reminder_list: {
-    desc: 'Список будущих напоминаний с номерами.',
+    desc: 'Список будущих напоминаний с номерами и статусом (К выполнению / В процессе / Готово).',
     params: {},
-    async run(_db, _a, ctx) { const rows = await sb(`ai_reminders?chat_id=eq.${ctx.chatId}&sent_at=is.null&order=due_at&limit=40`); return { count: rows.length, rows: rows.map((r: any) => ({ id: r.id, at: nowTime(r.due_at), text: r.text, repeat: r.repeat || undefined, sphere: r.sphere || 'work' })) }; },
+    async run(_db, _a, ctx) {
+      const rows = await sb(`ai_reminders?chat_id=eq.${ctx.chatId}&sent_at=is.null&order=due_at&limit=40`);
+      const st = new Map<number, string>((await sb(`ai_tasks?chat_id=eq.${ctx.chatId}&select=id,status&limit=1000`).catch(() => [])).map((t: any) => [t.id, t.status]));
+      return { count: rows.length, rows: rows.map((r: any) => ({ id: r.id, at: nowTime(r.due_at), text: r.text, repeat: r.repeat || undefined, sphere: r.sphere || 'work', status: st.get(r.task_id) })) };
+    },
+  },
+  reminder_set: {
+    desc: 'СТАТУС НАПОМИНАНИЯ, как у задачи: «напоминание 5 выполнено / сделал» → done; «начал, в процессе» → doing; «верни, не сделано» → todo. Отмена напоминания — reminder_cancel.',
+    params: { id: { type: 'number' }, status: { type: 'string', enum: ['todo', 'doing', 'done'] } },
+    async run(_db, a, ctx) {
+      const r = (await sb(`ai_reminders?id=eq.${n(a.id)}&chat_id=eq.${ctx.chatId}`))[0]; if (!r) return { error: `Напоминания #${n(a.id)} нет` };
+      const card = await remCard(ctx.chatId, r); if (!card) return { error: `У напоминания #${r.id} нет карточки на доске (оно поставлено до появления статусов)` };
+      const t = await taskPatch(ctx.chatId, card.id, { status: TASK_ST.includes(a.status) ? a.status : 'done' });
+      return { id: r.id, text: r.text, status: t?.status, task: card.id };
+    },
   },
   reminder_cancel: {
-    desc: 'Отменить напоминание по номеру.',
+    desc: 'Отменить напоминание по номеру (его карточка с доски тоже убирается).',
     params: { id: { type: 'number' } },
     async run(_db, a, ctx) {
-      const rows = await sb(`ai_reminders?id=eq.${n(a.id)}&chat_id=eq.${ctx.chatId}&sent_at=is.null`, { method: 'DELETE', prefer: 'return=representation' });
-      return rows?.length ? { cancelled: rows[0].id, text: rows[0].text } : { error: `Напоминания #${n(a.id)} нет` };
+      const r = (await sb(`ai_reminders?id=eq.${n(a.id)}&chat_id=eq.${ctx.chatId}`))[0];
+      if (!r) return { error: `Напоминания #${n(a.id)} нет` };
+      await remindDelete(ctx.chatId, r);
+      return { cancelled: r.id, text: r.text };
     },
   },
   notebook_search: {
@@ -2531,8 +2618,15 @@ Object.assign(TOOLS, {
     async run(_db: any, a: any, ctx: any) {
       const nb = ctx?.notebook || (sbOn() && ctx?.chatId ? await notebookOf(ctx.chatId) : []), pl = priceRows(nb);
       if (!pl.rows.length && !(a.product && priceLines(nb, String(a.product)).length)) return { error: 'В блокноте нет прайс-листа. Пришлите боту прайс файлом (PDF, фото или Excel) без подписи или с подписью «сохрани» — он сохранится, и цены будут браться из него.' };
-      const rows = a.product ? priceMatch(pl.rows, String(a.product), true) : pl.rows;
-      if (rows.length || !a.product) return { source: pl.source, date: pl.date, product: a.product || undefined, found: rows.length, rows: rows.slice(0, 40) };
+      let rows = a.product ? priceMatch(pl.rows, String(a.product), true) : pl.rows;
+      // a word of the query no table row has («Mitanol ATF» → «mitanol») — a loose match there would show another brand's
+      // ATF. Such a product is looked for in the lines of the saved files first; found nowhere → the near rows are
+      // shown, but marked as not the exact product
+      const missing = a.product ? priceMissing(pl.rows, String(a.product)) : [];
+      if (missing.length && rows.length && priceLines(nb, String(a.product)).length) rows = [];
+      // with several price lists the answer names the file (and date) each shown row came from, not just the newest one
+      const src = [...new Set(rows.slice(0, 40).map((r: any) => r.source).filter(Boolean))], dts = [...new Set(rows.slice(0, 40).map((r: any) => r.date).filter(Boolean))];
+      if (rows.length || !a.product) return { source: src.join(', ') || pl.source, date: dts.length === 1 ? dts[0] : rows.length ? undefined : pl.date, product: a.product || undefined, found: rows.length, rows: rows.slice(0, 40), not_in_price: missing.length && rows.length ? missing : undefined };
       // self-check before «не нашёл»: a price list in another layout (Mitanol: price per litre by volume…) is not in the
       // table rows — the lines of every saved file that mention the product go back to the AI, it reads them itself
       const raw = priceLines(nb, String(a.product));
@@ -2713,6 +2807,11 @@ export function priceLines(notebook: any[], query: string, max = 25) {
   }
   return out;
 }
+// letter words of the query (a brand, a series: «mitanol», «xforce») that no row of the price table has at all
+export function priceMissing(rows: any[], query: string) {
+  const all = new Set(rows.flatMap(r => priceKey(`${r.name} ${r.section || ''}`)));
+  return priceKey(query).filter(w => /^[a-z]{4,}$/.test(w) && ![...all].some(x => x === w || x.startsWith(w) || (w.startsWith(x) && x.length >= 4)));
+}
 const priceBrands = (rows: any[]) => [...new Set(rows.map(r => r.section).filter(Boolean))].slice(0, 12);
 const priceFiles = (nb: any[]) => (nb || []).filter((d: any) => priceRows([d]).rows.length || /прайс|price|narx|prays/i.test(String(d.title || ''))).map((d: any) => d.title);
 
@@ -2752,10 +2851,11 @@ export function promoCalc(a: any) {
 const SERVICE = {
   explain: { type: 'boolean', description: 'true ТОЛЬКО если пользователь просит анализ, сравнение, вывод, совет или ответ, который нельзя дать простым показом цифр. Для простых вопросов «сколько / какой остаток / покажи» — не указывай.' },
   heard: { type: 'string', description: 'если сообщение голосовое — дословно, что услышал' },
+  excel: { type: 'boolean', description: 'true, если пользователь просит отчёт / список / таблицу ФАЙЛОМ EXCEL («в Excel», «эксель», «xlsx», «таблицей файлом», «excel qilib yubor», «jadval fayl»). Бот сам сделает файл из результата функции и пришлёт его' },
 };
 const REQUIRED: Record<string, string[]> = {
   task_add: ['title'], client_card: ['client'], agent_report: ['agent'], find_client: ['query'], notebook_search: ['query'],
-  remember: ['text', 'kind'], forget: ['id'], reminder_add: ['at', 'text'], reminder_cancel: ['id'],
+  remember: ['text', 'kind'], forget: ['id'], reminder_add: ['at', 'text'], reminder_set: ['id'], reminder_cancel: ['id'],
   personal_debt_add: ['person', 'action', 'amount'], personal_debt_delete: ['id'],
   crm_query: ['path'], promo_calc: ['items'],
   web_research: ['question'], open_page: ['url'], skill_use: ['name'], skill_add: ['name', 'instructions'], skill_delete: ['id'], calendar_add: ['title', 'start'], contacts_search: ['query'],
@@ -2779,8 +2879,8 @@ const TPL: Record<string, (r: any) => string> = {
   price_list: r => {
     if (r.error) return '⚠️ ' + r.error;
     const head = `💲 Цены по прайсу${r.date ? ' от ' + r.date : ''} [${r.source}]`;
-    if (!r.found) return `${head}\nНе нашёл «${r.product}» в прайсе. Напишите точнее: бренд, цвет, вязкость (например «Golden Booster Red 5W-30»).`;
-    return head + '\n' + lines(r.rows, (x: any) => `• ${x.name} — ${m2(x.piece)} за шт.${x.liter ? ` (${m2(x.liter)}/л)` : ''}${x.box ? `, в коробке ${num(x.box)} шт. = ${m2(x.box_price)}` : ''}`, 40);
+    if (!r.found) return `${head}\nНе нашёл «${r.product}» ни в одном сохранённом прайсе.${r.brands?.length ? `\nВ прайсе есть: ${r.brands.join(', ')}.` : ''}${r.files?.length ? `\nСохранённые прайсы: ${r.files.join(', ')}.` : ''}\nЕсли этот товар в другом прайсе — пришлите файл без подписи или с подписью «сохрани», я его сохраню. Или напишите название точнее (бренд, вязкость, объём).`;
+    return head + (r.not_in_price?.length ? `\n⚠️ Точно «${r.product}» в прайсе нет (нет слова «${r.not_in_price.join(', ')}»). Похожие:` : '') + '\n' + lines(r.rows, (x: any) => `• ${x.name} — ${m2(x.piece)} за шт.${x.liter ? ` (${m2(x.liter)}/л)` : ''}${x.box ? `, в коробке ${num(x.box)} шт. = ${m2(x.box_price)}` : ''}`, 40);
   },
   promo_calc: r => {
     if (r.error) return '⚠️ ' + r.error;
@@ -2925,8 +3025,9 @@ const TPL: Record<string, (r: any) => string> = {
       : '🧠 Факты:\n' + r.facts.map(fact).join('\n');
     return [r.rules.length ? '📐 Правила:\n' + r.rules.map((x: any) => `#${x.id}${sphTag(x.sphere)} ${x.text}`).join('\n') : '', r.facts.length ? facts : '', 'Удалить: /forget номер'].filter(Boolean).join('\n\n');
   },
-  reminder_add: r => `⏰ Напомню ${r.at}${r.repeat ? (r.repeat === 'daily' ? ', каждый день' : ', каждую неделю') : ''}: ${r.text} (#${r.id})${r.with_file ? ' — фото придёт вместе с напоминанием' : ''}`,
-  reminder_list: r => !r.count ? '⏰ Напоминаний нет.' : `⏰ Напоминания (${r.count}):\n` + r.rows.map((x: any) => `#${x.id} ${x.at}${x.repeat ? ' 🔁' : ''}${sphTag(x.sphere)} — ${x.text}`).join('\n') + '\nОтменить: /cancel номер',
+  reminder_add: r => `⏰ Напомню ${r.at}${r.repeat ? (r.repeat === 'daily' ? ', каждый день' : ', каждую неделю') : ''}: ${r.text} (#${r.id})${r.with_file ? ' — фото придёт вместе с напоминанием' : ''}${r.card ? '\n📋 Карточка на доске — статус можно менять кнопками ниже' : ''}`,
+  reminder_list: r => !r.count ? '⏰ Напоминаний нет.' : `⏰ Напоминания (${r.count}):\n` + r.rows.map((x: any) => `#${x.id} ${x.status === 'doing' ? '▶️ ' : x.status === 'done' ? '✅ ' : ''}${x.at}${x.repeat ? ' 🔁' : ''}${sphTag(x.sphere)} — ${x.text}`).join('\n') + '\nОтменить: /cancel номер',
+  reminder_set: r => r.error ? '⚠️ ' + r.error : `${r.status === 'done' ? '✅ Выполнено' : r.status === 'doing' ? '▶️ В процессе' : '⬜ К выполнению'}: напоминание #${r.id} — ${r.text}`,
   personal_debt_add: r => [`✍️ Записал #${r.saved}${sphTag(r.sphere)}: ${r.person} — ${ACT_RU[r.action]} ${money(r.amount, r.currency)}${r.note ? ` («${r.note}»)` : ''}${r.due ? `, срок ${dm(r.due)}` : ''}`,
     `💸 Итого: ${debtPhrase(r.person, r.balance, r.currency)}`, r.reminder ? `⏰ Напомню ${r.reminder.at} (#${r.reminder.id})` : '',
     `Ошибся? Скажите «удали запись #${r.saved}».`].filter(Boolean).join('\n'),
@@ -2996,7 +3097,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 9. Для простых вопросов (показать цифры, список, карточку) вызывай функцию БЕЗ explain — бот сам покажет ответ. explain=true только когда нужен твой анализ, сравнение или совет.
 10. Если нужно несколько функций для одного вопроса — вызывай их сразу вместе, в одном ответе.
 11. «Запомни / учти / имей в виду» или важный факт от пользователя → remember (kind=rule, если это указание, как работать или считать). «Забудь #N» → forget. «Что ты помнишь / чему научился» → memory_list.
-12. «Напомни …» → reminder_add: переведи время в YYYY-MM-DDTHH:MM по Ташкенту (сейчас ${t} ${L.time}; «через 2 часа» — прибавь к текущему времени). Список и отмена — reminder_list, reminder_cancel.
+12. «Напомни …» → reminder_add: переведи время в YYYY-MM-DDTHH:MM по Ташкенту (сейчас ${t} ${L.time}; «через 2 часа» — прибавь к текущему времени). Каждое напоминание — карточка на канбан-доске со статусом, как задача: «напоминание 5 выполнено / в процессе» → reminder_set. Список и отмена — reminder_list, reminder_cancel.
 13. Цена товара → price_list (правило 25). Вопросы о правилах компании, условиях, акциях, документах, характеристиках товара → notebook_search. Отвечай только по найденным отрывкам и указывай источник в [квадратных скобках]; если в блокноте ответа нет — так и скажи.
 14. Если правило пользователя требует посчитать (бонус, процент) — возьми числа только из функций и покажи расчёт по шагам: 1 200 × 2% = 24. Сам числа не придумывай.
 15. Прогноз плана → plan_forecast. Кто перестал брать → stopped_clients. Что заканчивается на складе → stock_running_out. Обещания оплат → promises. Файл для NotebookLM → notebooklm_export. «Пришли / покажи договор (шартнома) клиента или №N» → send_contract_files (client и/или number) — он присылает сканы, а если их нет, сам договор из платформы; не ищи договор через crm_query. ЗАДАЧИ (личный список владельца, как Google Задачи): «поставь / добавь задачу», «надо сделать» → task_add; «мои задачи / доска / что в процессе» → task_list; «готово / сделал / начал / наполовину / перенеси срок» → task_set; задание АГЕНТУ — это crm_task, а «напомни в 10» — reminder_add.
@@ -3012,6 +3113,8 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 24. АКЦИЯ: «посчитай акцию / сколько процентов акция / во сколько обходится» → promo_calc, сам не считай. В items передай ВСЕ товары: купленный и бонусы товаром с bonus=true. Название — как можно точнее (бренд, цвет, вязкость: «Golden Booster Purple 5W-30»). Количество в коробках (karobka) — in_boxes=true (штук в коробке код возьмёт из прайса). price указывай ТОЛЬКО если пользователь сам назвал цену — иначе код возьмёт цену из прайс-листа блокнота; никогда не спрашивай цену, если товар есть в прайсе. Бонус деньгами → money_bonus. Оплата клиента → client_pays; если сказана только скидка — discount_pct. Если не хватает количества или оплаты/скидки — коротко спроси. Вопрос «сможешь посчитать акцию?» без товаров — ответь, что да, цены возьмёшь из прайс-листа сам, и попроси товары, количество, бонусы и скидку/оплату; функции не вызывай.
 25. ЦЕНЫ: «цена / прайс / сколько стоит / почём», по-узбекски «narx, narxi, narxlari, нархи, prays, qancha turadi, necha pul, nechpul» → price_list (цены из прайс-листа). Это НЕ склад: stock — только когда спрашивают остаток/наличие («qoldiq, omborda nechta, bormi, сколько на складе»).
 26. УЗБЕКСКИЙ: пользователь часто говорит по-узбекски (латиницей или кириллицей) или смешивает с русским — понимай его так же точно, как русский, и отвечай на том же языке. Словарь: hisobla / hisoblab ber — посчитай; yubor / jo'nat — пришли; ayt — скажи; ko'rsat — покажи; narx — цена; qoldiq — остаток; ombor — склад; qarz — долг; to'lov — оплата; chegirma — скидка; karobka — коробка; dona — штука; mijoz — клиент; reja — план; sotuv — продажи; bugun — сегодня; kecha — вчера; ertaga — завтра; hafta — неделя; oy — месяц; qizil — Red; binafsha — Purple. Отвечай на ПОСЛЕДНЕЕ сообщение пользователя: не путай его с прошлыми вопросами из истории.
+27. ПРОВЕРЯЙ СЕБЯ ПЕРЕД ОТВЕТОМ. Цены, суммы, долги, остатки — только из функций, вызванных для ЭТОГО вопроса; цифры из прошлых ответов в истории могли устареть — вызови функцию снова. Не пиши «сохранил / запомнил / записал», если функция сохранения не вызывалась. Если функция ничего не нашла — попробуй другое написание (латиница / кириллица, без цвета или объёма) или другую функцию (price_list → notebook_search), и только потом говори «не нашёл», называя, где искал.
+28. EXCEL: «пришли в Excel / эксель / xlsx / таблицей файлом», «excel qilib yubor», «jadval fayl» → вызови функцию с данными для отчёта (debtors, agents_overview, agent_report, collect_today, stock, price_list, crm_query…) с excel=true: бот сам сделает файл из её результата и пришлёт. Сам таблицу в тексте не рисуй, цифры в файле считает код.
 ${skills.length ? `\nНАВЫКИ (название — когда применять):\n${skills.map(s => `${s.name} — ${s.description}`).join('\n')}\n` : ''}${memText}`;
 }
 
@@ -3153,12 +3256,129 @@ async function limitsText() {
     `Точный лимит вашего ключа: aistudio.google.com → Usage / Rate limits. Если там не ${lim} — поменяйте секрет GEMINI_RPD.`].filter(Boolean).join('\n\n');
 }
 
+// ── self-check: the answer the AI wrote without functions is looked at once before it goes out
+const PRICE_Q = /цен[аыуе]|прайс|стоит|поч[её]м|narx|нарх|prays|прейскур|qancha turadi|necha pul|nechpul|qanchadan/i;
+const PRICE_TOOLS = new Set(['price_list', 'promo_calc', 'notebook_search', 'stock', 'crm_query', 'web_research', 'open_page']);
+const MONEY_RE = /\$\s?\d|\d\s?\$|\d\s*(сум|so['ʻ’‘]?m\b|usd|долл)/i;
+const SAVED_RE = /(сохранил|запомнил|записал|добавил в блокнот|занёс|saqladim|saqlab qo'?ydim|eslab qoldim|yozib qo'?ydim|yodda tutaman)/i;
+const SAVED_MARK = 'сохранён в блокнот';
+const SAVE_CAP = /запомн|сохран|изучи|запиш|в блокнот|прайс|eslab|esla\b|saqla|yodla|yodingda|yozib qo|o['ʻ’‘]?rgan|prays|сақла|эслаб|ўрган/i;
+const numsOf = (s: string) => (String(s).match(/\d[\d\s.,]*\d|\d/g) || []).map(x => x.replace(/[\s.,]/g, '')).filter(x => x.length >= 2);
+export function selfCheck(text: string, used: string[], qText: string): string {
+  if (PRICE_Q.test(qText) && /\d/.test(text) && !used.some(u => PRICE_TOOLS.has(u)))
+    return 'Это вопрос о цене, а price_list в этом ответе не вызывался. Цены бери ТОЛЬКО из price_list (не из истории переписки и не из памяти) — вызови price_list и ответь по его результату.';
+  if (!used.length && MONEY_RE.test(text)) {
+    const q = new Set(numsOf(qText));
+    if (numsOf(text).some(x => !q.has(x)))
+      return 'В ответе есть суммы, но в этом ответе не вызывалась ни одна функция. Числа бери только из функций: вызови нужную (price_list, client_card, debtors, agent_report, crm_query…) и ответь по её результату.';
+  }
+  if (SAVED_RE.test(text) && !used.some(u => WRITES.has(u)) && !qText.includes(SAVED_MARK))
+    return 'Ты пишешь, что сохранил / запомнил, но функция сохранения не вызывалась — это неправда. Вызови remember (или save_photo для фото), либо честно скажи, что не сохранил: файл сохраняется в блокнот, если прислать его без подписи или с подписью «сохрани».';
+  return '';
+}
+
+// ── Excel: any function result → an .xlsx file (lists become sheets, single values go to «Сводка»)
+const EXCEL_Q = /excel|[эе]кс[эе]л|xlsx|exsel|eksel|jadval\s*(fayl|qilib)|таблиц\w*\s+файл|файл\w*\s+таблиц/i;
+const NO_XLS = new Set(['skill_use', 'skill_list', 'skill_add', 'skill_delete', 'send_contract_files', 'send_once_contract', 'send_saved_file', 'notebooklm_export', 'web_research', 'open_page', 'notebook_search', 'memory_list']);
+const COL: Record<string, string> = {
+  client: 'Клиент', clients: 'Клиенты', agent: 'Агент', agents: 'Агенты', name: 'Название', product: 'Товар', debt: 'Долг', total: 'Итого', sum: 'Сумма',
+  date: 'Дата', time: 'Время', phone: 'Телефон', address: 'Адрес', landmark: 'Ориентир', region: 'Регион', qty: 'Кол-во', price: 'Цена', piece: 'Цена за шт.',
+  liter: 'Цена за литр', box: 'Шт. в коробке', box_price: 'Цена коробки', source: 'Источник', section: 'Раздел', sales: 'Продажи', orders: 'Заказы',
+  collected: 'Собрано', paid: 'Оплачено', overdue: 'Просрочено', due_today: 'Срок сегодня', count: 'Количество', period: 'Период', from: 'С', to: 'По',
+  plan: 'План', fact: 'Факт', percent: 'Процент', status: 'Статус', id: '№', days: 'Дней', rows: 'Список', found: 'Найдено', ret: 'Возврат',
+  disc: 'Скидка', left: 'Остаток', brand: 'Бренд', note: 'Примечание', warning: 'Внимание', filter: 'Фильтр', last_order: 'Последний заказ',
+  last_pay: 'Последняя оплата', promised: 'Обещано', promise: 'Обещание', promise_to_pay: 'Обещание оплаты', next_payment: 'Следующий платёж', by_age: 'По срокам', debt_by: 'Долг по срокам', d: 'Дата', s: 'Сумма', items: 'Товары', bonus: 'Бонус', city: 'Город', title: 'Название', text: 'Текст', person: 'Человек', amount: 'Сумма',
+};
+const colName = (k: string) => k.split('.').map(p => COL[p] || p).join(' · ');
+const cellOf = (v: any) => v == null ? '' : typeof v === 'number' ? v : typeof v === 'boolean' ? (v ? 'да' : 'нет') : Array.isArray(v) ? v.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(', ') : typeof v === 'object' ? JSON.stringify(v) : String(v);
+function tableOf(list: any[]): any[][] {
+  const flat = list.map(o => { const f: Record<string, any> = {}; for (const [k, v] of Object.entries(o)) { if (v && typeof v === 'object' && !Array.isArray(v)) for (const [k2, v2] of Object.entries(v)) f[`${k}.${k2}`] = v2; else f[k] = v; } return f; });
+  const cols: string[] = []; for (const f of flat) for (const k of Object.keys(f)) if (!cols.includes(k)) cols.push(k);
+  return [cols.map(colName), ...flat.map(f => cols.map(k => cellOf(f[k])))];
+}
+export function resultSheets(r: any) {
+  const summary: any[][] = [], sheets: { name: string; rows: any[][] }[] = [];
+  const skip = new Set(['excel_file', 'excel_error', 'ai_requests', 'retry', 'rule', 'explain']);
+  const walk = (o: any, prefix: string) => {
+    for (const [k, v] of Object.entries(o || {})) {
+      if (v == null || skip.has(k)) continue;
+      const key = prefix ? `${prefix}.${k}` : k;
+      if (Array.isArray(v)) {
+        if (v.length && v.every(x => x && typeof x === 'object' && !Array.isArray(x))) sheets.push({ name: colName(key), rows: tableOf(v) });
+        else if (v.length) summary.push([colName(key), cellOf(v)]);
+      } else if (typeof v === 'object') walk(v, key);
+      else summary.push([colName(key), cellOf(v)]);
+    }
+  };
+  walk(r, '');
+  if (summary.length) sheets.push({ name: 'Сводка', rows: [['Показатель', 'Значение'], ...summary] });
+  return sheets;
+}
+const XCRC = [...Array(256)].map((_, k) => { let c = k; for (let j = 0; j < 8; j++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+const crc32 = (b: Uint8Array) => { let c = 0xffffffff; for (const x of b) c = XCRC[(c ^ x) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+function zipStore(files: [string, string][]): Uint8Array {
+  const enc = new TextEncoder(), parts: Uint8Array[] = [], central: Uint8Array[] = []; let off = 0;
+  for (const [name, text] of files) {
+    const raw = enc.encode(text), nm = enc.encode(name), crc = crc32(raw);
+    const h = new DataView(new ArrayBuffer(30)); h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint32(14, crc, true); h.setUint32(18, raw.length, true); h.setUint32(22, raw.length, true); h.setUint16(26, nm.length, true);
+    const c = new DataView(new ArrayBuffer(46)); c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint32(16, crc, true); c.setUint32(20, raw.length, true); c.setUint32(24, raw.length, true); c.setUint16(28, nm.length, true); c.setUint32(42, off, true);
+    parts.push(new Uint8Array(h.buffer), nm, raw); central.push(new Uint8Array(c.buffer), nm); off += 30 + nm.length + raw.length;
+  }
+  const csize = central.reduce((s, x) => s + x.length, 0), e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, csize, true); e.setUint32(16, off, true);
+  const all = [...parts, ...central, new Uint8Array(e.buffer)], out = new Uint8Array(all.reduce((s, x) => s + x.length, 0)); let p = 0;
+  for (const x of all) { out.set(x, p); p += x.length; }
+  return out;
+}
+const xesc = (s: any) => String(s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const colLetter = (i: number) => { let s = ''; for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
+export function makeXlsx(sheets: { name: string; rows: any[][] }[]): Uint8Array {
+  const used = new Set<string>();
+  const names = sheets.map(s => { let b = String(s.name || 'Лист').replace(/[\[\]:*?/\\]/g, ' ').slice(0, 31).trim() || 'Лист', x = b, k = 2; while (used.has(x.toLowerCase())) x = `${b.slice(0, 28)} ${k++}`; used.add(x.toLowerCase()); return x; });
+  const ws = sheets.map(s => {
+    const w: number[] = [];
+    const rows = s.rows.map((row, ri) => `<row r="${ri + 1}">${row.map((v, ci) => {
+      const ref = `${colLetter(ci)}${ri + 1}`; w[ci] = Math.max(w[ci] || 0, String(typeof v === 'number' ? v.toLocaleString('ru-RU') : v ?? '').length);
+      if (typeof v === 'number' && isFinite(v)) return `<c r="${ref}" s="${ri === 0 ? 1 : Number.isInteger(v) ? 3 : 2}"><v>${v}</v></c>`;
+      return v === '' || v == null ? '' : `<c r="${ref}" t="inlineStr"${ri === 0 ? ' s="1"' : ''}><is><t xml:space="preserve">${xesc(v)}</t></is></c>`;
+    }).join('')}</row>`).join('');
+    const ncol = Math.max(1, ...s.rows.map(r => r.length));
+    const cols = `<cols>${[...Array(ncol)].map((_, i) => `<col min="${i + 1}" max="${i + 1}" width="${Math.min(60, Math.max(8, (w[i] || 0) + 2))}" customWidth="1"/>`).join('')}</cols>`;
+    const filter = s.rows.length > 1 ? `<autoFilter ref="A1:${colLetter(ncol - 1)}${s.rows.length}"/>` : '';
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>${cols}<sheetData>${rows}</sheetData>${filter}</worksheet>`;
+  });
+  const NS = 'http://schemas.openxmlformats.org';
+  const files: [string, string][] = [
+    ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="${NS}/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${ws.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`],
+    ['_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${NS}/package/2006/relationships"><Relationship Id="rId1" Type="${NS}/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+    ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS}/spreadsheetml/2006/main" xmlns:r="${NS}/officeDocument/2006/relationships"><sheets>${names.map((nm, i) => `<sheet name="${xesc(nm)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`],
+    ['xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${NS}/package/2006/relationships">${ws.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${NS}/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${ws.length + 1}" Type="${NS}/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+    ['xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS}/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE8EEF7"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="4" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`],
+    ...ws.map((x, i) => [`xl/worksheets/sheet${i + 1}.xml`, x] as [string, string]),
+  ];
+  return zipStore(files);
+}
+const XLS_TITLE: Record<string, string> = { debtors: 'Должники', agents_overview: 'Агенты', agent_report: 'Отчёт агента', client_card: 'Клиент', collect_today: 'Дожимать сегодня', price_list: 'Прайс', stock: 'Склад', stock_running_out: 'Склад заканчивается', sleeping_clients: 'Спящие клиенты', stopped_clients: 'Ушедшие клиенты', plan_forecast: 'План', promises: 'Обещания', crm_query: 'Данные CRM', orders: 'Заказы', personal_debts: 'Мои долги', task_list: 'Задачи' };
+async function sendExcel(chatId: number, tool: string, args: any, result: any): Promise<string | null> {
+  const sheets = resultSheets(result).filter(s => s.rows.length > 1);
+  if (!sheets.length) return null;
+  const who = String(args.agent || args.client || args.product || '').replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 30);
+  const name = `${XLS_TITLE[tool] || tool}${who ? ' ' + who : ''} ${todayStr()}.xlsx`.replace(/\s+/g, '_');
+  const fd = new FormData();
+  fd.append('chat_id', String(chatId)); fd.append('caption', `📎 ${name}`);
+  fd.append('document', new File([makeXlsx(sheets) as BlobPart], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  const r = await fetch(`https://api.telegram.org/bot${CFG.tg()}/sendDocument`, { method: 'POST', body: fd });
+  if (!r.ok) throw new Error('Telegram не принял файл: ' + (await r.text()).slice(0, 200));
+  return name;
+}
+
 export async function ask(db: any, chatId: number, userParts: any[], qText: string, media?: { file_id: string; mime: string }) {
   const [hist, mem, skills] = await Promise.all([getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
   const contents: any[] = [...hist, { role: 'user', parts: userParts }];
-  const used: string[] = [], sys = systemPrompt(db, mem, skills);
-  let requests = 0;
-  for (let step = 0; step < 6; step++) {
+  const used: string[] = [], sys = systemPrompt(db, mem, skills), files: string[] = [];
+  const wantXls = EXCEL_Q.test(qText);
+  let requests = 0, checked = false;
+  for (let step = 0; step < 7; step++) {
     requests++;
     const d = await gemini({
       systemInstruction: { parts: [{ text: sys }] }, contents,
@@ -3173,19 +3393,35 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       text = text.replace(/\*\*|__|^#+\s*/gm, '').replace(/^\s*[-*]\s+/gm, '• ');
       // what the AI says it heard is used only for raw audio (qText «[голосовое]»); a transcribed or typed question is kept as is
       const heard = qText === '[голосовое]' ? (text.match(/^🎤\s*«([^»]+)»/) || [])[1] : '';
+      // self-check before the answer goes out: numbers / prices no function gave, «сохранил» without saving, a price
+      // question answered without the price list → the AI is asked once to check itself with the functions
+      const doubt = !checked && selfCheck(text, used, qText);
+      if (doubt) {
+        checked = true;
+        contents.push({ role: 'user', parts: [{ text: `ПРОВЕРКА ПЕРЕД ОТВЕТОМ (это пишет бот, не пользователь): ${doubt} Если всё верно и числа взяты из сообщения пользователя — повтори ответ без изменений.` }] });
+        continue;
+      }
       text = text || 'Не нашёл, что ответить. Переформулируйте, пожалуйста.';
+      if (files.length && !/📎/.test(text)) text += `\n\n📎 Excel: ${files.join(', ')}`;
       await remember(chatId, heard || qText, text, used.join(','));
       return { text, used, requests };
     }
     const responses = [], done: { name: string; args: any; result: any }[] = [];
     for (const p of calls) {
       const { name } = p.functionCall, args = { ...(p.functionCall.args || {}) }; used.push(name);
+      const xls = (args.excel || wantXls) && !WRITES.has(name) && !NO_XLS.has(name);
+      if (xls && TOOLS[name]?.params?.limit && args.limit == null) args.limit = 1000; // a file holds the whole list
       let result: any;
       try {
         result = !TOOLS[name] ? { error: 'нет такой функции' }
           : db.meta.data_error && !NO_CRM.has(name) ? { error: db.meta.data_error } // no CRM data → say so, never answer with zeros
           : await TOOLS[name].run(db, args, { chatId, media });
       } catch (e) { result = { error: redact((e as Error).message) }; }
+      // Excel: the file is made by the code from the function's own result — the same numbers as in the answer
+      if (xls && result && !result.error && !result.retry && !files.length) {
+        try { const f = await sendExcel(chatId, name, args, result); if (f) { files.push(f); result = { ...result, excel_file: f }; } }
+        catch (e) { console.warn('excel', (e as Error).message); result = { ...result, excel_error: 'Не получилось отправить Excel: ' + redact((e as Error).message) }; }
+      }
       requests += n(result?.ai_requests); // web research spends its own Gemini requests — they count for this answer too
       done.push({ name, args, result });
       responses.push({ functionResponse: { name, response: { result } } });
@@ -3195,7 +3431,8 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
     if (step === 0 && done.every(c => !c.args.explain && !c.result?.retry && (TPL[c.name] || c.result?.error))) {
       const heard = qText === '[голосовое]' ? done.map(c => c.args.heard).find(Boolean) : '';
       const body = done.map(c => ambiguity(c.result) || TPL[c.name](c.result)).join('\n\n');
-      const text = (heard ? `🎤 «${heard}»\n\n` : '') + body;
+      const xl = files.length ? `\n\n📎 Excel-файл отправлен: ${files.join(', ')}` : done.find(c => c.result?.excel_error)?.result.excel_error ? `\n\n⚠️ ${done.find(c => c.result?.excel_error)!.result.excel_error}` : '';
+      const text = (heard ? `🎤 «${heard}»\n\n` : '') + body + xl;
       await remember(chatId, heard || qText, text.slice(0, 1500), used.join(','));
       return { text, used, requests };
     }
@@ -3471,7 +3708,12 @@ async function tick() {
     if (r.repeat) { const step = (r.repeat === 'weekly' ? 7 : 1) * 864e5; let next = Date.parse(r.due_at); while (next <= Date.now()) next += step; patch = { due_at: new Date(next).toISOString() }; }
     const claimed = await sb(`ai_reminders?id=eq.${r.id}&sent_at=is.null&due_at=eq.${q(r.due_at)}`, { method: 'PATCH', body: patch, prefer: 'return=representation' });
     if (!claimed?.length) continue;
-    await say(r.chat_id, `⏰ Напоминание: ${r.text}${r.repeat ? `\n(следующее — ${nowTime(patch.due_at)}; отменить: /cancel ${r.id})` : ''}`);
+    // its card: a one-time reminder already marked done on the board is not needed; a repeating one opens its card again
+    const card = await remCard(r.chat_id, r);
+    if (!r.repeat && card?.status === 'done') continue;
+    if (r.repeat && card) await taskPatch(r.chat_id, card.id, { status: 'todo', due: localDate(r.due_at) }).catch(e => console.warn('reminder card', e));
+    KB.set(r.chat_id, remindKeyboard(r.id, r.repeat ? 'todo' : card?.status || 'todo', true));
+    await say(r.chat_id, `⏰ Напоминание: ${r.text}${r.repeat ? `\n(следующее — ${nowTime(patch.due_at)})` : ''}`);
     if (r.file_id) await tg(r.file_kind === 'photo' ? 'sendPhoto' : 'sendDocument', { chat_id: r.chat_id, [r.file_kind === 'photo' ? 'photo' : 'document']: r.file_id }).catch(e => console.warn('reminder file', e));
     res.reminders++;
   }
@@ -3839,8 +4081,12 @@ async function handle(u: any) {
       return await say(chatId, `🧩 ${s.updated ? 'Обновил' : 'Добавил'} навык #${s.id} ${s.name}: ${s.description}\nПроверьте текст: /skills. Удалить: /skill del ${s.id}`);
     }
     // a file without a caption (or with «/nb название») goes to the knowledge notebook; with a question — it is answered
+    let savedNote = '';
     if (doc || photo) {
       if (!text || nb) return await say(chatId, await nbFile(chatId, doc, photo, nb?.[1]));
+      // a document with «запомни / сохрани / изучи / прайс…» in the caption is SAVED first (it used to be only read once,
+      // and the AI said «сохранил» — a price list sent that way was never found later), then the caption is answered
+      if (doc && SAVE_CAP.test(text)) savedNote = (await nbFile(chatId, doc, null)).split('\n')[0];
     } else if (nb) return await say(chatId, await nbCommand(chatId, (nb[1] || '').trim(), m.reply_to_message));
     if (/^\/notebooklm\b/i.test(text)) { await sendExport(await needData(), chatId); return; }
     if (/^\/fresh\b/.test(text)) { await needData(true); return await say(chatId, '🔄 Данные обновлены.'); }
@@ -3857,10 +4103,11 @@ async function handle(u: any) {
     if (voice && heard === '') return await say(chatId, '🎤 Не расслышал. Повторите, пожалуйста, или напишите текстом.');
     const parts = heard ? [{ text: `(голосовое сообщение, расшифровка) ${heard}` }]
       : voice ? [media, { text: '(голосовое сообщение: передай в поле heard, что услышал)' }]
-      : media ? [media, { text: text || 'Что здесь? Если это накладная или чек — распиши товары, количество и суммы.' }] : [{ text }];
-    const qText = heard || (voice ? '[голосовое]' : media ? `[${photo ? 'фото' : 'документ ' + (doc.file_name || '')}] ${text}` : text);
+      : media ? [media, { text: (text || 'Что здесь? Если это накладная или чек — распиши товары, количество и суммы.') + (savedNote ? `\n(${SAVED_MARK}: бот уже сохранил этот файл в блокнот. Кратко скажи, что в нём главное; цены потом бери через price_list.)` : '') }] : [{ text }];
+    const qText = heard || (voice ? '[голосовое]' : media ? `[${photo ? 'фото' : 'документ ' + (doc.file_name || '')}${savedNote ? ', ' + SAVED_MARK : ''}] ${text}` : text);
     const fileInfo = photo ? { file_id: photo.file_id, mime: 'image/jpeg' } : doc ? { file_id: doc.file_id, mime: doc.mime_type || '' } : undefined;
     const res = await ask(db, chatId, parts, qText, fileInfo);
+    if (savedNote) res.text = `${savedNote}\n\n${res.text}`;
     if (heard) res.text = `🎤 «${heard}»\n\n` + res.text.replace(/^🎤\s*«[^»]*»\s*/, '');
     console.log('ok', Date.now() - t0, 'ms', 'gemini requests:', res.requests, res.used.join(','));
     if (key && !res.used.some(x => WRITES.has(x))) { ANS.set(key, { at: Date.now(), text: res.text, mem: (await getHistory(chatId)).at(-1)?.parts?.[0]?.text }); if (ANS.size > 200) ANS.clear(); }
@@ -3916,5 +4163,5 @@ async function serve(req: Request) {
   return new Response('ok');
 }
 
-export { TOOLS, TPL, build, loadDB, serve, tick, morningBrief, eveningBrief, exportMd, searchNotebook, chunkText, officeText, localToUtc, planPeriod, workDays, stoppedClients, promisesState, command, handle };
+export { NBC, TOOLS, TPL, build, loadDB, serve, tick, morningBrief, eveningBrief, exportMd, searchNotebook, chunkText, officeText, localToUtc, planPeriod, workDays, stoppedClients, promisesState, command, handle };
 if (!env('AI_BOT_TEST')) (globalThis as any).Deno.serve(serve);

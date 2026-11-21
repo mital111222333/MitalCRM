@@ -1122,6 +1122,49 @@ D.test('tasks (kanban): add, board with buttons, move by button, progress → st
   delete DB.ai_tasks;
 });
 
+D.test('reminders are cards on the board: status buttons, snooze, cancel; a done card is not reminded', async () => {
+  DB.ai_tasks = []; SENT.length = 0;
+  const loc = (ms = 0) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tashkent', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(Date.now() + ms)).replace(' ', 'T');
+  const a = await M.TOOLS.reminder_add.run(null, { at: loc(), text: 'Позвонить Бахтиёру' }, { chatId: 111 });
+  const card = DB.ai_tasks.find((t: any) => t.id === a.card);
+  assert(card && card.title === 'Позвонить Бахтиёру' && card.status === 'todo' && DB.ai_reminders.find((r: any) => r.id === a.id).task_id === card.id, 'reminder → card on the board: ' + JSON.stringify(a));
+  assert(/Карточка на доске/.test(M.TPL.reminder_add(a)), 'the answer mentions the card');
+  const list = await M.TOOLS.task_list.run(null, {}, { chatId: 111 });
+  assert(/#\d+ Позвонить Бахтиёру · ⏰ /.test(list.text), 'the board shows the reminder with its time: ' + list.text);
+  // it comes with buttons like a task
+  await M.tick();
+  const msg = SENT.filter(s => s.method === 'sendMessage').find(s => /^⏰ Напоминание: Позвонить Бахтиёру/.test(s.body.text))?.body;
+  const btns = (msg?.reply_markup?.inline_keyboard || []).flat().map((x: any) => x.callback_data).filter(Boolean);
+  for (const k of ['done', 'doing', 'h1', 't1', 'cancel']) assert(btns.includes(`rm:${k}:${a.id}`), `button ${k}: ${btns}`);
+  const press = (data: string) => M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: 99100 + Math.floor(Math.random() * 1e5), callback_query: { id: 'q', from: { id: 111 }, data, message: { chat: { id: 111 }, message_id: 8, text: msg.text } } }) }));
+  await press(`rm:doing:${a.id}`);
+  eq(card.status, 'doing', 'button → in progress');
+  assert(SENT.some(s => s.method === 'editMessageText' && s.body.message_id === 8 && /— ▶️ В процессе$/.test(s.body.text)), 'the message shows the status');
+  await press(`rm:done:${a.id}`);
+  eq(card.status, 'done', 'button → done');
+  assert(SENT.some(s => s.method === 'answerCallbackQuery' && /Выполнено/.test(s.body.text)), 'toast after done');
+  // snooze: the reminder waits again, its card is open again
+  await press(`rm:h1:${a.id}`);
+  const rem = DB.ai_reminders.find((r: any) => r.id === a.id);
+  assert(rem.sent_at == null && Date.parse(rem.due_at) > Date.now() + 3500e3 && card.status === 'todo', 'snoozed for an hour: ' + JSON.stringify(rem));
+  // a one-time reminder whose card is already done is not sent
+  const b = await M.TOOLS.reminder_add.run(null, { at: loc(), text: 'Уже сделал' }, { chatId: 111 });
+  eq((await M.TOOLS.reminder_set.run(null, { id: b.id, status: 'done' }, { chatId: 111 })).status, 'done', 'reminder_set → done');
+  SENT.length = 0; await M.tick();
+  assert(!sentTexts().some(t => /Уже сделал/.test(t)), 'done card → no reminder');
+  // cancel removes the reminder and its card
+  await press(`rm:cancel:${a.id}`);
+  assert(!DB.ai_reminders.some((r: any) => r.id === a.id) && !DB.ai_tasks.some((t: any) => t.id === card.id), 'cancel removes both');
+  eq((await M.TOOLS.reminder_cancel.run(null, { id: b.id }, { chatId: 111 })).cancelled, b.id, 'reminder_cancel');
+  assert(!DB.ai_tasks.some((t: any) => t.id === b.card), 'reminder_cancel removes the card too');
+  // without the board table the reminder still works, as before
+  delete DB.ai_tasks;
+  const d = await M.TOOLS.reminder_add.run(null, { at: loc(3600e3), text: 'без доски' }, { chatId: 111 });
+  assert(d.id && !d.card, 'no ai_tasks → plain reminder: ' + JSON.stringify(d));
+  await M.TOOLS.reminder_cancel.run(null, { id: d.id }, { chatId: 111 });
+  await tgPost({ text: '/reminders' }); // takes the keyboard left by the direct tool calls above
+});
+
 // 20.11: «Golden Booster narxlari» was answered with warehouse stock, «can you count a promo?» with «Такого навыка нет»,
 // and a voice message was «heard» as the previous question. Prices now come from the price list in the notebook.
 const PRICE_DOC = { id: 1, title: 'MITAL PRICE.pdf', content: `30.10.2026
@@ -1270,4 +1313,100 @@ D.test('OilBook: /oil, card by a Cyrillic name, draft → «✅ Выполнит
   } finally {
     D.env.delete('OILBOOK_URL'); D.env.delete('OILBOOK_TOKEN'); OB = null; GEM = () => say('ok');
   }
+});
+
+// ───── 21.11: price lists in another layout, self-check before the answer, Excel reports ─────
+const NB_RESET = () => { DB.ai_notebook.length = 0; M.NBC.clear(); };
+const MITANOL_DOC = { id: 5, title: 'MITANOL PRICE.pdf', content: `23.10.2026
+MITANOL
+Наименование | 1л 4L | 1л 5L | 1л 20L
+Mitanol S-Force 10W40 | 8,96 | 8,75 | -
+Mitanol X-Force 5W30 DX1 | 12,44 | 12,32 | -
+Mitanol ATF Dexron VI | - | 14,64 | 14,31` };
+
+D.test('price list: a file in another layout is read line by line before «не нашёл»; not found names the saved lists', async () => {
+  const ctx = { notebook: [PRICE_DOC, MITANOL_DOC] };
+  const r = await M.TOOLS.price_list.run(null, { product: 'Mitanol 5W-30 DX' }, ctx);
+  assert(r.retry && r.found === 0, 'goes back to the AI: ' + JSON.stringify(r));
+  eq(r.raw_lines.map((x: any) => x.line), ['Mitanol X-Force 5W30 DX1 | 12,44 | 12,32 | -'], 'only the line of this product');
+  eq([r.raw_lines[0].source, r.raw_lines[0].date, r.raw_lines[0].header], ['MITANOL PRICE.pdf', '23.10.2026', 'Наименование | 1л 4L | 1л 5L | 1л 20L'], 'with its file, date and table header');
+  eq((await M.TOOLS.price_list.run(null, { product: 'митанол атф' }, ctx)).raw_lines.length, 1, 'Cyrillic name');
+  eq((await M.TOOLS.price_list.run(null, { product: 'GB Red 5w30' }, ctx)).rows.map((x: any) => x.piece), [31.81], 'the table price list still works');
+  // only a Mitanol file and no table price list → no «нет прайс-листа» error, its lines are read
+  assert((await M.TOOLS.price_list.run(null, { product: 'Mitanol ATF' }, { notebook: [MITANOL_DOC] })).raw_lines?.length === 1, 'raw only');
+  const none = await M.TOOLS.price_list.run(null, { product: 'Mobil 1' }, ctx);
+  eq([none.found, none.retry], [0, undefined], 'nothing anywhere → answered at once');
+  const t = M.TPL.price_list(none);
+  assert(t.includes('ни в одном сохранённом прайсе') && t.includes('MITAL PRICE.pdf') && t.includes('Liman OIL') && t.includes('«сохрани»'), 'says where it looked: ' + t);
+});
+
+D.test('self-check: numbers no function gave, a price without price_list, «сохранил» without saving', () => {
+  assert(/price_list/.test(M.selfCheck('Mitanol ATF — $38,40', [], 'Mitanol ATF narxini yubor')), 'price from the history');
+  assert(/Числа бери только из функций/.test(M.selfCheck('Долг клиента $1 200', [], 'сколько должен Фозилхон')), 'a sum from nowhere');
+  assert(/неправда/.test(M.selfCheck('Я изучил прайс и сохранил цены в память.', [], '[документ a.pdf] изучи и запомни')), 'false «сохранил»');
+  eq(M.selfCheck('Сохранил прайс в блокнот, в нём Mitanol.', [], '[документ a.pdf, сохранён в блокнот] запомни'), '', 'the bot did save it');
+  eq(M.selfCheck('$31,81 за шт.', ['price_list'], 'цена GB red'), '', 'price from price_list');
+  eq(M.selfCheck('Итого 1 172,80 $', [], 'посчитай 40 × 29,32 = 1 172,80 $'), '', 'numbers the user gave');
+  eq(M.selfCheck('Привет! Чем помочь?', [], 'салам'), '', 'small talk');
+});
+
+D.test('self-check in the chat: a made-up price makes the AI call price_list', async () => {
+  NB_RESET(); DB.ai_notebook.push({ ...PRICE_DOC, chat_id: 111 });
+  let step = 0;
+  GEM = () => [say('Golden Booster Red 5W-30 — $40,00'), call('price_list', { product: 'GB Red 5w30' }), say('GOLDEN BOOSTER Red 5W-30 — $31,81 за шт. [MITAL PRICE.pdf]')][Math.min(step++, 2)];
+  await tgPost({ text: 'GB qizil 5w30 narxi qancha?' });
+  assert(GEM_LOG.some(b => JSON.stringify(b.contents.at(-1)).includes('ПРОВЕРКА ПЕРЕД ОТВЕТОМ')), 'the AI was asked to check itself');
+  assert(lastText().includes('$31,81') && !lastText().includes('$40'), 'the checked answer: ' + lastText());
+  NB_RESET(); GEM = () => say('ok');
+});
+
+D.test('a document with «изучи и запомни» is saved to the notebook, then answered', async () => {
+  NB_RESET();
+  GEM = () => say('Сохранил: в прайсе есть Mitanol S-Force и X-Force.');
+  const before = GEM_LOG.length;
+  await tgPost({ document: { file_id: 'docx1', file_name: 'Mitanol.docx', mime_type: '' }, caption: 'тоже внимательно изучи и запомни хорошенько' });
+  eq(DB.ai_notebook.length, 1, 'saved'); eq(DB.ai_notebook[0].title, 'Mitanol.docx', 'title = file name');
+  assert(lastText().startsWith('📚 Добавил в блокнот #') && lastText().includes('Mitanol S-Force'), 'saved line + answer: ' + lastText());
+  assert(!GEM_LOG.slice(before).some(b => JSON.stringify(b.contents.at(-1)).includes('ПРОВЕРКА ПЕРЕД ОТВЕТОМ')), '«сохранил» is true here — no self-check');
+  // a plain question with a file is still answered once, not saved
+  GEM = () => say('Это акция.');
+  await tgPost({ document: { file_id: 'docx1', file_name: 'Акция.docx', mime_type: '' }, caption: 'о чём этот документ?' });
+  eq(DB.ai_notebook.length, 1, 'question → not saved');
+  NB_RESET(); GEM = () => say('ok');
+});
+
+D.test('Excel: xlsx made from the function result, readable back, sent with the answer', async () => {
+  const sheets = M.resultSheets({ period: '16.10 — 15.11', count: 2, rows: [{ client: 'Big & Co', debt: 1200.5, agent: 'A', debt_by: { d0_7: 100 } }, { client: 'Shop <1>', debt: 300, agent: 'B', phones: ['+998 1', '+998 2'] }], ai_requests: 1 });
+  eq(sheets.map((s: any) => s.name), ['Список', 'Сводка'], 'list → sheet, single values → Сводка');
+  eq(sheets[0].rows[0], ['Клиент', 'Долг', 'Агент', 'Долг по срокам · d0_7', 'phones'], 'Russian headers, nested object flattened');
+  eq(sheets[0].rows[2][4], '+998 1, +998 2', 'array in a cell');
+  const xl = M.makeXlsx(sheets), back = await M.officeText(xl, 'xlsx');
+  assert(back.includes('## Список') && back.includes('Big & Co | 1200.5 | A | 100') && back.includes('Shop <1> | 300 | B') && back.includes('## Сводка') && back.includes('Количество | 2'), 'read back: ' + back);
+  assert(!back.includes('ai_requests'), 'service fields left out');
+  if (D.env.get('XLSX_OUT')) await D.writeFile(D.env.get('XLSX_OUT'), xl);
+
+  SENT.length = 0; let step = 0;
+  GEM = () => (step++ === 0 ? call('debtors', { excel: true }) : say('ok'));
+  await tgPost({ text: 'должников пришли в Excel' });
+  const f = SENT.find(s => s.method === 'sendDocument');
+  assert(f && /^📎 Должники_\d{4}-\d{2}-\d{2}\.xlsx$/.test(f.body.caption), 'xlsx sent: ' + JSON.stringify(f?.body.caption));
+  assert(lastText().includes('📎 Excel-файл отправлен: Должники_') && lastText().includes('Fozilxon'), 'answer + file note: ' + lastText());
+  // «в Excel» said, the AI forgot excel=true → the file is made anyway
+  SENT.length = 0; step = 0;
+  GEM = () => (step++ === 0 ? call('debtors', {}) : say('ok'));
+  await tgPost({ text: 'qarzdorlarni excel qilib yubor' });
+  assert(SENT.some(s => s.method === 'sendDocument'), 'file from the question words');
+  SENT.length = 0; step = 0;
+  GEM = () => (step++ === 0 ? call('debtors', {}) : say('ok'));
+  await tgPost({ text: 'кто должники?' });
+  assert(!SENT.some(s => s.method === 'sendDocument'), 'no file when not asked');
+  GEM = () => say('ok');
+});
+
+D.test('price list: another brand is never shown as the asked one', async () => {
+  const ctx = { notebook: [PRICE_DOC, MITANOL_DOC] };
+  const m = await M.TOOLS.price_list.run(null, { product: 'Mitanol ATF' }, ctx);
+  assert(m.retry && m.raw_lines[0].line.startsWith('Mitanol ATF'), 'Mitanol ATF from its own file, not GB ATF: ' + JSON.stringify(m));
+  const o = await M.TOOLS.price_list.run(null, { product: 'Mobil ATF' }, ctx);
+  eq(o.not_in_price, ['mobil'], 'marked'); assert(M.TPL.price_list(o).includes('Точно «Mobil ATF» в прайсе нет'), 'warned: ' + M.TPL.price_list(o));
 });
