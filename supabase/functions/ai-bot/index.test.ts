@@ -1348,6 +1348,9 @@ D.test('self-check: numbers no function gave, a price without price_list, «со
   eq(M.selfCheck('$31,81 за шт.', ['price_list'], 'цена GB red'), '', 'price from price_list');
   eq(M.selfCheck('Итого 1 172,80 $', [], 'посчитай 40 × 29,32 = 1 172,80 $'), '', 'numbers the user gave');
   eq(M.selfCheck('Привет! Чем помочь?', [], 'салам'), '', 'small talk');
+  // 21.11: «валвалин 5га30 нархи» → notebook_search only, then «narxlar yo'q» — must go to the web
+  assert(/web_research/.test(M.selfCheck("Valvoline moylari bo'yicha narxlar yo'q.", ['notebook_search'], 'валвалин 5га30 мойларини нархини ташабер')), 'competitor price refused without web');
+  eq(M.selfCheck("Valvoline narxlari yo'q", ['price_list', 'web_research'], 'valvoline narxi'), '', 'searched the web — honest «yo\'q» is fine');
 });
 
 D.test('self-check in the chat: a made-up price makes the AI call price_list', async () => {
