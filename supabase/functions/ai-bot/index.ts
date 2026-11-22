@@ -1106,7 +1106,8 @@ export async function appApi(req: Request) {
       const { pcm, rate } = await tts(s);
       return new Response(pcmToWav(pcm, rate) as BodyInit, { headers: { ...APP_CORS, 'Content-Type': 'audio/wav' } });
     }
-    let text = String(b.text || '').trim().slice(0, 4000), heard = '';
+    const t0 = Date.now();
+    let text = String(b.text || '').trim().slice(0, 4000), heard = b.voice && text ? text : ''; // voice: written down by the phone itself
     if (b.audio) {
       const h = await transcribe({ inlineData: { mimeType: String(b.mime || 'audio/webm').split(';')[0], data: String(b.audio) } });
       if (h === null) return out({ error: 'Не удалось распознать голос. Попробуйте ещё раз.' }, 502);
@@ -1117,12 +1118,12 @@ export async function appApi(req: Request) {
     if (/^\/(start|help)\b/.test(text)) return out({ text: HELP });
     if (/^\/new\b/.test(text)) { await resetHistory(chatId); return out({ text: 'Начали заново. Спрашивайте 🙂' }); }
     const quick = text.startsWith('/') ? await command(text, chatId) : null;
-    if (quick) return out({ text: quick, heard: heard || undefined });
+    if (quick) return out({ text: quick, heard: heard || undefined, ms: Date.now() - t0 });
     const [db] = await Promise.all([loadDB(), getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
     const res = await ask(db, chatId, [{ text: heard ? `(голосовое сообщение, расшифровка) ${heard}` : text }], text);
     // a keyboard a tool prepared (a task card, a reminder) goes to Telegram with the answer, where its buttons work
     if (KB.has(chatId)) await say(chatId, `📱 Из приложения: ${heard || text}\n\n${res.text}`);
-    return out({ text: res.text, heard: heard || undefined, telegram: res.used.some((x: string) => ['message_agent', 'crm_task', 'crm_note', 'message_client', 'oilbook_action'].includes(x)) || undefined });
+    return out({ text: res.text, heard: heard || undefined, ms: Date.now() - t0, requests: res.requests, telegram: res.used.some((x: string) => ['message_agent', 'crm_task', 'crm_note', 'message_client', 'oilbook_action'].includes(x)) || undefined });
   } catch (e) {
     console.error('app', redact((e as Error)?.stack || e));
     return out({ error: redact((e as Error).message) || 'Ошибка' }, 500);

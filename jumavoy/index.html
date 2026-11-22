@@ -45,6 +45,9 @@
   .mic { width: 76px; height: 76px; border-radius: 50%; border: 2px solid var(--accent); background: radial-gradient(circle, #0ea5e9 0 55%, #0b3b5c 100%); color: #fff; font-size: 30px; box-shadow: 0 0 24px rgba(56,189,248,.35); transition: transform .15s; }
   .mic.rec { background: radial-gradient(circle, #ef4444 0 55%, #5b1111 100%); border-color: #fca5a5; box-shadow: 0 0 calc(18px + var(--lvl, 0) * 40px) rgba(248,113,113,.6); transform: scale(calc(1 + var(--lvl, 0) * .12)); }
   .mic.busy { opacity: .5; }
+  .microw { display: flex; align-items: center; gap: 18px; }
+  .lang { width: 52px; height: 36px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-weight: 600; font-size: 14px; }
+  .ms { font-size: 11px; color: var(--mute); align-self: center; }
   .hint { font-size: 13px; color: var(--mute); min-height: 18px; text-align: center; }
   .setup { margin: auto; max-width: 420px; padding: 24px; text-align: center; }
   .setup img { width: 96px; height: 96px; border-radius: 50%; }
@@ -95,7 +98,7 @@
     <button class="send" id="sendBtn" aria-label="Отправить">➤</button>
   </div>
   <div class="micwrap">
-    <button class="mic" id="mic" aria-label="Говорить">🎤</button>
+    <div class="microw"><button class="lang" id="langBtn" title="Язык, на котором вы говорите">RU</button><button class="mic" id="mic" aria-label="Говорить">🎤</button><span style="width:52px"></span></div>
     <div class="hint" id="hint">Нажмите и говорите — я сам пойму, когда вы закончили</div>
   </div>
 </footer>
@@ -139,7 +142,9 @@ function bubble(m, save = true) {
   if (m.who === 'bot') {
     const t = document.createElement('div'); t.className = 'tools';
     const b = document.createElement('button'); b.textContent = '🔊 Прослушать'; b.onclick = () => speak(m.text, b);
-    t.append(b); d.append(t);
+    t.append(b);
+    if (m.ms) { const x = document.createElement('span'); x.className = 'ms'; x.textContent = '⏱ ' + (m.ms / 1000).toFixed(1).replace('.', ',') + ' с'; t.append(x); }
+    d.append(t);
   }
   log.append(d); log.scrollTop = log.scrollHeight;
   if (save) { history_.push(m); history_ = history_.slice(-60); store.set('log', history_); }
@@ -158,15 +163,15 @@ async function api(body) {
 async function ask(body, shown) {
   if (busy) return; busy = true; setState('думаю');
   if (shown) bubble({ who: 'me', text: shown });
-  const th = note('JUMAVOY думает', 'thinking');
+  const th = note('JUMAVOY думает', 'thinking'), t0 = performance.now();
   try {
     const r = await api(body), j = await r.json().catch(() => ({}));
     th.remove();
     if (!r.ok) throw new Error(j.error || ('Ошибка ' + r.status));
     if (j.heard !== undefined && body.audio) bubble({ who: 'me', text: j.heard ? '🎤 ' + j.heard : '🎤 …' });
-    bubble({ who: 'bot', text: j.text || '…' });
+    bubble({ who: 'bot', text: j.text || '…', ms: Math.round(performance.now() - t0) });
     if (j.telegram) note('✉️ Черновик пришёл в Telegram — отправьте его там кнопкой «✅ Отправить».');
-    if (voiceOn && (body.audio || ASSIST) && j.text) speak(j.text);
+    if (voiceOn && (body.audio || body.voice || ASSIST) && j.text) speak(j.text);
   } catch (e) {
     th.remove(); note('⚠️ ' + e.message, 'err');
     if (e.auth) { store.del('key'); setTimeout(() => showApp(false), 1500); }
@@ -187,34 +192,71 @@ function setState(s) { $('state').textContent = s; }
 let voiceOn = store.get('voice', true), player = null;
 const vb = $('voiceBtn');
 const paintVoice = () => { vb.classList.toggle('on', voiceOn); vb.textContent = voiceOn ? '🔊' : '🔇'; };
-vb.onclick = () => { voiceOn = !voiceOn; store.set('voice', voiceOn); if (!voiceOn && player) player.pause(); paintVoice(); };
+vb.onclick = () => { voiceOn = !voiceOn; store.set('voice', voiceOn); if (!voiceOn) stopSpeaking(); paintVoice(); };
 paintVoice();
+const N = window.JumavoyNative || null;   // the Android app: the phone's own recognition and voice (instant, no Gemini)
+const isUz = t => /[ўқғҳ]/i.test(t) || /\b(va|uchun|bilan|qancha|narx\w*|yo'q|kerak|mijoz|qarz\w*|sizga|ham|emas|yoki|bo'l\w*|qil\w*|bor|yoq|dona|karobka)\b/i.test(t);
+const spoken = t => String(t || '').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '').replace(/^[•\-]\s*/gm, '').replace(/[•→|*_#]/g, ' ').replace(/[ \t]+/g, ' ').trim();
+let speakSeq = 0;
+function stopSpeaking() { speakSeq++; if (player) { player.pause(); player = null; } if (N) try { N.stopSpeak(); } catch {} }
 async function speak(text, btn) {
+  stopSpeaking();
+  const my = speakSeq, t = spoken(text), lang = isUz(t) ? 'uz-UZ' : 'ru-RU';
+  if (!t) return;
+  if (N && N.canSpeak(lang)) { setState('говорю'); N.speak(t, lang); return; }
+  // Gemini voice by parts: the first sentence is read while the next ones are being made
+  const parts = [], words = t.split(/(?<=[.!?…\n])\s+/);
+  for (const w of words) { if (parts.length && (parts.at(-1) + ' ' + w).length < 220) parts[parts.length - 1] += ' ' + w; else parts.push(w); }
+  const get = async p => { const r = await api({ tts: p }); if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || 'не удалось озвучить'); } return URL.createObjectURL(await r.blob()); };
   try {
-    if (player) { player.pause(); player = null; }
     if (btn) btn.textContent = '⏳';
     setState('озвучиваю');
-    const r = await api({ tts: text });
-    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || 'не удалось озвучить'); }
-    const url = URL.createObjectURL(await r.blob());
-    player = new Audio(url);
-    player.onended = () => { URL.revokeObjectURL(url); setState('готов'); };
-    await player.play();
-    setState('говорю');
+    let next = get(parts[0]);
+    for (let i = 0; i < parts.length; i++) {
+      const url = await next;
+      if (my !== speakSeq) return;
+      next = i + 1 < parts.length ? get(parts[i + 1]) : null;
+      player = new Audio(url); setState('говорю');
+      if (btn) btn.textContent = '🔊 Прослушать';
+      await player.play();
+      await new Promise(res => { player.onended = res; player.onpause = res; });
+      URL.revokeObjectURL(url);
+      if (my !== speakSeq) return;
+    }
   } catch (e) {
-    setState('готов');
     if (e.name === 'NotAllowedError') note('Нажмите «🔊 Прослушать» под ответом — браузер не дал включить звук сам.');
     else note('🔇 ' + e.message, 'err');
-  } finally { if (btn) btn.textContent = '🔊 Прослушать'; }
+  } finally { if (btn) btn.textContent = '🔊 Прослушать'; if (my === speakSeq) setState('готов'); }
 }
+window.jvNative = {
+  onSpeakDone: () => setState('готов'),
+  onReady: () => setState('слушаю'),
+  onLevel: v => mic.style.setProperty('--lvl', (+v).toFixed(2)),
+  onPartial: t => { hint.textContent = t; },
+  onEnd: () => setState('распознаю'),
+  onResult: t => { micIdle(); if (t) ask({ text: t, voice: true }, '🎤 ' + t); else setState('готов'); },
+  onError: m => { micIdle(); setState('готов'); if (m) note('🎤 ' + m, 'err'); },
+};
+let lang = store.get('lang', 'ru-RU');
+const langBtn = $('langBtn'), paintLang = () => { langBtn.textContent = lang === 'uz-UZ' ? 'UZ' : 'RU'; };
+langBtn.onclick = () => { lang = lang === 'uz-UZ' ? 'ru-RU' : 'uz-UZ'; store.set('lang', lang); paintLang(); };
+paintLang();
+if (!N || !N.canListen()) langBtn.style.visibility = 'hidden'; // the web version writes down any language itself (Gemini)
 
 // ── microphone: tap, speak, it stops by itself after a pause ──
 let rec = null;
 const mic = $('mic'), hint = $('hint');
+let nativeOn = false;
+function micIdle() { nativeOn = false; mic.classList.remove('rec'); mic.style.removeProperty('--lvl'); hint.textContent = 'Нажмите и говорите — я сам пойму, когда вы закончили'; }
 async function listen() {
   if (busy) return;
+  if (nativeOn) { N.stopListen(); return; }
   if (rec) return rec.stop(true);
-  if (player) player.pause();
+  stopSpeaking();
+  if (N && N.canListen()) { // the phone's recognizer: words appear while speaking, no upload, no Gemini request
+    nativeOn = true; mic.classList.add('rec'); hint.textContent = 'Говорите…'; setState('слушаю');
+    N.listen(lang); return;
+  }
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
   catch (e) { note('🎤 Нет доступа к микрофону. Разрешите его в настройках браузера / приложения.', 'err'); return; }
@@ -270,7 +312,7 @@ function start() {
 }
 if (creds().key) { showApp(true); start(); } else showApp(false);
 // the Android app calls this when the assistant gesture opens an already running app
-window.jumavoyAssist = () => { if (!rec) listen(); };
+window.jumavoyAssist = () => { if (!rec && !nativeOn) listen(); };
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>

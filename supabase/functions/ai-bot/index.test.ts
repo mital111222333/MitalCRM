@@ -1674,3 +1674,12 @@ D.test('app API: personal key from /app, questions and voice answered like in Te
   const v = await (await call({ audio: 'AAAA', mime: 'audio/webm;codecs=opus' })).json();
   assert(v.heard === 'сколько стоит 5 на 30 метанол' && /47,33/.test(v.text), 'voice: ' + JSON.stringify(v));
 });
+
+D.test('app API: text written down by the phone (voice:true) is answered as a voice question, with the time it took', async () => {
+  await tgPost({ text: '/app' });
+  const k = (lastText().match(/#c=111&k=([0-9a-f]{32})/) || [])[1];
+  let q = '';
+  GEM = (b: any) => { q = JSON.stringify(b.contents?.at(-1)); return say('Ok'); };
+  const r = await (await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': '111', 'x-app-key': k }, body: JSON.stringify({ text: 'qancha qarz bor', voice: true }) }))).json();
+  assert(q.includes('(голосовое сообщение, расшифровка) qancha qarz bor') && r.heard === 'qancha qarz bor' && typeof r.ms === 'number', JSON.stringify(r) + q);
+});

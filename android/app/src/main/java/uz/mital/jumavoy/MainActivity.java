@@ -26,8 +26,9 @@ import java.util.regex.Pattern;
  */
 public class MainActivity extends Activity {
   static final String BASE = "https://mital111222333.github.io/MitalCRM/jumavoy/";
-  static final int MIC = 1;
+  static final int MIC = 1, MIC_NATIVE = 2;
   WebView web;
+  Voice voice;
   PermissionRequest pending;
 
   @Override protected void onCreate(Bundle b) {
@@ -54,6 +55,8 @@ public class MainActivity extends Activity {
         });
       }
     });
+    voice = new Voice(this, web);
+    web.addJavascriptInterface(voice, "JumavoyNative"); // the phone's speech recognition and voice (Voice.java)
     setContentView(web);
     if (b != null) web.restoreState(b);
     open(getIntent(), b == null);
@@ -98,6 +101,7 @@ public class MainActivity extends Activity {
   }
 
   @Override public void onRequestPermissionsResult(int code, String[] p, int[] res) {
+    if (code == MIC_NATIVE) { voice.permissionResult(res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED); return; }
     if (code != MIC || pending == null) return;
     if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pending.grant(pending.getResources());
     else pending.deny();
@@ -105,6 +109,8 @@ public class MainActivity extends Activity {
   }
 
   @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); web.saveState(b); }
+
+  @Override protected void onDestroy() { if (voice != null) voice.destroy(); super.onDestroy(); }
 
   @Override public void onBackPressed() { if (web.canGoBack()) web.goBack(); else super.onBackPressed(); }
 }
