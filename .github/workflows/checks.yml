@@ -39,4 +39,4 @@ jobs:
       - name: deploy ai-bot
         run: |
           if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then echo "SUPABASE_ACCESS_TOKEN is not set — skipping deploy"; exit 0; fi
-          npx -y supabase@latest functions deploy ai-bot --project-ref oxchgcfyzszemqlvdjjr --no-verify-jwt --use-api
+          npx -y supabase@latest functions deploy ai-bot --remote=oxchgcfyzszemqlvdjjr --no-verify-jwt --use-api --yes
