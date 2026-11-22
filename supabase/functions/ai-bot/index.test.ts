@@ -1573,3 +1573,29 @@ D.test('an old price file (read before the better prompt) is read again by itsel
   await M.TOOLS.price_list.run(null, { product: 'метанол 10w40' }, { chatId: 111 });
   eq(reads, 1, 'read once, not on every question');
 });
+
+D.test('learning: the day\'s talk → new facts about the owner (marked 🧠), a learned fact replaced, the owner told; /learn', async () => {
+  DB.ai_memory.length = 0; DB.ai_messages.length = 0;
+  const now = new Date().toISOString();
+  DB.ai_memory.push({ id: 900, chat_id: 111, kind: 'fact', sphere: 'personal', text: '🧠 Любит чай', created_at: now });
+  DB.ai_memory.push({ id: 901, chat_id: 111, kind: 'fact', sphere: 'work', text: 'Адхамжон в отпуске до 25.11', created_at: now });
+  DB.ai_messages.push({ id: 1, chat_id: 111, role: 'user', text: 'Я теперь пью только кофе, чай не люблю. И отвечай мне утром коротко', created_at: now });
+  DB.ai_messages.push({ id: 2, chat_id: 111, role: 'model', text: 'Понял', created_at: now });
+  let prompt = '';
+  GEM = (b: any) => { prompt = JSON.stringify(b); return say(JSON.stringify({ facts: [
+    { text: 'Пьёт кофе, чай не любит', sphere: 'personal', replaces: 900 },
+    { text: 'Утром хочет короткие ответы', sphere: 'work', replaces: null },
+    { text: 'Адхамжон не в отпуске', sphere: 'work', replaces: 901 }, // not a learned fact → never deleted
+    { text: 'Номер карты 8600123412341234', sphere: 'personal' },
+  ] })); };
+  await tgPost({ text: '/learn' });
+  assert(prompt.includes('Я теперь пью только кофе') && prompt.includes('#900'), 'the talk and the known memory go to the AI');
+  const texts = DB.ai_memory.map((r: any) => r.text);
+  assert(!texts.includes('🧠 Любит чай') && texts.includes('🧠 Пьёт кофе, чай не любит'), 'learned fact replaced: ' + texts);
+  assert(texts.includes('Адхамжон в отпуске до 25.11') && texts.includes('🧠 Адхамжон не в отпуске'), 'own fact kept');
+  assert(!texts.some((t: string) => /8600/.test(t)), 'no card numbers');
+  assert(/Узнал о вас новое/.test(lastText()) && /вместо: Любит чай/.test(lastText()) && /\/forget/.test(lastText()), 'told: ' + lastText());
+  GEM = () => say('{"facts":[]}');
+  await tgPost({ text: '/learn' }); assert(/Нового о вас/.test(lastText()), 'nothing new');
+  assert(M.toolsFor('что ты знаешь обо мне', '').some((d: any) => d.name === 'memory_list'), 'memory tools for «обо мне»');
+});

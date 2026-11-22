@@ -327,7 +327,7 @@ const MEM = new Map<number, { at: number; rows: any[] }>();
 async function memoryOf(chatId: number): Promise<any[]> {
   if (!sbOn()) return [];
   const c = MEM.get(chatId); if (c && Date.now() - c.at < 60e3) return c.rows;
-  const rows = await sb(`ai_memory?chat_id=eq.${chatId}&or=(until.is.null,until.gte.${todayStr()})&order=id&limit=100`).catch(e => { console.warn('memory', e.message); return []; });
+  const rows = await sb(`ai_memory?chat_id=eq.${chatId}&or=(until.is.null,until.gte.${todayStr()})&order=id&limit=300`).catch(e => { console.warn('memory', e.message); return []; });
   MEM.set(chatId, { at: Date.now(), rows }); return rows;
 }
 // «once»: the first caller for a key wins (a brief or alert is never sent twice, even if two ticks overlap)
@@ -3080,7 +3080,7 @@ export const TOOL_GROUPS: [RegExp, string[]][] = [
   [/задач|канбан|доск|vazifa|ish ro.?yxat/i, ['task_add', 'task_list', 'task_set', 'task_delete']],
   [/напом|будильн|eslat|budilnik/i, ['reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel']],
   [/занял|одолж|в долг|дал |вернул|должен мне|мне должн|долг|qarz|berdim|oldim|qaytar/i, ['personal_debt_add', 'personal_debts', 'personal_debt_delete']],
-  [/запомн|забуд|забыть|помниш|памят|узнал обо мне|eslab|esla|unut|yodla|xotira/i, ['remember', 'forget', 'memory_list']],
+  [/запомн|забуд|забыть|помниш|памят|обо мне|знаешь|eslab|esla|unut|yodla|xotira/i, ['remember', 'forget', 'memory_list']],
   [/фото|файл|документ|блокнот|пришли|прайс|notebooklm|rasm|fayl|hujjat|yubor/i, ['save_photo', 'send_saved_file', 'notebook_search', 'notebooklm_export']],
   [/oilbook|oil ?book|точк|замен\S* масл|moyxona|moy almashtir/i, ['oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action']],
   [/цен|прайс|стоит|почём|почем|narx|prays|акци|aksiya|промо|скидк|бонус|chegirma|bonus/i, ['price_list', 'promo_calc']],
@@ -3330,12 +3330,58 @@ function ambiguity(r: any) {
   return r?.error ? `${r.error}${r.candidates?.length ? ':\n' + r.candidates.map((c: string) => '• ' + c).join('\n') : ''}` : '';
 }
 
+// ── learning about the owner: once a day the bot reads the day's talk and keeps what the owner said about himself —
+// tastes, habits, how he wants answers, people around him, plans and decisions. One Gemini request a day. Learned facts
+// are ordinary memory facts marked «🧠 » (so /memory shows them and /forget N removes them); a learned fact may replace
+// an older learned one, never a fact the owner saved himself. The owner is told what was learned, so a wrong guess is
+// seen and removed the same day.
+export const LEARN_MARK = '🧠 ';
+const LEARN_PROMPT = `Ты — модуль памяти личного ассистента. Ниже реплики владельца за день (П:) с короткими ответами ассистента (А:) и то, что уже записано в памяти.
+Выпиши НОВЫЕ устойчивые факты о владельце, которые он САМ сказал или ясно показал: вкусы и предпочтения (еда, машины, стиль, что любит и не любит), привычки и распорядок, как ему удобнее получать ответы (коротко, голосом, по-узбекски, таблицей), люди вокруг него (кто есть кто), цели, планы, принятые решения, важное о его работе и бизнесе, что для него важно.
+НЕ записывай: цифры CRM (долги, продажи, остатки — они меняются), разовые задачи и напоминания, то, что сказал ассистент, а не владелец, догадки, пароли, номера карт и документов, здоровье, политику и религию.
+Если новый факт уточняет или отменяет старый из памяти с пометкой 🧠 — укажи его номер в replaces. Уже записанное не повторяй.
+Пиши коротко, в третьем лице, на русском: «Любит плов из Андижана», «Предпочитает короткие ответы голосом утром». Максимум 6 фактов; если нового нет — пустой список.
+sphere: work (MITAL), personal, family, friends, ideas.
+Ответ — только JSON: {"facts":[{"text":"…","sphere":"work","replaces":null}]}`;
+export async function learnFromChat(chatId: number, hours = 24): Promise<any[]> {
+  if (!sbOn()) return [];
+  const since = new Date(Date.now() - hours * 3600e3).toISOString();
+  const msgs = await sb(`ai_messages?chat_id=eq.${chatId}&created_at=gte.${q(since)}&order=id.desc&limit=400&select=role,text`).catch(() => []);
+  msgs?.reverse?.();
+  const talk = (msgs || []).filter((m: any) => m.text && m.text !== NEW_MARK)
+    .map((m: any) => m.role === 'user' ? `П: ${String(m.text).slice(0, 600)}` : `А: ${String(m.text).replace(/\s+/g, ' ').slice(0, 160)}`);
+  if (!talk.some((t: string) => t.startsWith('П:'))) return [];
+  MEM.delete(chatId);
+  const mem = await memoryOf(chatId);
+  const known = mem.map((m: any) => `#${m.id} [${m.sphere || 'work'}] ${m.text}`).join('\n') || '(пусто)';
+  const d = await gemini({ contents: [{ role: 'user', parts: [{ text: `${LEARN_PROMPT}\n\nУЖЕ В ПАМЯТИ:\n${known}\n\nРЕПЛИКИ ЗА ДЕНЬ:\n${talk.join('\n').slice(-30000)}` }] }],
+    generationConfig: { temperature: 0, responseMimeType: 'application/json' } });
+  let facts: any[] = [];
+  try { facts = JSON.parse((d.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('').replace(/^```(?:json)?|```$/g, '').trim()).facts || []; } catch { return []; }
+  const have = new Set(mem.map((m: any) => norm(String(m.text).replace(LEARN_MARK, ''))));
+  const out: any[] = [];
+  for (const f of facts.slice(0, 6)) {
+    const text = String(f?.text || '').replace(/\s+/g, ' ').trim();
+    if (text.length < 4 || text.length > 300 || have.has(norm(text))) continue;
+    if (/\b\d{12,}\b|парол|password|parol/i.test(text)) continue; // never a card / document number or a password
+    const old = mem.find((m: any) => m.id === Number(f?.replaces) && String(m.text).startsWith(LEARN_MARK));
+    const [row] = await sb('ai_memory', { method: 'POST', prefer: 'return=representation', body: { chat_id: chatId, kind: 'fact', text: LEARN_MARK + text, sphere: sphereOf(f?.sphere) } });
+    if (old) await sb(`ai_memory?id=eq.${old.id}&chat_id=eq.${chatId}`, { method: 'DELETE' }).catch(() => {});
+    have.add(norm(text)); out.push({ id: row.id, text, sphere: sphereOf(f?.sphere), replaced: old ? old.text.replace(LEARN_MARK, '') : undefined });
+  }
+  MEM.delete(chatId);
+  return out;
+}
+export const learnedText = (rows: any[]) => rows.length
+  ? `🧠 Узнал о вас новое:\n${rows.map(r => `• #${r.id} ${r.text}${r.replaced ? ` (вместо: ${r.replaced})` : ''}`).join('\n')}\n\nЕсли что-то не так — /forget номер. Всё, что я о вас помню: /memory`
+  : '🧠 Нового о вас за сегодня не узнал.';
+
 function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
   const L = localParts(), t = L.date, wd = WD_RU[L.wd] || L.wd;
   const rules = mem.filter(m => m.kind === 'rule'), facts = mem.filter(m => m.kind === 'fact');
   const tag = (m: any) => `[${SPH[m.sphere || 'work'].split(' ')[1]}]`;
   const memText = (rules.length ? `\nПРАВИЛА, КОТОРЫМ ТЕБЯ НАУЧИЛ ПОЛЬЗОВАТЕЛЬ (выполняй всегда, кроме случаев, когда они противоречат правилу 1):\n${rules.map(r => `#${r.id} ${tag(r)} ${r.text}`).join('\n')}\n` : '')
-    + (facts.length ? `\nФАКТЫ ИЗ ПАМЯТИ (сообщил пользователь; в [скобках] сфера; учитывай, если относятся к вопросу и его сфере):\n${facts.map(f => `#${f.id} ${tag(f)} ${f.text}${f.until ? ` (актуально до ${f.until})` : ''} [записано ${day(f.created_at)}]`).join('\n')}\n` : '');
+    + (facts.length ? `\nФАКТЫ ИЗ ПАМЯТИ — ЧТО ТЫ ЗНАЕШЬ О ПОЛЬЗОВАТЕЛЕ И ЕГО ДЕЛАХ (сообщил он сам; 🧠 — ты узнал из разговоров; в [скобках] сфера). Подбирай ответы под него (правило 33):\n${facts.map(f => `#${f.id} ${tag(f)} ${f.text}${f.until ? ` (актуально до ${f.until})` : ''} [записано ${day(f.created_at)}]`).join('\n')}\n` : '');
   return `Ты — ${CFG.name}, личный AI-помощник Саидбонура (как Джарвис). Его сферы: работа — он супервайзер продаж компании MITAL (моторные масла Mitanol, Liman OIL, фильтры ECO FILTER; регионы Фергана, Наманган, Андижан), а также личное, семья, друзья и бизнес-идеи.
 Сегодня ${t} (${wd}), сейчас ${L.time}, часовой пояс Ташкент. Валюта — доллары ($).
 Агенты: ${db.agents.join(', ')}.
@@ -3376,6 +3422,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 29. БАЗА КЛИЕНТОВ: пользователь рассказывает о клиенте то, чего нет в CRM — с кем работает, у кого берёт, какие масла / бренды у него стоят, по каким ценам (наши и чужие), договоры, владелец и телефон, объёмы, конкуренты — → client_info_add: разложи на отдельные факты, ничего не теряй, цены и даты — только названные. Не remember. «Всё про клиента X», «досье / полная инфа по X», «что знаешь о X» → client_info с client (там и CRM: агент, долг, заказы). «У кого стоит Mobil / кто работает с X» → client_info с query. «Пришли базу клиентов / всю инфу в Excel» → client_info без client, excel=true. Ошибочная запись → client_info_delete.
 31. УЧИСЬ НА ПОПРАВКАХ. Если пользователь говорит, что ты ошибся («нет, не так», «неправильно», «я же говорил», «xato», «unday emas») — исправь ответ и, если поправка — общее правило на будущее, сохрани его remember kind=rule и напиши «📌 Запомнил правило: …». Перед ответом сверяйся с ПРАВИЛАМИ ниже: одну и ту же ошибку дважды не повторяй.
 32. СЛОЖНЫЙ ВОПРОС («почему», анализ, сравнение, совет, план): сначала собери цифры функциями (несколько сразу, explain=true), потом коротко: 1) что видно по цифрам, 2) главная причина, 3) 2–3 конкретных действия с именами клиентов и агентов. Догадку называй догадкой.
+33. ТЫ ЗНАЕШЬ ПОЛЬЗОВАТЕЛЯ. Перед ответом посмотри факты из памяти: его вкусы, привычки, как он любит получать ответы, его людей, цели и решения. Если вопрос про выбор (что купить, куда пойти, что подарить, как поступить, что предложить клиенту) — сразу предложи 2–3 варианта, которые подходят именно ему, и коротко скажи почему («вы любите …, поэтому …»). Не перечисляй факты о нём без повода и не говори «согласно памяти». Если важного предпочтения не знаешь, а оно меняет ответ, — коротко спроси одно.
 ${skills.length ? `\nНАВЫКИ (название — когда применять):\n${skills.map(s => `${s.name} — ${s.description}`).join('\n')}\n` : ''}${memText}`;
 }
 
@@ -3759,7 +3806,7 @@ export function isLimitsQuestion(text: string) {
 async function command(text: string, chatId: number): Promise<string | null> {
   // «сколько осталось лимитов?» in plain words is answered without spending a request
   if (/^\/limits?\b/i.test(text) || isLimitsQuestion(text)) return limitsText();
-  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|learn|uchis|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
   const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
@@ -3780,6 +3827,7 @@ async function command(text: string, chatId: number): Promise<string | null> {
     return (ambiguity(r) || TPL.client_info(r)) + xl;
   }
   if (cmd === 'memory') return run('memory_list', {});
+  if (cmd === 'learn' || cmd === 'uchis') return learnedText(await learnFromChat(chatId, n(arg) > 0 ? Math.min(n(arg), 60) * 24 : 24));
   if (cmd === 'reminders') return run('reminder_list', {});
   if (cmd === 'my') return run('personal_debts', arg ? { person: arg } : {});
   if (cmd === 'forget') return /^\d+$/.test(arg) ? run('forget', { id: +arg }) : 'Напишите номер: /forget 12 (номера — в /memory)';
@@ -4055,6 +4103,7 @@ async function tick() {
   });
   await slot('noorders', CFG.hour('ALERT_HOUR', 11), async (db, c) => { const t = noOrdersAlert(db); if (t) await say(c, t); });
   await slot('evening', CFG.hour('EVENING_HOUR', 19), async (db, c) => { await say(c, eveningBrief(db)); });
+  await slot('learn', CFG.hour('LEARN_HOUR', 22), async (_db, c) => { const r = await learnFromChat(c); if (r.length) await say(c, learnedText(r)); });
   if (L.h === 3 && await once(`cleanup:${L.date}`)) await sb(`ai_events?created_at=lt.${q(new Date(Date.now() - 90 * 864e5).toISOString())}`, { method: 'DELETE' }).catch(() => {});
   return res;
 }
@@ -4387,6 +4436,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /oil — сводка OilBook · /oil точка — карточка точки
 /nb reread — перечитать сохранённые прайсы
 /memory — что я помню · /forget N — забыть
+/learn — изучить меня по разговорам за день (сам делаю каждый вечер в ${CFG.hour('LEARN_HOUR', 22)}:00) · /learn 30 — за 30 дней
 /reminders — напоминания · /cancel N — отменить
 /tasks — задачи (канбан) · /task текст — новая задача
 /my — личные долги · /my имя — история с человеком
@@ -4400,7 +4450,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
   ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['baza', 'База клиентов в Excel / /baza имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'], ['oil', 'OilBook: сводка / /oil точка'],
-  ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
+  ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['learn', 'Изучить меня по разговорам за день'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
   ['weather', 'Погода: /weather город'], ['kurs', 'Курс ЦБ'], ['news', 'Новости: /news тема'], ['cal', 'Google Календарь: /cal завтра'], ['google', 'Подключить Google'], ['skills', 'Навыки'],
   ['voice', 'Голосовые ответы: авто / on / off'], ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
 
