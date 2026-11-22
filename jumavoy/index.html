@@ -199,7 +199,9 @@ const vb = $('voiceBtn');
 const paintVoice = () => { vb.classList.toggle('on', voiceOn); vb.textContent = voiceOn ? '🔊' : '🔇'; };
 vb.onclick = () => { voiceOn = !voiceOn; store.set('voice', voiceOn); if (!voiceOn) stopSpeaking(); paintVoice(); };
 paintVoice();
-const N = window.JumavoyNative || null;   // the Android app: the phone's own recognition and voice (instant, no Gemini)
+const N = window.JumavoyNative || null;
+const APPV = N && N.version ? N.version() : 1; // a newer Android app (another recognizer) gets a new try on a phone that failed before
+const nativeListen = () => !!(N && N.canListen() && store.get('nativeOff', 0) !== APPV);   // the Android app: the phone's own recognition and voice (instant, no Gemini)
 const isUz = t => /[ўқғҳ]/i.test(t) || /\b(va|uchun|bilan|qancha|narx\w*|yo'q|kerak|mijoz|qarz\w*|sizga|ham|emas|yoki|bo'l\w*|qil\w*|bor|yoq|dona|karobka)\b/i.test(t);
 const spoken = t => String(t || '').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '').replace(/^[•\-]\s*/gm, '').replace(/[•→|*_#]/g, ' ').replace(/[ \t]+/g, ' ').trim();
 let speakSeq = 0;
@@ -240,13 +242,25 @@ window.jvNative = {
   onPartial: t => { hint.textContent = t; },
   onEnd: () => setState('распознаю'),
   onResult: t => { micIdle(); if (t) ask({ text: t, voice: true }, '🎤 ' + t); else setState('готов'); },
-  onError: m => { micIdle(); setState('готов'); if (m) note('🎤 ' + m, 'err'); },
+  onError: m => {
+    micIdle(); setState('готов');
+    if (!m) return;
+    // the phone's recognizer refused (error 10 «too many requests», busy, no service…): the app records the voice itself
+    // and the server writes it down — as before, a bit slower but it works; remembered until the app is updated
+    if (/ошибка \d+/.test(m)) {
+      store.set('nativeOff', APPV); langBtn.style.visibility = 'hidden';
+      note('🎤 Распознавание речи телефона не работает (' + m.replace(/^.*ошибка/, 'ошибка') + '). Слушаю через сервер — говорите.');
+      setTimeout(listen, 300);
+      return;
+    }
+    note('🎤 ' + m, 'err');
+  },
 };
 let lang = store.get('lang', 'ru-RU');
 const langBtn = $('langBtn'), paintLang = () => { langBtn.textContent = lang === 'uz-UZ' ? 'UZ' : 'RU'; };
 langBtn.onclick = () => { lang = lang === 'uz-UZ' ? 'ru-RU' : 'uz-UZ'; store.set('lang', lang); paintLang(); };
 paintLang();
-if (!N || !N.canListen()) langBtn.style.visibility = 'hidden'; // the web version writes down any language itself (Gemini)
+if (!nativeListen()) langBtn.style.visibility = 'hidden'; // the web version writes down any language itself (Gemini)
 
 // ── microphone: tap, speak, it stops by itself after a pause ──
 let rec = null;
@@ -258,7 +272,7 @@ async function listen() {
   if (nativeOn) { N.stopListen(); return; }
   if (rec) return rec.stop(true);
   stopSpeaking();
-  if (N && N.canListen()) { // the phone's recognizer: words appear while speaking, no upload, no Gemini request
+  if (nativeListen()) { // the phone's recognizer: words appear while speaking, no upload, no Gemini request
     nativeOn = true; mic.classList.add('rec'); hint.textContent = 'Говорите…'; setState('слушаю');
     N.listen(lang); return;
   }

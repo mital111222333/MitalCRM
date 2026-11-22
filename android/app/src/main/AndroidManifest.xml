@@ -7,6 +7,7 @@
   <!-- Android 11+: to find the phone's speech recognizer and text-to-speech engine -->
   <queries>
     <intent><action android:name="android.speech.RecognitionService" /></intent>
+    <package android:name="com.google.android.googlequicksearchbox" />
     <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
     <!-- «open Telegram / Maps / …» and the apps for calls, SMS, calendar, maps -->
     <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent>

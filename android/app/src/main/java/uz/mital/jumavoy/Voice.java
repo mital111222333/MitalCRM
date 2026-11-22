@@ -2,7 +2,9 @@ package uz.mital.jumavoy;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Intent;
+import android.os.Build;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.speech.RecognitionListener;
@@ -31,6 +33,9 @@ public class Voice {
   TextToSpeech tts;
   boolean ttsReady;
   String pendingLang;
+  int engine; // 0 the phone's default recognizer, 1 Google's service by name, 2 the on-device one (Android 12+)
+
+  @JavascriptInterface public int version() { return 2; }
 
   Voice(Activity act, WebView web) {
     this.act = act;
@@ -68,6 +73,7 @@ public class Voice {
         act.requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MainActivity.MIC_NATIVE);
         return;
       }
+      engine = 0;
       start(lang);
     });
   }
@@ -75,13 +81,16 @@ public class Voice {
   void permissionResult(boolean ok) {
     if (pendingLang == null) return;
     String l = pendingLang; pendingLang = null;
-    if (ok) start(l); else js("onError", "Нет доступа к микрофону. Разрешите его в настройках приложения.");
+    if (ok) { engine = 0; start(l); } else js("onError", "Нет доступа к микрофону. Разрешите его в настройках приложения.");
   }
 
   void start(String lang) {
     if (tts != null) tts.stop();
     if (rec != null) { rec.destroy(); rec = null; }
-    rec = SpeechRecognizer.createSpeechRecognizer(act);
+    rec = engine == 1 ? SpeechRecognizer.createSpeechRecognizer(act, new ComponentName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.serviceapi.GoogleRecognitionService"))
+      : engine == 2 && Build.VERSION.SDK_INT >= 31 ? SpeechRecognizer.createOnDeviceSpeechRecognizer(act)
+      : SpeechRecognizer.createSpeechRecognizer(act);
+    final String lng = lang;
     rec.setRecognitionListener(new RecognitionListener() {
       @Override public void onReadyForSpeech(Bundle b) { js("onReady", null); }
       @Override public void onBeginningOfSpeech() { }
@@ -89,6 +98,12 @@ public class Voice {
       @Override public void onBufferReceived(byte[] b) { }
       @Override public void onEndOfSpeech() { js("onEnd", null); }
       @Override public void onError(int e) {
+        // the recognizer refused (10 too many requests, 5 client, 8 busy, 11 disconnected, 12/13 language): the next one is tried
+        if ((e == 10 || e == 5 || e == 8 || e == 11 || e == 12 || e == 13) && engine < 2) {
+          engine++;
+          act.runOnUiThread(() -> start(lng));
+          return;
+        }
         String m = e == SpeechRecognizer.ERROR_NO_MATCH || e == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ? "" // nothing said
           : e == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ? "Нет доступа к микрофону."
           : e == SpeechRecognizer.ERROR_NETWORK || e == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ? "Нет интернета для распознавания речи."
