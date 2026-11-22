@@ -1652,3 +1652,25 @@ D.test('idea of the day: one AI request with the CRM picture and what the bot kn
   assert(body.includes('лучшим супервайзером') || body.includes('ЧТО ТЫ О НЁМ ЗНАЕШЬ'), 'memory in the request');
   assert(/^💡 Идея дня/.test(lastText()), lastText());
 });
+
+D.test('app API: personal key from /app, questions and voice answered like in Telegram, wrong key refused, tts → wav', async () => {
+  await tgPost({ text: '/app' });
+  const link = (lastText().match(/https:\S+#c=111&k=([0-9a-f]{32})/) || []);
+  assert(link[1], 'personal link: ' + lastText());
+  const call = (body: any, key = link[1], chat = '111') => M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': chat, 'x-app-key': key }, body: JSON.stringify(body) }));
+  eq((await call({ text: 'hi' }, 'f'.repeat(32))).status, 401, 'wrong key');
+  eq((await call({ text: 'hi' }, link[1], '222')).status, 401, 'not allowed chat');
+  eq((await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'OPTIONS' }))).status, 204, 'CORS preflight');
+
+  GEM = () => say('Привет! Чем помочь?');
+  const r = await (await call({ text: 'Привет' })).json();
+  eq(r.text, 'Привет! Чем помочь?', 'answered by the AI');
+  assert(DB.ai_messages.some((m: any) => m.text === 'Привет'), 'shared history with Telegram');
+  const c = await (await call({ text: '/pings' })).json();
+  assert(/Сообщения первым/.test(c.text), 'a /command works: ' + c.text);
+
+  HEARD = 'сколько стоит 5 на 30 метанол';
+  GEM = () => say('Mitanol X-Force 5W-30 4 л — $47,33');
+  const v = await (await call({ audio: 'AAAA', mime: 'audio/webm;codecs=opus' })).json();
+  assert(v.heard === 'сколько стоит 5 на 30 метанол' && /47,33/.test(v.text), 'voice: ' + JSON.stringify(v));
+});

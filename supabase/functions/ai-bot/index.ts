@@ -1077,6 +1077,57 @@ export async function webAppUser(init: string, now = Date.now()): Promise<number
   let id = ''; try { id = String(JSON.parse(p.get('user') || '{}').id || ''); } catch { return null; }
   return id && CFG.allowed().includes(id) ? Number(id) : null;
 }
+// ───────────────────────────── the JUMAVOY app (PWA / Android) — the same brain without Telegram ─────────────────────────────
+// <function url>/app, POST JSON. The owner gets his personal link with /app in Telegram: chat id + a key made from TG_SECRET
+// (HMAC), so no new secret is needed and a changed TG_SECRET closes every old link. Body:
+//   { text }                → { text, heard? }            a question or a /command, answered like in Telegram (shared history)
+//   { audio, mime }         → { text, heard }             voice: written down first (transcribe), then answered
+//   { tts }                 → audio/wav                   the answer read aloud (Gemini TTS)
+// Drafts to agents / clients still come to Telegram with «✅ Отправить» — nothing reaches people from the app by itself.
+export const APP_URL = () => env('APP_URL', 'https://mital111222333.github.io/MitalCRM/jumavoy/');
+export async function appKey(chatId: number | string) {
+  return [...await hmacRaw(new TextEncoder().encode(CFG.secret() || 'x'), `jumavoy-app:${chatId}`)].slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+export async function appLink(chatId: number) { return `${APP_URL()}#c=${chatId}&k=${await appKey(chatId)}`; }
+const APP_CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, x-app-chat, x-app-key', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
+export async function appApi(req: Request) {
+  const out = (v: any, status = 200) => new Response(JSON.stringify(v), { status, headers: { ...APP_CORS, 'Content-Type': 'application/json; charset=utf-8' } });
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: APP_CORS });
+  if (req.method !== 'POST') return out({ error: 'POST only' }, 405);
+  const chat = String(req.headers.get('x-app-chat') || ''), key = String(req.headers.get('x-app-key') || '');
+  if (!CFG.secret() || !chat || !CFG.allowed().includes(chat)) return out({ error: 'Нет доступа. Откройте приложение по ссылке из бота: /app' }, 401);
+  const want = await appKey(chat);
+  let diff = want.length ^ key.length; for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ (key.charCodeAt(i) || 0);
+  if (diff) return out({ error: 'Ссылка устарела. Получите новую в боте: /app' }, 401);
+  const chatId = Number(chat), b = await req.json().catch(() => ({}));
+  try {
+    if (b.tts) {
+      const s = spokenText(String(b.tts)); if (s.length < 2) return out({ error: 'Нечего читать' }, 400);
+      const { pcm, rate } = await tts(s);
+      return new Response(pcmToWav(pcm, rate) as BodyInit, { headers: { ...APP_CORS, 'Content-Type': 'audio/wav' } });
+    }
+    let text = String(b.text || '').trim().slice(0, 4000), heard = '';
+    if (b.audio) {
+      const h = await transcribe({ inlineData: { mimeType: String(b.mime || 'audio/webm').split(';')[0], data: String(b.audio) } });
+      if (h === null) return out({ error: 'Не удалось распознать голос. Попробуйте ещё раз.' }, 502);
+      if (!h) return out({ text: '🎤 Не расслышал. Повторите, пожалуйста.', heard: '' });
+      heard = text = h;
+    }
+    if (!text) return out({ error: 'Пустой вопрос' }, 400);
+    if (/^\/(start|help)\b/.test(text)) return out({ text: HELP });
+    if (/^\/new\b/.test(text)) { await resetHistory(chatId); return out({ text: 'Начали заново. Спрашивайте 🙂' }); }
+    const quick = text.startsWith('/') ? await command(text, chatId) : null;
+    if (quick) return out({ text: quick, heard: heard || undefined });
+    const [db] = await Promise.all([loadDB(), getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
+    const res = await ask(db, chatId, [{ text: heard ? `(голосовое сообщение, расшифровка) ${heard}` : text }], text);
+    // a keyboard a tool prepared (a task card, a reminder) goes to Telegram with the answer, where its buttons work
+    if (KB.has(chatId)) await say(chatId, `📱 Из приложения: ${heard || text}\n\n${res.text}`);
+    return out({ text: res.text, heard: heard || undefined, telegram: res.used.some((x: string) => ['message_agent', 'crm_task', 'crm_note', 'message_client', 'oilbook_action'].includes(x)) || undefined });
+  } catch (e) {
+    console.error('app', redact((e as Error)?.stack || e));
+    return out({ error: redact((e as Error).message) || 'Ошибка' }, 500);
+  } finally { KB.delete(chatId); await usageSettled(); }
+}
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, x-tg-init', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
 async function tasksApi(req: Request) {
   const out = (v: any, status = 200) => new Response(JSON.stringify(v), { status, headers: { ...CORS, 'Content-Type': 'application/json; charset=utf-8' } });
@@ -3807,7 +3858,7 @@ export function isLimitsQuestion(text: string) {
 async function command(text: string, chatId: number): Promise<string | null> {
   // «сколько осталось лимитов?» in plain words is answered without spending a request
   if (/^\/limits?\b/i.test(text) || isLimitsQuestion(text)) return limitsText();
-  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|learn|uchis|pings|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|learn|uchis|pings|app|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
   const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
@@ -3829,6 +3880,7 @@ async function command(text: string, chatId: number): Promise<string | null> {
   }
   if (cmd === 'memory') return run('memory_list', {});
   if (cmd === 'pings') return pingsCommand(chatId, arg);
+  if (cmd === 'app') return `📱 Приложение ${CFG.name} — тот же помощник без Telegram, с кнопкой микрофона и ответами голосом.\n\nВаша личная ссылка (никому не пересылайте):\n${await appLink(chatId)}\n\nОткройте её в Chrome → ⋮ → «Добавить на главный экран». Для Android-приложения (вызов кнопкой питания, как Gemini): ${env('APK_URL', 'https://github.com/mital111222333/MitalCRM/releases/download/jumavoy-app/JUMAVOY.apk')} — в нём один раз вставьте эту же ссылку.`;
   if (cmd === 'learn' || cmd === 'uchis') return learnedText(await learnFromChat(chatId, n(arg) > 0 ? Math.min(n(arg), 60) * 24 : 24));
   if (cmd === 'reminders') return run('reminder_list', {});
   if (cmd === 'my') return run('personal_debts', arg ? { person: arg } : {});
@@ -4548,6 +4600,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /oil — сводка OilBook · /oil точка — карточка точки
 /nb reread — перечитать сохранённые прайсы
 /memory — что я помню · /forget N — забыть
+/app — приложение с микрофоном (без Telegram)
 /pings — сообщения первым (вкл / выкл / сколько в день)
 /learn — изучить меня по разговорам за день (сам делаю каждый вечер в ${CFG.hour('LEARN_HOUR', 22)}:00) · /learn 30 — за 30 дней
 /reminders — напоминания · /cancel N — отменить
@@ -4563,7 +4616,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
   ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['baza', 'База клиентов в Excel / /baza имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'], ['oil', 'OilBook: сводка / /oil точка'],
-  ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['learn', 'Изучить меня по разговорам за день'], ['pings', 'Сообщения первым: вкл / выкл / сколько в день'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
+  ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['learn', 'Изучить меня по разговорам за день'], ['pings', 'Сообщения первым: вкл / выкл / сколько в день'], ['app', 'Приложение JUMAVOY с микрофоном'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
   ['weather', 'Погода: /weather город'], ['kurs', 'Курс ЦБ'], ['news', 'Новости: /news тема'], ['cal', 'Google Календарь: /cal завтра'], ['google', 'Подключить Google'], ['skills', 'Навыки'],
   ['voice', 'Голосовые ответы: авто / on / off'], ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
 
@@ -4652,6 +4705,8 @@ async function serve(req: Request) {
   if (req.method === 'GET' && url.pathname.endsWith('/google')) return await googleCallback(url).catch(e => new Response('Ошибка: ' + esc((e as Error).message), { status: 500, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }));
   // the kanban Mini App (tasks.html) → <function url>/tasks, signed with Telegram initData
   if (url.pathname.endsWith('/tasks')) return await tasksApi(req);
+  // the JUMAVOY app (jumavoy/index.html, Android) → <function url>/app
+  if (url.pathname.endsWith('/app')) return await appApi(req);
   // schedule: pg_cron → ?cron=1 with the x-mital-cron header (= TG_SECRET). Answer at once, work in the background
   if (url.searchParams.has('cron')) {
     if (!CFG.secret() || req.headers.get('x-mital-cron') !== CFG.secret()) return new Response('forbidden', { status: 403 });
