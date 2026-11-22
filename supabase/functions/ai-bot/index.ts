@@ -2762,7 +2762,7 @@ Object.assign(TOOLS, {
     desc: 'ЦЕНЫ ИЗ ПРАЙС-ЛИСТА компании (из блокнота): цена за штуку (бутылку), за литр, штук в коробке, цена коробки. Вызывай на «цена / прайс / сколько стоит / почём» и по-узбекски «narx, narxi, нархи, prays, qancha turadi, necha pul». Это НЕ остаток склада (остаток — stock).',
     params: { product: { type: 'string', description: 'товар или бренд как сказал пользователь: «Golden Booster», «GB qizil 5w30», «Liman ATF». Пусто — весь прайс' } },
     async run(_db: any, a: any, ctx: any) {
-      const nb = ctx?.notebook || (sbOn() && ctx?.chatId ? await notebookOf(ctx.chatId) : []), pl = priceRows(nb);
+      const nb = ctx?.notebook || (sbOn() && ctx?.chatId ? await autoReread(ctx.chatId, await notebookOf(ctx.chatId)) : []), pl = priceRows(nb);
       if (!pl.rows.length && !(a.product && priceLines(nb, String(a.product)).length)) return { error: 'В блокноте нет прайс-листа. Пришлите боту прайс файлом (PDF, фото или Excel) без подписи или с подписью «сохрани» — он сохранится, и цены будут браться из него.' };
       let rows = a.product ? priceMatch(pl.rows, String(a.product), true) : pl.rows;
       // a viscosity or series the user named («5W-50», «X-Force») is the product itself: rows of other viscosities are not shown as its price
@@ -4308,6 +4308,18 @@ export function priceCheck(text: string, title: string) {
   const step = Math.max(1, Math.floor(rows.length / 5)), show = rows.filter((_: any, i: number) => i % step === 0).slice(0, 5);
   return `💰 Прайс: распознал ${rows.length} позиций. Проверьте несколько:\n${show.map((r: any) => `• ${r.name} — ${fmt(r.piece)}${r.liter ? ` (${fmt(r.liter)}/л)` : ''}`).join('\n')}\nЕсли цифры не те — пришлите прайс ещё раз (лучше Excel).\n\n`;
 }
+// a file read with the current PDF prompt carries this last line; older price files without it are read once more
+// by themselves the first time a price is asked (autoReread), so nobody has to send the price lists again
+export const REREAD_MARK = '\n#prochitan-v2';
+const REREAD_TRIED = new Set<number>();
+export async function autoReread(chatId: number, nb: any[]): Promise<any[]> {
+  const old = (nb || []).filter((d: any) => d.tg_file_id && !REREAD_TRIED.has(d.id) && !String(d.content || '').endsWith(REREAD_MARK) && PRICE_DOC_RE.test(`${d.title}\n${String(d.content || '').slice(0, 3000)}`));
+  if (!old.length) return nb;
+  for (const d of old.slice(0, 3)) REREAD_TRIED.add(d.id); // a file Telegram or Gemini cannot give now is not retried on every question
+  for (const d of old.slice(0, 3)) await nbReread(chatId, d.id).catch(e => console.warn('reread', (e as Error).message));
+  NBC.delete(chatId);
+  return notebookOf(chatId);
+}
 export const PRICE_DOC_RE = /прайс|price|narx|prays|ltr\.|литр|шт\.? в короб|dona|karobka/i;
 async function nbReread(chatId: number, id: number): Promise<string> {
   const all = await notebookOf(chatId);
@@ -4319,7 +4331,7 @@ async function nbReread(chatId: number, id: number): Promise<string> {
       const buf = await tgDownload(d.tg_file_id, geminiReads(d.mime || '', extOf(d.title || '')) ? 14e6 : 19.5e6);
       const text = await fileText(buf, d.mime || 'application/pdf', d.title || 'file.pdf');
       if (String(text || '').trim().length < 3) { out.push(`⚠️ #${d.id} ${d.title}: не удалось прочитать`); continue; }
-      await sb(`ai_notebook?id=eq.${d.id}&chat_id=eq.${chatId}`, { method: 'PATCH', body: { content: text.slice(0, 400000) } });
+      await sb(`ai_notebook?id=eq.${d.id}&chat_id=eq.${chatId}`, { method: 'PATCH', body: { content: text.slice(0, 399980) + REREAD_MARK } });
       out.push(`🔄 #${d.id} ${d.title}\n` + (priceCheck(text, d.title).trim() || 'Перечитал (таблицы цен в нём нет).'));
     } catch (e) { out.push(`⚠️ #${d.id} ${d.title}: ${redact((e as Error).message)}`); }
   }
@@ -4331,7 +4343,7 @@ async function nbFile(chatId: number, doc: any, photo: any, title?: string): Pro
   const buf = await tgDownload(doc?.file_id || photo.file_id, geminiReads(mime, ext) ? 14e6 : 19.5e6);
   const text = await fileText(buf, mime, name);
   const tagged = sphereTagged(title || ''), only = sphereWord(title || ''), sphere = tagged.sphere || only;
-  const s = await nbAdd(chatId, { title: (only ? '' : tagged.rest) || name, kind: 'file', content: text, tg_file_id: doc?.file_id || photo.file_id, mime, sphere: sphere || undefined });
+  const s = await nbAdd(chatId, { title: (only ? '' : tagged.rest) || name, kind: 'file', content: geminiReads(mime, ext) ? text.slice(0, 399980) + REREAD_MARK : text, tg_file_id: doc?.file_id || photo.file_id, mime, sphere: sphere || undefined });
   return priceCheck(text, s.title) + `📚 Добавил в блокнот${sphere && sphere !== 'work' ? ` (${SPH[sphere]})` : ''} #${s.id}: ${s.title} (${s.chars.toLocaleString('ru-RU')} знаков)${s.cut ? ' — документ очень длинный, сохранил первые 400 000 знаков' : ''}.\nТеперь спрашивайте по нему — отвечу со ссылкой на источник. Список: /nb`;
 }
 

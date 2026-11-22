@@ -1561,3 +1561,15 @@ D.test('/nb reread: a saved price PDF is read again from Telegram, the reply sho
   assert(DB.ai_notebook[0].content.includes('| 4 Ltr. |'), 'content replaced');
   eq((await M.TOOLS.price_list.run(null, { product: '5 на 30 метанол' }, { chatId: 111 })).rows.map((r: any) => r.piece), [47.33], 'found after reread');
 });
+
+D.test('an old price file (read before the better prompt) is read again by itself on the first price question', async () => {
+  DB.ai_notebook.length = 0; M.NBC.clear();
+  DB.ai_notebook.push({ id: 52, chat_id: 111, title: 'MITANOL PRICE 7.pdf', kind: 'file', mime: 'application/pdf', tg_file_id: 'PDF52', sphere: 'work', content: 'шт. в коробке\n5 Ltr. 11,59 57,96 4\nMitanol X-Force 5W30 DX1' });
+  FILES.PDF52 = new Uint8Array([37, 80, 68, 70]);
+  let reads = 0;
+  GEM = () => { reads++; return say(`1 | Mitanol S-Force 10W40 | 5 Ltr. | 8,42 | 42,08 | 4\n| | 4 Ltr. | 8,62 | 34,49 | 5\n4 | Mitanol X-Force 5W30 DX1 | 4 Ltr. | 11,83 | 47,33 | 5`); };
+  eq((await M.TOOLS.price_list.run(null, { product: 'метанол 5 на 30' }, { chatId: 111 })).rows.map((r: any) => r.piece), [47.33], 'answered from the new reading');
+  assert(DB.ai_notebook[0].content.endsWith(M.REREAD_MARK), 'marked');
+  await M.TOOLS.price_list.run(null, { product: 'метанол 10w40' }, { chatId: 111 });
+  eq(reads, 1, 'read once, not on every question');
+});
