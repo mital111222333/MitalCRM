@@ -1,7 +1,8 @@
 # JUMAVOY for Android: builds the APK from android/ and puts it on the release «jumavoy-app»:
 #   https://github.com/mital111222333/MitalCRM/releases/download/jumavoy-app/JUMAVOY.apk
-# Signed with the repository secrets ANDROID_KEYSTORE_B64 + ANDROID_KEYSTORE_PASS when they exist (then every new build
-# installs over the old one); without them with a one-off debug key (a new build needs the old app removed first).
+# Signing: with the repository secret ANDROID_KEYSTORE_PASS (16+ characters) the permanent key is made from it on every
+# build (android/tools/signing_key.py, nothing is stored) — every new APK installs over the old one. Without the secret:
+# a one-off debug key (a new build needs the old app removed first).
 name: android
 on:
   push:
@@ -22,11 +23,13 @@ jobs:
       - name: build
         working-directory: android
         env:
-          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
           VCODE: ${{ github.run_number }}
         run: |
-          if [ -n "$KS_B64" ]; then echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/jv.jks"; export KS_FILE="$RUNNER_TEMP/jv.jks"; fi
+          if [ -n "$KS_PASS" ]; then
+            pip install -q pycryptodome cryptography
+            python3 tools/signing_key.py "$RUNNER_TEMP/jv.p12" && export KS_FILE="$RUNNER_TEMP/jv.p12"
+          fi
           gradle --no-daemon assembleRelease
           cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/JUMAVOY.apk"
       - name: release
