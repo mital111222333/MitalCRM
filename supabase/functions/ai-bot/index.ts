@@ -4271,6 +4271,10 @@ async function nbCommand(chatId: number, arg: string, reply: any): Promise<strin
     NBC.delete(chatId);
     return rows?.length ? `🗑 Удалил из блокнота #${rows[0].id}: ${rows[0].title}` : `В блокноте нет #${del[1]}`;
   }
+  // «/nb reread» — read the saved price lists again from their Telegram files (after a better reading was deployed),
+  // so the user does not have to send them again; «/nb reread 12» — one file
+  const rr = arg.match(/^(?:reread|перечитай|обнови(?:ть)?(?:\s+прайс\S*)?|qayta o.?qi)(?:\s+#?(\d+))?$/i);
+  if (rr) return nbReread(chatId, rr[1] ? +rr[1] : 0);
   // «/nb семья» alone = the list of one sphere; «/nb идея: текст» = a note in that sphere
   const only = sphereWord(arg);
   const { sphere, rest } = only ? { sphere: '', rest: '' } : sphereTagged(arg), sp = sphere || undefined, tagTxt = sphere && sphere !== 'work' ? ` (${SPH[sphere]})` : '';
@@ -4303,6 +4307,24 @@ export function priceCheck(text: string, title: string) {
   const fmt = (v: any) => '$' + Number(v).toFixed(2).replace('.', ',');
   const step = Math.max(1, Math.floor(rows.length / 5)), show = rows.filter((_: any, i: number) => i % step === 0).slice(0, 5);
   return `💰 Прайс: распознал ${rows.length} позиций. Проверьте несколько:\n${show.map((r: any) => `• ${r.name} — ${fmt(r.piece)}${r.liter ? ` (${fmt(r.liter)}/л)` : ''}`).join('\n')}\nЕсли цифры не те — пришлите прайс ещё раз (лучше Excel).\n\n`;
+}
+export const PRICE_DOC_RE = /прайс|price|narx|prays|ltr\.|литр|шт\.? в короб|dona|karobka/i;
+async function nbReread(chatId: number, id: number): Promise<string> {
+  const all = await notebookOf(chatId);
+  const docs = all.filter((d: any) => d.tg_file_id && (id ? d.id === id : PRICE_DOC_RE.test(`${d.title}\n${String(d.content || '').slice(0, 3000)}`)));
+  if (!docs.length) return id ? `В блокноте нет файла #${id} (или он сохранён текстом, без файла).` : 'В блокноте нет сохранённых файлов-прайсов. Пришлите прайс файлом.';
+  const out: string[] = [];
+  for (const d of docs.slice(0, 6)) {
+    try {
+      const buf = await tgDownload(d.tg_file_id, geminiReads(d.mime || '', extOf(d.title || '')) ? 14e6 : 19.5e6);
+      const text = await fileText(buf, d.mime || 'application/pdf', d.title || 'file.pdf');
+      if (String(text || '').trim().length < 3) { out.push(`⚠️ #${d.id} ${d.title}: не удалось прочитать`); continue; }
+      await sb(`ai_notebook?id=eq.${d.id}&chat_id=eq.${chatId}`, { method: 'PATCH', body: { content: text.slice(0, 400000) } });
+      out.push(`🔄 #${d.id} ${d.title}\n` + (priceCheck(text, d.title).trim() || 'Перечитал (таблицы цен в нём нет).'));
+    } catch (e) { out.push(`⚠️ #${d.id} ${d.title}: ${redact((e as Error).message)}`); }
+  }
+  NBC.delete(chatId);
+  return out.join('\n\n') + (docs.length > 6 ? `\n\nПеречитал 6 из ${docs.length}. Остальные: /nb reread номер` : '');
 }
 async function nbFile(chatId: number, doc: any, photo: any, title?: string): Promise<string> {
   const name = doc?.file_name || `Фото ${dm(todayStr())}`, mime = doc?.mime_type || 'image/jpeg', ext = extOf(name);
@@ -4351,6 +4373,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /baza — база клиентов в Excel · /baza имя — досье (с кем работает, масла, цены, договоры)
 /sklad — что заканчивается · /sklad товар — остатки
 /oil — сводка OilBook · /oil точка — карточка точки
+/nb reread — перечитать сохранённые прайсы
 /memory — что я помню · /forget N — забыть
 /reminders — напоминания · /cancel N — отменить
 /tasks — задачи (канбан) · /task текст — новая задача

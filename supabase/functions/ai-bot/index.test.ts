@@ -1550,3 +1550,14 @@ D.test('only the needed functions go to the AI; unknown topic, photo, follow-up 
   eq(names('Привет, как дела?').length, total, 'nothing matched → every function');
   eq(names('Цена?', '', true).length, total, 'photo / correction → every function');
 });
+
+D.test('/nb reread: a saved price PDF is read again from Telegram, the reply shows what was recognised', async () => {
+  DB.ai_notebook.length = 0; M.NBC.clear();
+  DB.ai_notebook.push({ id: 41, chat_id: 111, title: 'MITANOL PRICE 7.pdf', kind: 'file', mime: 'application/pdf', tg_file_id: 'PDF41', sphere: 'work', content: '5 Ltr. 8,42 42,08 4\nMitanol S-Force 10W40' });
+  FILES.PDF41 = new Uint8Array([37, 80, 68, 70]);
+  GEM = () => say(`MOTOR OIL\n1 | Mitanol S-Force 10W40 Classic | 5 Ltr. | 8,42 | 42,08 | 4\n| | 4 Ltr. | 8,62 | 34,49 | 5\n4 | Mitanol X-Force 5W30 DX1 | 4 Ltr. | 11,83 | 47,33 | 5`);
+  await tgPost({ text: '/nb reread' });
+  assert(/распознал 3 позиц/.test(lastText()) && /\$47,33/.test(lastText()), 'reply: ' + lastText());
+  assert(DB.ai_notebook[0].content.includes('| 4 Ltr. |'), 'content replaced');
+  eq((await M.TOOLS.price_list.run(null, { product: '5 на 30 метанол' }, { chatId: 111 })).rows.map((r: any) => r.piece), [47.33], 'found after reread');
+});
