@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#0a0e1c">
+<title>JUMAVOY</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #0a0e1c; --panel: #121830; --panel2: #18203d; --line: #253058; --text: #e8ecf8; --mute: #8b94b8;
+    --accent: #38bdf8; --accent2: #0ea5e9; --me: #1d4ed8; --warn: #f59e0b; --bad: #f87171;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; height: 100dvh; }
+  header { display: flex; align-items: center; gap: 10px; padding: calc(10px + env(safe-area-inset-top)) 14px 10px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  header img { width: 32px; height: 32px; border-radius: 50%; }
+  header .name { font-weight: 700; letter-spacing: .06em; }
+  header .state { font-size: 12px; color: var(--mute); }
+  header .sp { flex: 1; }
+  .iconbtn { background: none; border: 1px solid var(--line); color: var(--text); border-radius: 10px; height: 36px; min-width: 36px; padding: 0 9px; font-size: 16px; }
+  .iconbtn.on { border-color: var(--accent); color: var(--accent); }
+  main { flex: 1; overflow-y: auto; padding: 14px 12px 8px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 88%; padding: 10px 12px; border-radius: 16px; white-space: pre-wrap; word-wrap: break-word; }
+  .me { align-self: flex-end; background: var(--me); border-bottom-right-radius: 4px; }
+  .bot { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .bot .tools { display: flex; gap: 8px; margin-top: 6px; }
+  .bot .tools button { background: var(--panel2); border: 1px solid var(--line); color: var(--mute); border-radius: 8px; font-size: 13px; padding: 3px 9px; }
+  .err { align-self: center; color: var(--bad); font-size: 14px; text-align: center; }
+  .note { align-self: center; color: var(--mute); font-size: 13px; text-align: center; max-width: 90%; }
+  .thinking { align-self: flex-start; color: var(--mute); font-size: 14px; }
+  .thinking::after { content: '…'; animation: dots 1.2s infinite steps(4); display: inline-block; width: 1.2em; overflow: hidden; vertical-align: bottom; }
+  @keyframes dots { from { width: 0 } to { width: 1.2em } }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding: 6px 12px; scrollbar-width: none; }
+  .chips button { flex: none; background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 7px 12px; font-size: 14px; }
+  footer { padding: 8px 12px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--bg); }
+  .row { display: flex; gap: 8px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; max-height: 120px; min-height: 44px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 11px 12px; font: inherit; outline: none; }
+  textarea:focus { border-color: var(--accent); }
+  .send { height: 44px; width: 44px; border-radius: 50%; border: none; background: var(--accent2); color: #fff; font-size: 18px; }
+  .micwrap { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 10px; }
+  .mic { width: 76px; height: 76px; border-radius: 50%; border: 2px solid var(--accent); background: radial-gradient(circle, #0ea5e9 0 55%, #0b3b5c 100%); color: #fff; font-size: 30px; box-shadow: 0 0 24px rgba(56,189,248,.35); transition: transform .15s; }
+  .mic.rec { background: radial-gradient(circle, #ef4444 0 55%, #5b1111 100%); border-color: #fca5a5; box-shadow: 0 0 calc(18px + var(--lvl, 0) * 40px) rgba(248,113,113,.6); transform: scale(calc(1 + var(--lvl, 0) * .12)); }
+  .mic.busy { opacity: .5; }
+  .hint { font-size: 13px; color: var(--mute); min-height: 18px; text-align: center; }
+  .setup { margin: auto; max-width: 420px; padding: 24px; text-align: center; }
+  .setup img { width: 96px; height: 96px; border-radius: 50%; }
+  .setup h1 { font-size: 22px; letter-spacing: .08em; margin: 14px 0 6px; }
+  .setup p { color: var(--mute); }
+  .setup input { width: 100%; margin: 12px 0; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; }
+  .setup button { width: 100%; padding: 12px; border-radius: 12px; border: none; background: var(--accent2); color: #fff; font: inherit; font-weight: 600; }
+  .menu { position: fixed; right: 12px; top: calc(56px + env(safe-area-inset-top)); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px; z-index: 5; min-width: 250px; }
+  .menu label, .menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; background: none; border: none; color: var(--text); font: inherit; text-align: left; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="setup" class="setup hidden">
+  <img src="icon-192.png" alt="">
+  <h1>JUMAVOY</h1>
+  <p>Ваш личный помощник. Чтобы подключить приложение, напишите боту в Telegram команду <b>/app</b> и вставьте сюда ссылку, которую он пришлёт.</p>
+  <input id="link" placeholder="https://…#c=…&k=…" autocomplete="off">
+  <button id="linkBtn">Подключить</button>
+  <p id="setupErr" class="err"></p>
+</div>
+
+<header id="head" class="hidden">
+  <img src="icon-192.png" alt="">
+  <div><div class="name">JUMAVOY</div><div class="state" id="state">готов</div></div>
+  <div class="sp"></div>
+  <button class="iconbtn on" id="voiceBtn" title="Ответ голосом">🔊</button>
+  <button class="iconbtn" id="menuBtn" title="Настройки">⋮</button>
+</header>
+<div class="menu hidden" id="menu">
+  <label><input type="checkbox" id="autoListen"> Слушать сразу при открытии</label>
+  <button id="newChat">🧹 Начать разговор заново</button>
+  <button id="clearLocal">🗑 Очистить экран</button>
+  <button id="logout">🔑 Отключить приложение</button>
+</div>
+<main id="log" class="hidden"></main>
+<div class="chips hidden" id="chips">
+  <button data-q="Кого сегодня дожимать?">Кого дожимать</button>
+  <button data-q="/dolg">Должники</button>
+  <button data-q="/plan">План</button>
+  <button data-q="Что мне сегодня сделать в первую очередь, чтобы продать больше?">Идея на сегодня</button>
+  <button data-q="/tasks">Задачи</button>
+  <button data-q="/reminders">Напоминания</button>
+</div>
+<footer id="foot" class="hidden">
+  <div class="row">
+    <textarea id="input" rows="1" placeholder="Спросите текстом…" enterkeyhint="send"></textarea>
+    <button class="send" id="sendBtn" aria-label="Отправить">➤</button>
+  </div>
+  <div class="micwrap">
+    <button class="mic" id="mic" aria-label="Говорить">🎤</button>
+    <div class="hint" id="hint">Нажмите и говорите — я сам пойму, когда вы закончили</div>
+  </div>
+</footer>
+
+<script>
+const API = 'https://oxchgcfyzszemqlvdjjr.supabase.co/functions/v1/ai-bot/app';
+const $ = id => document.getElementById(id);
+const store = {
+  get: (k, d) => { try { const v = localStorage.getItem('jv_' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem('jv_' + k, JSON.stringify(v)); } catch {} },
+  del: k => { try { localStorage.removeItem('jv_' + k); } catch {} },
+};
+const params = new URLSearchParams(location.search);
+const ASSIST = params.has('assist');            // opened by the Android assistant gesture / app → listen at once
+
+// ── the personal link: #c=<chat>&k=<key> (from /app in Telegram) ──
+function takeLink(s) {
+  const m = String(s || '').match(/[#&?]c=(\d+)&k=([0-9a-f]{32})/);
+  if (!m) return false;
+  store.set('chat', m[1]); store.set('key', m[2]); return true;
+}
+if (takeLink(location.hash)) history.replaceState(null, '', location.pathname + location.search);
+const creds = () => ({ chat: store.get('chat', ''), key: store.get('key', '') });
+
+function showApp(on) {
+  $('setup').classList.toggle('hidden', on);
+  for (const id of ['head', 'log', 'chips', 'foot']) $(id).classList.toggle('hidden', !on);
+}
+$('linkBtn').onclick = () => {
+  if (takeLink($('link').value)) { showApp(true); start(); }
+  else $('setupErr').textContent = 'Это не та ссылка. Скопируйте всю ссылку из ответа бота на /app.';
+};
+
+// ── chat log (kept on the phone) ──
+let history_ = store.get('log', []);
+const log = $('log');
+function bubble(m, save = true) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + (m.who === 'me' ? 'me' : 'bot');
+  d.textContent = m.text;
+  if (m.who === 'bot') {
+    const t = document.createElement('div'); t.className = 'tools';
+    const b = document.createElement('button'); b.textContent = '🔊 Прослушать'; b.onclick = () => speak(m.text, b);
+    t.append(b); d.append(t);
+  }
+  log.append(d); log.scrollTop = log.scrollHeight;
+  if (save) { history_.push(m); history_ = history_.slice(-60); store.set('log', history_); }
+  return d;
+}
+function note(text, cls = 'note') { const d = document.createElement('div'); d.className = cls; d.textContent = text; log.append(d); log.scrollTop = log.scrollHeight; return d; }
+
+// ── talking to JUMAVOY ──
+let busy = false;
+async function api(body) {
+  const c = creds();
+  const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': c.chat, 'x-app-key': c.key }, body: JSON.stringify(body) });
+  if (r.status === 401) { const j = await r.json().catch(() => ({})); throw Object.assign(new Error(j.error || 'Нет доступа'), { auth: true }); }
+  return r;
+}
+async function ask(body, shown) {
+  if (busy) return; busy = true; setState('думаю');
+  if (shown) bubble({ who: 'me', text: shown });
+  const th = note('JUMAVOY думает', 'thinking');
+  try {
+    const r = await api(body), j = await r.json().catch(() => ({}));
+    th.remove();
+    if (!r.ok) throw new Error(j.error || ('Ошибка ' + r.status));
+    if (j.heard !== undefined && body.audio) bubble({ who: 'me', text: j.heard ? '🎤 ' + j.heard : '🎤 …' });
+    bubble({ who: 'bot', text: j.text || '…' });
+    if (j.telegram) note('✉️ Черновик пришёл в Telegram — отправьте его там кнопкой «✅ Отправить».');
+    if (voiceOn && (body.audio || ASSIST) && j.text) speak(j.text);
+  } catch (e) {
+    th.remove(); note('⚠️ ' + e.message, 'err');
+    if (e.auth) { store.del('key'); setTimeout(() => showApp(false), 1500); }
+  } finally { busy = false; setState('готов'); }
+}
+function sendText() {
+  const t = $('input').value.trim(); if (!t) return;
+  $('input').value = ''; autosize(); ask({ text: t }, t);
+}
+$('sendBtn').onclick = sendText;
+$('input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); } });
+const autosize = () => { const i = $('input'); i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 120) + 'px'; };
+$('input').addEventListener('input', autosize);
+for (const b of $('chips').querySelectorAll('button')) b.onclick = () => ask({ text: b.dataset.q }, b.dataset.q);
+function setState(s) { $('state').textContent = s; }
+
+// ── voice answers ──
+let voiceOn = store.get('voice', true), player = null;
+const vb = $('voiceBtn');
+const paintVoice = () => { vb.classList.toggle('on', voiceOn); vb.textContent = voiceOn ? '🔊' : '🔇'; };
+vb.onclick = () => { voiceOn = !voiceOn; store.set('voice', voiceOn); if (!voiceOn && player) player.pause(); paintVoice(); };
+paintVoice();
+async function speak(text, btn) {
+  try {
+    if (player) { player.pause(); player = null; }
+    if (btn) btn.textContent = '⏳';
+    setState('озвучиваю');
+    const r = await api({ tts: text });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || 'не удалось озвучить'); }
+    const url = URL.createObjectURL(await r.blob());
+    player = new Audio(url);
+    player.onended = () => { URL.revokeObjectURL(url); setState('готов'); };
+    await player.play();
+    setState('говорю');
+  } catch (e) {
+    setState('готов');
+    if (e.name === 'NotAllowedError') note('Нажмите «🔊 Прослушать» под ответом — браузер не дал включить звук сам.');
+    else note('🔇 ' + e.message, 'err');
+  } finally { if (btn) btn.textContent = '🔊 Прослушать'; }
+}
+
+// ── microphone: tap, speak, it stops by itself after a pause ──
+let rec = null;
+const mic = $('mic'), hint = $('hint');
+async function listen() {
+  if (busy) return;
+  if (rec) return rec.stop(true);
+  if (player) player.pause();
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { note('🎤 Нет доступа к микрофону. Разрешите его в настройках браузера / приложения.', 'err'); return; }
+  const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+  const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined), chunks = [];
+  const ctx = new (window.AudioContext || window.webkitAudioContext)(); ctx.resume().catch(() => {});
+  const an = ctx.createAnalyser(); an.fftSize = 1024; ctx.createMediaStreamSource(stream).connect(an);
+  const buf = new Float32Array(an.fftSize);
+  let spoke = false, quietSince = performance.now(), cancelled = false, raf = 0;
+  const t0 = performance.now();
+  const loop = () => {
+    an.getFloatTimeDomainData(buf);
+    let s = 0; for (const v of buf) s += v * v;
+    const rms = Math.sqrt(s / buf.length), now = performance.now();
+    mic.style.setProperty('--lvl', Math.min(1, rms * 12).toFixed(2));
+    if (rms > 0.025) { spoke = true; quietSince = now; }
+    if (spoke && now - quietSince > 1400) return stop();            // a pause after speech → done
+    if (!spoke && now - t0 > 7000) { cancelled = true; return stop(); } // nothing said
+    if (now - t0 > 45000) return stop();                             // too long
+    raf = requestAnimationFrame(loop);
+  };
+  const stop = (manual) => { if (mr.state !== 'inactive') mr.stop(); };
+  mr.ondataavailable = e => e.data.size && chunks.push(e.data);
+  mr.onstop = async () => {
+    cancelAnimationFrame(raf); stream.getTracks().forEach(t => t.stop()); ctx.close().catch(() => {});
+    rec = null; mic.classList.remove('rec'); mic.style.removeProperty('--lvl'); hint.textContent = 'Нажмите и говорите — я сам пойму, когда вы закончили';
+    if (cancelled || !chunks.length) { setState('готов'); return; }
+    const blob = new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' });
+    const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
+    ask({ audio: b64, mime: blob.type });
+  };
+  rec = { stop: () => stop(true) };
+  mr.start(250); mic.classList.add('rec'); setState('слушаю'); hint.textContent = 'Говорите… (нажмите ещё раз, чтобы закончить)';
+  raf = requestAnimationFrame(loop);
+}
+mic.onclick = listen;
+
+// ── menu ──
+$('menuBtn').onclick = () => $('menu').classList.toggle('hidden');
+document.addEventListener('click', e => { if (!e.target.closest('#menu, #menuBtn')) $('menu').classList.add('hidden'); });
+$('autoListen').checked = store.get('autoListen', false);
+$('autoListen').onchange = e => store.set('autoListen', e.target.checked);
+$('newChat').onclick = () => { $('menu').classList.add('hidden'); ask({ text: '/new' }, '/new'); };
+$('clearLocal').onclick = () => { history_ = []; store.set('log', []); log.innerHTML = ''; $('menu').classList.add('hidden'); };
+$('logout').onclick = () => { store.del('key'); store.del('chat'); location.reload(); };
+
+// ── start ──
+function start() {
+  log.innerHTML = '';
+  for (const m of history_.slice(-30)) bubble(m, false);
+  if (!history_.length) note('Спросите что угодно: о клиентах, долгах, агентах, ценах, напоминаниях — голосом или текстом.');
+  if (ASSIST || store.get('autoListen', false)) setTimeout(listen, 250);
+}
+if (creds().key) { showApp(true); start(); } else showApp(false);
+// the Android app calls this when the assistant gesture opens an already running app
+window.jumavoyAssist = () => { if (!rec) listen(); };
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
