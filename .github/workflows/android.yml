@@ -1,0 +1,38 @@
+# JUMAVOY for Android: builds the APK from android/ and puts it on the release «jumavoy-app»:
+#   https://github.com/mital111222333/MitalCRM/releases/download/jumavoy-app/JUMAVOY.apk
+# Signed with the repository secrets ANDROID_KEYSTORE_B64 + ANDROID_KEYSTORE_PASS when they exist (then every new build
+# installs over the old one); without them with a one-off debug key (a new build needs the old app removed first).
+name: android
+on:
+  push:
+    branches: [main]
+    paths: ['android/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.11.1' }
+      - name: build
+        working-directory: android
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          VCODE: ${{ github.run_number }}
+        run: |
+          if [ -n "$KS_B64" ]; then echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/jv.jks"; export KS_FILE="$RUNNER_TEMP/jv.jks"; fi
+          gradle --no-daemon assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/JUMAVOY.apk"
+      - name: release
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          gh release delete jumavoy-app -y --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          gh release create jumavoy-app "$RUNNER_TEMP/JUMAVOY.apk" -R "$GITHUB_REPOSITORY" --latest=false \
+            -t "JUMAVOY для Android (сборка ${{ github.run_number }})" \
+            -n "Установите JUMAVOY.apk, откройте, вставьте ссылку из /app. Затем Настройки → Приложения по умолчанию → Цифровой помощник → JUMAVOY."

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+  <application android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
+      android:theme="@style/Theme.Jumavoy" android:allowBackup="false" android:usesCleartextTraffic="false">
+    <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+        android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode"
+        android:windowSoftInputMode="adjustResize">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+      <!-- the assistant gesture (long press of power / home, «Digital assistant app» = JUMAVOY) -->
+      <intent-filter>
+        <action android:name="android.intent.action.ASSIST" />
+        <category android:name="android.intent.category.DEFAULT" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.VOICE_COMMAND" />
+        <category android:name="android.intent.category.DEFAULT" />
+      </intent-filter>
+      <!-- «Share» the /app link from Telegram → the app is connected -->
+      <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="text/plain" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

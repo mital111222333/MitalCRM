@@ -1,0 +1,25 @@
+// JUMAVOY for Android: a thin shell around the JUMAVOY web app (jumavoy/ on GitHub Pages) that Android can use as the
+// default digital assistant (long press of the power / home button). No libraries — only the Android framework.
+plugins { id 'com.android.application' }
+
+def ks = System.getenv('KS_FILE')
+android {
+  namespace 'uz.mital.jumavoy'
+  compileSdk 35
+  defaultConfig {
+    applicationId 'uz.mital.jumavoy'
+    minSdk 26
+    targetSdk 35
+    versionCode((System.getenv('VCODE') ?: '1') as int)
+    versionName "1.${System.getenv('VCODE') ?: '0'}"
+  }
+  signingConfigs {
+    release {
+      if (ks) { storeFile file(ks); storePassword System.getenv('KS_PASS'); keyAlias 'jumavoy'; keyPassword System.getenv('KS_PASS') }
+    }
+  }
+  buildTypes {
+    release { minifyEnabled false; signingConfig ks ? signingConfigs.release : signingConfigs.debug }
+  }
+  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
