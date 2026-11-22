@@ -493,7 +493,7 @@ async function fileText(buf: Uint8Array, mime: string, name: string): Promise<st
   if (geminiReads(mime, ext)) {
     const d = await gemini({
       contents: [{ role: 'user', parts: [{ inlineData: { mimeType: /^image\//.test(mime) ? mime : 'application/pdf', data: b64(buf) } },
-        { text: 'Перепиши ВЕСЬ текст этого документа дословно, на языке оригинала. Таблицы — построчно, ячейки через « | ». Заголовки — с новой строки. Ничего не добавляй, не сокращай и не комментируй. Если текста нет — опиши, что изображено, в 2–3 предложениях.' }] }],
+        { text: 'Перепиши ВЕСЬ текст этого документа дословно, на языке оригинала. Таблицы — построчно, ячейки через « | », каждая строка таблицы — с новой строки, пустая ячейка — пустая между « | ». Если ячейка объединена на несколько строк (например, одно название товара на строки 5 л, 4 л, 208 л), повтори её текст в КАЖДОЙ из этих строк. Цены и числа переписывай точно, как в документе. Заголовки — с новой строки. Ничего не добавляй, не сокращай и не комментируй. Если текста нет — опиши, что изображено, в 2–3 предложениях.' }] }],
       generationConfig: { temperature: 0 },
     });
     return (d.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('').trim();
@@ -2765,6 +2765,9 @@ Object.assign(TOOLS, {
       const nb = ctx?.notebook || (sbOn() && ctx?.chatId ? await notebookOf(ctx.chatId) : []), pl = priceRows(nb);
       if (!pl.rows.length && !(a.product && priceLines(nb, String(a.product)).length)) return { error: 'В блокноте нет прайс-листа. Пришлите боту прайс файлом (PDF, фото или Excel) без подписи или с подписью «сохрани» — он сохранится, и цены будут браться из него.' };
       let rows = a.product ? priceMatch(pl.rows, String(a.product), true) : pl.rows;
+      // a viscosity or series the user named («5W-50», «X-Force») is the product itself: rows of other viscosities are not shown as its price
+      const visc = a.product ? priceKey(String(a.product)).filter(w => /^\d+w\d+$|^[xsm]force$/.test(w)) : [];
+      if (visc.length && rows.length) rows = rows.filter((r: any) => { const t = priceKey(r.name); return visc.every(w => t.includes(w)); });
       // a word of the query no table row has («Mitanol ATF» → «mitanol») — a loose match there would show another brand's
       // ATF. Such a product is looked for in the lines of the saved files first; found nowhere → the near rows are
       // shown, but marked as not the exact product
@@ -2777,6 +2780,14 @@ Object.assign(TOOLS, {
       // table rows — the lines of every saved file that mention the product go back to the AI, it reads them itself
       const raw = priceLines(nb, String(a.product));
       if (raw.length) return { product: a.product, found: 0, retry: true, raw_lines: raw, rule: 'Готовая таблица прайса не нашла товар, но в сохранённых файлах есть строки с ним (header — заголовок таблицы: что значат столбцы). Ответь цену по этим строкам точно как в файле: товар, объём, цена (за литр или за штуку — как в заголовке), источник в [квадратных скобках]. Сам ничего не пересчитывай и не придумывай. Если строки не про этот товар — скажи, что его нет в прайсе.' };
+      // our brand («Mitanol 5W-50»: every brand word is in the price list) but no such position — never a web search
+      // for our own product: the positions of that brand are shown so the AI can name what there is
+      const words = priceKey(String(a.product)).filter(w => /^[a-z]{3,}$/.test(w));
+      if (words.length && !missing.length) {
+        const near = pl.rows.filter((r: any) => { const t = priceKey(`${r.name} ${r.section || ''}`); return words.every(w => t.some(x => x === w || x.startsWith(w))); });
+        return { source: pl.source, date: pl.date, product: a.product, found: 0, rows: [], same_brand: near.slice(0, 30).map((r: any) => r.name),
+          rule: 'Такой позиции нет в прайсе MITAL, но бренд наш. Не ищи в интернете. Скажи, что точно такой позиции в прайсе нет, и перечисли похожие из same_brand (если пусто — назови бренды из прайса).' };
+      }
       // not MITAL's product (a competitor: Valvoline, Mobil, ROWE…) — its price is on the market, not in our files:
       // the AI goes to the web instead of answering «нет данных» (21.11: «валвалин 5га30 нархи» ended with a refusal)
       return { source: pl.source, date: pl.date, product: a.product, found: 0, rows: [], brands: priceBrands(pl.rows), files: priceFiles(nb), next: 'web_research',
@@ -2899,24 +2910,67 @@ Object.assign(TOOLS, {
 // Every notebook source with at least 3 such rows is a price list; a newer one replaces the same product of an older one.
 const PRICE_STOP = new Set(['narx', 'narxi', 'narxlari', 'narxini', 'prays', 'praysi', 'price', 'tsena', 'tseni', 'tsenu', 'sena', 'seni', 'senu', 'seny', 'tseny', 'stoimost', 'skolko', 'stoit', 'pochem', 'prays', 'praysdan', 'kakaya', 'kakie', 'qancha', 'kancha', 'necha', 'pul', 'turadi', 'moy', 'moyi', 'moylar', 'yog', 'maslo', 'masla', 'masel', 'na', 'ni', 'ning', 'va', 'i', 'dlya', 'list', 'listdan', 'mahsulot', 'tovar']);
 export function priceKey(s: any) {
-  let t = latin(s).replace(/[ʻʼ'’`‘"«»]/g, '').replace(/(\d+)\s*w\s*-?\s*(\d+)/g, '$1w$2').replace(/(\d+(?:[.,]\d+)?)\s*(?:l|litr|litrli|литр)\b\.?/g, '$1l');
+  let t = latin(s).replace(/[ʻʼ'’`‘"«»]/g, '').replace(/(\d+)\s*w\s*-?\s*(\d+)/g, '$1w$2')
+    // spoken viscosity: «5 на 30», «5ga30», «5 га 30», «5-30», «5/30», «10 40», «5в30» → 5w30 (only real SAE pairs)
+    .replace(/\b(0|5|10|15|20|25|75|80|85)\s*(?:na|ga|v|x|-|\/)?\s*(20|30|40|50|60|80|90|140)\b/g, '$1w$2')
+    .replace(/(\d+(?:[.,]\d+)?)\s*(?:l|ltr|lt|litr\w*)\b\.?/g, '$1l');
+  // brands and series as they are said or misheard: «метанол» = Mitanol, «икс форс» = X-Force, «декстрон» = Dexron
+  t = t.replace(/\b(m[ie]t[ao]n[ao]l\w*|mitonol\w*|mytanol\w*)\b/g, 'mitanol')
+    .replace(/\b(x|iks|eks|s|es|m|em)\s*-?\s*(force|fors|fors\w*)\b/g, (_m, a) => (({ iks: 'x', eks: 'x', es: 's', em: 'm' } as any)[a] ?? a) + 'force')
+    .replace(/\b(d[ei]k?str?on|dekstron|deksron|dexron)\b/g, 'dexron').replace(/\b(antifri[sz]\w*|antifreeze)\b/g, 'antifreeze')
+    .replace(/\b(sin|syn)\s*-?\s*(gear|gir)\b/g, 'syngear').replace(/\bturbo\w*\b/g, 'turbo');
   t = t.replace(/\bgb\b/g, 'golden booster').replace(/\bleman\b/g, 'liman').replace(/\bdelfin\b/g, 'delpin').replace(/\bbu+ster\b/g, 'booster')
     .replace(/\b(qizil|kizil|krasn\w*|red)\b/g, 'red').replace(/\b(binafsha\w*|siyox\w*|siyoh\w*|fiolet\w*|purpur\w*|purple)\b/g, 'purple')
     .replace(/\b(gibrid\w*|hybrid)\b/g, 'hybrid').replace(/\b(yashil|zelen\w*)\b/g, 'green');
   return t.split(/[^a-z0-9]+/).filter(w => w && !PRICE_STOP.has(w));
 }
+// one table line of a price list → { name, vol, v: [numbers] } or null. Layouts:
+//   «7 | GOLDEN BOOSTER ATF … - 4L | 8,88 | 35,53 | 4»                 № | name | per litre | per piece | in a box
+//   «1 | Mitanol S-Force 10W40 … | 5 Ltr. | 8,42 | 42,08 | 4»          № | name | volume | per litre | per piece | in a box
+//   «| | 4 Ltr. | 8,62 | 34,49 | 5»                                     next volume of the product above (merged name cell)
+// A row with a name needs its № or a volume cell; a row without a name needs a volume cell — so promo sheets and
+// stray number lines are never read as prices.
+const PRICE_NUM = /^\$?\s*\d[\d\s]*(?:[.,]\d+)?\s*\$?$/, PRICE_VOL = /^\d+(?:[.,]\d+)?\s*(?:l|ltr|lt|л|литр\S*|litr\S*)\.?$/i;
+export function priceLine(line: string) {
+  if (!line.includes('|')) return null;
+  const cells = line.split('|').map(c => c.trim());
+  while (cells.length && !cells[cells.length - 1]) cells.pop();
+  const v: number[] = [];
+  while (cells.length && PRICE_NUM.test(cells[cells.length - 1]) && v.length < 3) v.unshift(parseFloat(cells.pop()!.replace(/[\s$]/g, '').replace(',', '.')));
+  if (v.length < 2 || v.some(x => !Number.isFinite(x))) return null;
+  const vol = cells.length && PRICE_VOL.test(cells[cells.length - 1]) ? cells.pop()!.replace(/\s+/g, ' ') : '';
+  const first = cells.findIndex(c => c), num = first >= 0 && /^\d+\.?$/.test(cells[first]);
+  const name = cells.slice(num ? first + 1 : 0).filter(Boolean).join(' ').replace(/["«»]/g, '').replace(/\s+/g, ' ').trim();
+  if (name && !/[a-zа-яё]/i.test(name)) return null;
+  if (name ? !(num || vol) : !vol) return null;
+  return { name, vol, v };
+}
 export function priceRows(notebook: any[]) {
   const map = new Map<string, any>(); let source = '', date = '';
   for (const doc of [...(notebook || [])].sort((a, b) => n(a.id) - n(b.id))) {
-    const found: any[] = []; let section = '';
+    const found: any[] = []; let section = '', last = '', orphans: any[] = [];
     const d = (String(doc.content || '').match(/\b(\d{2}\.\d{2}\.\d{4})\b/) || [])[1] || '';
     for (const line of String(doc.content || '').split(/\r?\n/)) {
-      const m = line.match(/^\s*\d+\s*\|\s*(.+?)\s*\|\s*(\d+(?:[.,]\d+)?)\s*\|\s*(\d+(?:[.,]\d+)?)\s*(?:\|\s*(\d+(?:[.,]\d+)?)\s*)?\|?\s*$/);
-      if (!m) { if (line.trim() && !line.includes('|') && !/^\d{2}\.\d{2}\.\d{4}/.test(line.trim())) section = line.trim(); continue; }
-      const v = [m[2], m[3], m[4]].filter(Boolean).map(x => parseFloat(x.replace(',', '.')));
-      const name = m[1].replace(/["«»]/g, '').replace(/\s+/g, ' ').trim();
-      const row = v.length === 3 ? { name, liter: Math.min(v[0], v[1]), piece: Math.max(v[0], v[1]), box: v[2] } : { name, piece: v[0], box: v[1] };
-      found.push({ ...row, section, box_price: row.box ? r2(row.piece * row.box) : undefined });
+      const p = priceLine(line);
+      if (!p) {
+        const t = line.trim();
+        // a text line ends the product above (its merged name is not carried over); notes under a product
+        // («Empfehlung*: MB 229.1…», «Entspricht…») and long tolerance lists are not brand sections
+        if (t) last = '';
+        if (t && !t.includes('|') && !/^\d{2}\.\d{2}\.\d{4}/.test(t) && !/^(empfehl|entspr|рекоменд|допуск)/i.test(t) && t.length <= 80) section = t;
+        continue;
+      }
+      // «| | 4 Ltr. | 8,62 | 34,49 | 5» — the next volume of the product above (a merged name cell in the PDF).
+      // No product above yet (the name sat in the middle of the merged cell) → it waits for the next named row.
+      let base = p.name;
+      if (!base) { if (last) base = last; else { orphans.push({ p, section }); continue; } } else { last = base; }
+      const add = (q: any, sec: string, nm: string) => {
+        const name = q.vol ? `${nm} — ${q.vol}` : nm;
+        const v = q.v, row = v.length === 3 ? { name, liter: Math.min(v[0], v[1]), piece: Math.max(v[0], v[1]), box: v[2] } : { name, piece: v[0], box: v[1] };
+        found.push({ ...row, section: sec, box_price: row.box ? r2(row.piece * row.box) : undefined });
+      };
+      for (const o of orphans.splice(0)) add(o.p, o.section, base);
+      add(p, section, base);
     }
     if (found.length < 3) continue;
     source = doc.title || 'прайс-лист'; date = d;
@@ -3013,6 +3067,38 @@ const declarations = Object.entries(TOOLS).map(([name, t]) => ({
   name, description: t.desc,
   parameters: { type: 'object', properties: { ...t.params, ...SERVICE }, required: REQUIRED[name] || [] },
 }));
+
+// ── only the functions a question needs. 74 descriptions in every request confuse a light model (it picks a near
+// function, mixes rules) and cost ~6k tokens a step. CORE is always there; a group is added when the question (or the
+// previous one — «а у второго?») names its topic. Nothing but CORE matched, a photo / file / voice, a correction →
+// every function, as before. A function named in a result's «next» is added on the following step.
+const CORE = ['find_client', 'client_card', 'crm_query', 'crm_explore', 'data_status', 'price_list', 'notebook_search', 'remember', 'memory_list', 'bot_help', 'skill_use', 'web_research'];
+export const TOOL_GROUPS: [RegExp, string[]][] = [
+  [/агент|продаж|план|заказ|оплат|долг|дебитор|должник|клиент|собра|сбор|дожим|обещ|зарплат|опозд|дисципл|лидер|сигнал|склад|остат|товар|переста|давно|сделал|выполн|итог|отчёт|отчет|топ|договор|рассроч|savdo|qarz|mijoz|agent|reja|buyurtma|to.?lov|ombor|qoldiq|shartnoma|maosh|oylik|ish haqi/i,
+    ['orders', 'payments', 'agent_report', 'agents_overview', 'debtors', 'collect_today', 'sleeping_clients', 'top_products', 'stock', 'plan_forecast', 'stopped_clients', 'stock_running_out', 'promises', 'crm_salary', 'crm_discipline', 'crm_leaderboard', 'crm_signals', 'crm_payment_calendar', 'crm_tasks', 'client_info', 'client_info_add', 'client_info_delete', 'send_contract_files', 'send_once_contract']],
+  [/напиш|отправ|скажи|сообщ|задани|пометк|запиши|поставь|передай|yoz|yubor|ayt|xabar|topshiriq/i, ['message_agent', 'crm_task', 'crm_note', 'message_client', 'client_info_add']],
+  [/задач|канбан|доск|vazifa|ish ro.?yxat/i, ['task_add', 'task_list', 'task_set', 'task_delete']],
+  [/напом|будильн|eslat|budilnik/i, ['reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel']],
+  [/занял|одолж|в долг|дал |вернул|должен мне|мне должн|долг|qarz|berdim|oldim|qaytar/i, ['personal_debt_add', 'personal_debts', 'personal_debt_delete']],
+  [/запомн|забуд|забыть|помниш|памят|узнал обо мне|eslab|esla|unut|yodla|xotira/i, ['remember', 'forget', 'memory_list']],
+  [/фото|файл|документ|блокнот|пришли|прайс|notebooklm|rasm|fayl|hujjat|yubor/i, ['save_photo', 'send_saved_file', 'notebook_search', 'notebooklm_export']],
+  [/oilbook|oil ?book|точк|замен\S* масл|moyxona|moy almashtir/i, ['oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action']],
+  [/цен|прайс|стоит|почём|почем|narx|prays|акци|aksiya|промо|скидк|бонус|chegirma|bonus/i, ['price_list', 'promo_calc']],
+  [/интернет|найди|поищи|исслед|погод|курс|доллар|новост|ob-?havo|kurs|yangilik|sayt|сайт|https?:|конкурент|рынок|bozor/i, ['web_research', 'open_page', 'weather', 'currency_rates', 'news']],
+  [/календар|встреч|событ|письм|почт|gmail|контакт|телефон|день рожд|uchrashuv|xat|tug.?ilgan/i, ['calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search']],
+  [/навык|научи|skill|отчёт|отчет|разбер|hisobot|o.?rgan/i, ['skill_use', 'skill_add', 'skill_list', 'skill_delete']],
+];
+export function toolsFor(text: string, prev = '', all = false): any[] {
+  if (all || !String(text || '').trim()) return declarations;
+  const t = `${text}\n${prev}`, names = new Set(CORE);
+  let hit = false;
+  for (const [re, g] of TOOL_GROUPS) if (re.test(t)) { hit = true; g.forEach(x => names.add(x)); }
+  return hit ? declarations.filter(d => names.has(d.name)) : declarations;
+}
+const addTools = (decl: any[], more: string[]) => {
+  const have = new Set(decl.map(d => d.name)), add = declarations.filter(d => more.includes(d.name) && !have.has(d.name));
+  return add.length ? [...decl, ...add] : decl;
+};
 
 // ───────────────────────────── ready answers (no second AI request) ─────────────────────────────
 const $ = (v: any) => '$' + Math.round(n(v)).toLocaleString('ru-RU').replace(/ /g, ' ');
@@ -3592,12 +3678,15 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
   const model = (fix || isHardQuestion(qText)) && smartOn() ? smartModel() : CFG.model();
   const used: string[] = [], sys = systemPrompt(db, mem, skills), files: string[] = [];
   const wantXls = EXCEL_Q.test(qText);
+  const prevQ = [...hist].reverse().find((h: any) => h.role === 'user')?.parts?.map((p: any) => p.text || '').join(' ') || '';
+  const media0 = userParts.some((p: any) => p.inlineData || p.fileData);
+  let decl = toolsFor(qText === '[голосовое]' ? '' : qText, prevQ, fix || media0 || !!media);
   let requests = 0, checked = false;
   for (let step = 0; step < 7; step++) {
     requests++;
     const d = await gemini({
       systemInstruction: { parts: [{ text: sys }] }, contents,
-      tools: [{ functionDeclarations: declarations }], generationConfig: { temperature: 0.1 },
+      tools: [{ functionDeclarations: decl }], generationConfig: { temperature: 0.1 },
     }, model);
     const content = d.candidates?.[0]?.content;
     if (!content?.parts?.length) throw new Error('Gemini не ответил' + (d.promptFeedback?.blockReason ? ': ' + d.promptFeedback.blockReason : ''));
@@ -3639,6 +3728,8 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       }
       requests += n(result?.ai_requests); // web research spends its own Gemini requests — they count for this answer too
       done.push({ name, args, result });
+      if (result?.next) decl = addTools(decl, String(result.next).split(/[,\s]+/));
+      if (name === 'skill_use' || name === 'bot_help') decl = declarations; // a skill's steps may need any function
       responses.push({ functionResponse: { name, response: { result } } });
     }
     // simple question → answer from the template right away, without a second Gemini request
@@ -4204,13 +4295,22 @@ async function nbCommand(chatId: number, arg: string, reply: any): Promise<strin
     'Спросить: просто задайте вопрос («какие условия акции?») — отвечу по блокноту и укажу источник.',
     'Удалить: /nb del номер · Файл с цифрами CRM для Google NotebookLM: /notebooklm'].join('\n\n');
 }
+// a saved price list is checked at once: how many positions the code read and a few of them, so a wrong reading
+// (a column taken for another, a lost volume) is seen the day it is sent, not when an agent asks a price
+export function priceCheck(text: string, title: string) {
+  const rows = priceRows([{ id: 1, title, content: text }]).rows;
+  if (rows.length < 3) return '';
+  const fmt = (v: any) => '$' + Number(v).toFixed(2).replace('.', ',');
+  const step = Math.max(1, Math.floor(rows.length / 5)), show = rows.filter((_: any, i: number) => i % step === 0).slice(0, 5);
+  return `💰 Прайс: распознал ${rows.length} позиций. Проверьте несколько:\n${show.map((r: any) => `• ${r.name} — ${fmt(r.piece)}${r.liter ? ` (${fmt(r.liter)}/л)` : ''}`).join('\n')}\nЕсли цифры не те — пришлите прайс ещё раз (лучше Excel).\n\n`;
+}
 async function nbFile(chatId: number, doc: any, photo: any, title?: string): Promise<string> {
   const name = doc?.file_name || `Фото ${dm(todayStr())}`, mime = doc?.mime_type || 'image/jpeg', ext = extOf(name);
   const buf = await tgDownload(doc?.file_id || photo.file_id, geminiReads(mime, ext) ? 14e6 : 19.5e6);
   const text = await fileText(buf, mime, name);
   const tagged = sphereTagged(title || ''), only = sphereWord(title || ''), sphere = tagged.sphere || only;
   const s = await nbAdd(chatId, { title: (only ? '' : tagged.rest) || name, kind: 'file', content: text, tg_file_id: doc?.file_id || photo.file_id, mime, sphere: sphere || undefined });
-  return `📚 Добавил в блокнот${sphere && sphere !== 'work' ? ` (${SPH[sphere]})` : ''} #${s.id}: ${s.title} (${s.chars.toLocaleString('ru-RU')} знаков)${s.cut ? ' — документ очень длинный, сохранил первые 400 000 знаков' : ''}.\nТеперь спрашивайте по нему — отвечу со ссылкой на источник. Список: /nb`;
+  return priceCheck(text, s.title) + `📚 Добавил в блокнот${sphere && sphere !== 'work' ? ` (${SPH[sphere]})` : ''} #${s.id}: ${s.title} (${s.chars.toLocaleString('ru-RU')} знаков)${s.cut ? ' — документ очень длинный, сохранил первые 400 000 знаков' : ''}.\nТеперь спрашивайте по нему — отвечу со ссылкой на источник. Список: /nb`;
 }
 
 const HELP = `Я ${CFG.name} — ваш личный AI-помощник: работа (MITAL CRM), личное, семья, друзья и бизнес-идеи. Спрашивайте текстом, голосом, фото или документом (русский / узбекский). На голосовое отвечаю и голосом:

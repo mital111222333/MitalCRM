@@ -1513,3 +1513,40 @@ D.test('client base through the AI: a told price is saved (no price-list self-ch
   assert(doc && /База_клиентов/.test(doc.body.caption), 'Excel sent'); assert(/Excel-файл отправлен/.test(lastText()), lastText());
   DB.ai_client_info = []; GEM = () => say('ok');
 });
+
+D.test('price list: Mitanol layout (volume column, merged name cells) and spoken names («5 на 30 метанол»)', async () => {
+  const doc = { id: 7, title: 'MITANOL PRICE 7.pdf', content: `12.05.2026
+MOTOR OIL
+№ | Наименование | объём | литр | 1л | шт. в коробке
+1 | Mitanol S-Force 10W40 Classic - ACEA A3/B4 · API SL/CF | 5 Ltr. | 8,42 | 42,08 | 4
+| | 4 Ltr. | 8,62 | 34,49 | 5
+| | 208 Ltr. | 7,62 | 1585,56 | 1
+Empfehlung*: MB 229.1, VW 505 00
+| | 5 Ltr. | 11,59 | 57,96 | 4
+4 | Mitanol X-Force 5W30 DX1 - API SP • ILSAC GF-6A | 4 Ltr. | 11,83 | 47,33 | 5
+Empfehlung*: GM dexos1
+GB ATF | 12 | 383.72` }, ctx = { notebook: [doc] };
+  const rows = M.priceRows([doc]).rows;
+  eq(rows.map((r: any) => r.piece), [42.08, 34.49, 1585.56, 57.96, 47.33], 'every volume is a row; the orphan 5 L row joins the name below it');
+  eq(rows[1].name, 'Mitanol S-Force 10W40 Classic - ACEA A3/B4 · API SL/CF — 4 Ltr.', 'merged name + volume');
+  const p = async (q: string) => (await M.TOOLS.price_list.run(null, { product: q }, ctx)).rows?.map((r: any) => r.piece);
+  eq(await p('5 на 30 метанол'), [57.96, 47.33], '«5 на 30» = 5W-30, «метанол» = Mitanol');
+  eq(await p('mitanol 5ga30 4 litr'), [47.33], 'Uzbek «5ga30» and the volume');
+  eq(await p('митанол икс форс 10 40 208'), [], 'X-Force has no 10W-40: S-Force is not shown as it');
+  eq(await p('Mitanol 10-40 208 литр'), [1585.56], '208 L');
+  const r = await M.TOOLS.price_list.run(null, { product: 'метанол 5w50' }, ctx);
+  assert(r.found === 0 && !r.next && r.same_brand.length === 5, 'our brand, no such position — no web search: ' + JSON.stringify(r));
+});
+
+D.test('only the needed functions go to the AI; unknown topic, photo, follow-up keep what is needed', () => {
+  const names = (q: string, prev = '', all = false) => M.toolsFor(q, prev, all).map((d: any) => d.name);
+  const total = M.toolsFor('', '').length;
+  const p = names('Сколько стоит 5 на 30 метанол?');
+  assert(p.includes('price_list') && p.includes('promo_calc') && !p.includes('oilbook_action') && p.length < total / 2, 'price: ' + p.length);
+  const d = names('Кто из должников старше 30 дней в Намангане?');
+  assert(d.includes('debtors') && d.includes('collect_today') && !d.includes('calendar_add'), 'debts');
+  assert(names('Напомни завтра в 10 позвонить Fozilxon').includes('reminder_add'), 'reminder');
+  assert(names('а у второго?', 'Сколько сделал Адхамжон за период?').includes('agent_report'), 'follow-up uses the previous question');
+  eq(names('Привет, как дела?').length, total, 'nothing matched → every function');
+  eq(names('Цена?', '', true).length, total, 'photo / correction → every function');
+});
