@@ -231,3 +231,9 @@ Mital AI — уже не только рабочий бот: сферы work / p
 - `ideaOfDay` в 13:00 (`IDEA_HOUR`): 1 запрос Gemini — картина CRM + память о владельце → одна идея.
 - 👎 → правило в памяти «🔕 Не присылать первым: <тип>»; `/pings off|on|N` → правило «🔔 Сообщения первым: …». Всё видно в /memory, снимается /forget.
 - Дальше: шаг 4 — Android-приложение (PWA + обёртка, ассистент по умолчанию, голос).
+
+## Обновление 22.11.2026: шаг 4 — приложение JUMAVOY (PWA + Android)
+- API: `<function url>/app` (`appApi`): `{text}` / `{audio, mime}` → `{text, heard}`; `{tts}` → audio/wav. Доступ: заголовки `x-app-chat` + `x-app-key` = HMAC(TG_SECRET, "jumavoy-app:<chat>") — новых секретов не нужно; смена TG_SECRET отзывает все ссылки. История общая с Telegram; черновики людям приходят в Telegram с кнопкой.
+- `/app` в Telegram → личная ссылка `https://mital111222333.github.io/MitalCRM/jumavoy/#c=<chat>&k=<key>` (`APP_URL`, `APK_URL`).
+- PWA: `jumavoy/` (index.html, manifest, sw.js, иконки). Микрофон с автостопом по паузе (1,4 с), ответ голосом, `?assist=1` — слушать сразу, `window.jumavoyAssist()`.
+- Android: `android/` — WebView-обёртка без библиотек (Java, minSdk 26), intent-filter ASSIST / VOICE_COMMAND (назначается «Цифровым помощником»), SEND (поделиться ссылкой /app), разблокировка через requestDismissKeyguard. Сборка: `.github/workflows/android.yml` → релиз `jumavoy-app`, файл JUMAVOY.apk. Подпись: секреты `ANDROID_KEYSTORE_B64` + `ANDROID_KEYSTORE_PASS`, если есть; иначе разовый debug-ключ (новая версия ставится после удаления старой).
