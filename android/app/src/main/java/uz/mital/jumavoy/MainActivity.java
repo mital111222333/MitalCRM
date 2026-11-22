@@ -57,6 +57,7 @@ public class MainActivity extends Activity {
     });
     voice = new Voice(this, web);
     web.addJavascriptInterface(voice, "JumavoyNative"); // the phone's speech recognition and voice (Voice.java)
+    web.addJavascriptInterface(new Device(this), "JumavoyDevice"); // alarm, timer, calendar, call, SMS, route, apps (Device.java)
     setContentView(web);
     if (b != null) web.restoreState(b);
     open(getIntent(), b == null);

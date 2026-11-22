@@ -686,7 +686,7 @@ const WRITES = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'rem
 // tools that do not need the CRM data: when GitHub / LINKO is down they keep working (reminders, personal money, tasks,
 // notebook, the outside world, Google); every other tool then answers with the data error instead of zeros
 const NO_CRM = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel',
-  'personal_debt_add', 'personal_debts', 'personal_debt_delete', 'notebook_search', 'save_photo', 'send_saved_file', 'web_research', 'open_page', 'weather', 'promo_calc', 'price_list',
+  'personal_debt_add', 'personal_debts', 'personal_debt_delete', 'phone_action', 'notebook_search', 'save_photo', 'send_saved_file', 'web_research', 'open_page', 'weather', 'promo_calc', 'price_list',
   'currency_rates', 'news', 'skill_use', 'skill_add', 'skill_list', 'skill_delete', 'calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search',
   'oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action', 'client_info_add', 'client_info', 'client_info_delete']);
 
@@ -1120,10 +1120,10 @@ export async function appApi(req: Request) {
     const quick = text.startsWith('/') ? await command(text, chatId) : null;
     if (quick) return out({ text: quick, heard: heard || undefined, ms: Date.now() - t0 });
     const [db] = await Promise.all([loadDB(), getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
-    const res = await ask(db, chatId, [{ text: heard ? `(голосовое сообщение, расшифровка) ${heard}` : text }], text);
+    const res = await ask(db, chatId, [{ text: `[приложение] ${heard ? `(голосовое сообщение, расшифровка) ${heard}` : text}` }], text, undefined, true);
     // a keyboard a tool prepared (a task card, a reminder) goes to Telegram with the answer, where its buttons work
     if (KB.has(chatId)) await say(chatId, `📱 Из приложения: ${heard || text}\n\n${res.text}`);
-    return out({ text: res.text, heard: heard || undefined, ms: Date.now() - t0, requests: res.requests, telegram: res.used.some((x: string) => ['message_agent', 'crm_task', 'crm_note', 'message_client', 'oilbook_action'].includes(x)) || undefined });
+    return out({ text: res.text, heard: heard || undefined, ms: Date.now() - t0, requests: res.requests, actions: res.actions?.length ? res.actions : undefined, telegram: res.used.some((x: string) => ['message_agent', 'crm_task', 'crm_note', 'message_client', 'oilbook_action'].includes(x)) || undefined });
   } catch (e) {
     console.error('app', redact((e as Error)?.stack || e));
     return out({ error: redact((e as Error).message) || 'Ошибка' }, 500);
@@ -1879,6 +1879,41 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       if (!sbOn()) return { error: NO_DB }; MEM.delete(ctx.chatId);
       const sph = SPHERES.includes(a.sphere) ? a.sphere : '', rows = (await memoryOf(ctx.chatId)).filter(r => !sph || (r.sphere || 'work') === sph);
       return { sphere: sph || undefined, facts: rows.filter(r => r.kind === 'fact'), rules: rows.filter(r => r.kind === 'rule') };
+    },
+  },
+  phone_action: {
+    desc: 'ДЕЙСТВИЕ НА ТЕЛЕФОНЕ пользователя (только в приложении JUMAVOY на Android): поставить БУДИЛЬНИК («разбуди в 6:30», «будильник по будням на 7»), ТАЙМЕР («таймер на 10 минут»), событие в КАЛЕНДАРЬ ТЕЛЕФОНА, ПОЗВОНИТЬ (набрать номер), написать SMS, МАРШРУТ / навигация до места, ОТКРЫТЬ ПРИЛОЖЕНИЕ. «Напомни …» без слова «будильник» — это reminder_add, не сюда. Номер клиента бери из client_card / find_client, если назван клиент.',
+    params: {
+      action: { type: 'string', enum: ['alarm', 'timer', 'calendar', 'call', 'sms', 'navigate', 'open_app'] },
+      hour: { type: 'number', description: 'alarm: час 0–23' }, minute: { type: 'number', description: 'alarm: минуты' },
+      days: { type: 'array', items: { type: 'string', enum: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] }, description: 'alarm: дни повтора («по будням» = mon…fri); пусто — один раз' },
+      seconds: { type: 'number', description: 'timer: длительность в секундах' },
+      label: { type: 'string', description: 'подпись будильника / таймера, текст SMS' },
+      title: { type: 'string', description: 'calendar: название события' }, start: { type: 'string', description: 'calendar: YYYY-MM-DDTHH:MM, местное время' },
+      duration_min: { type: 'number', description: 'calendar: длительность, по умолчанию 60' }, place: { type: 'string', description: 'calendar: место; navigate: куда ехать' },
+      phone: { type: 'string', description: 'call / sms: номер телефона' }, app: { type: 'string', description: 'open_app: название приложения, как сказал пользователь (Telegram, LINKO, Карты…)' },
+    },
+    run(_db: any, a: any, ctx: any) {
+      if (!ctx?.app) return { error: 'Это делает только приложение JUMAVOY на телефоне (кнопка питания или иконка). Здесь, в Telegram, могу поставить напоминание — скажите «напомни …».' };
+      const act = String(a.action || ''), x: any = { action: act };
+      if (act === 'alarm') {
+        const h = Math.round(n(a.hour)), m = Math.round(n(a.minute));
+        if (a.hour == null || h < 0 || h > 23 || m < 0 || m > 59) return { error: 'На какое время поставить будильник?' };
+        Object.assign(x, { hour: h, minute: m, days: (Array.isArray(a.days) ? a.days : []).filter((d: string) => /^(mon|tue|wed|thu|fri|sat|sun)$/.test(d)), label: String(a.label || CFG.name).slice(0, 60) });
+      } else if (act === 'timer') {
+        const sec = Math.round(n(a.seconds)); if (sec < 1 || sec > 86400) return { error: 'На сколько поставить таймер?' };
+        Object.assign(x, { seconds: sec, label: String(a.label || '').slice(0, 60) });
+      } else if (act === 'calendar') {
+        const st = localToUtc(String(a.start || '')); if (!st || !String(a.title || '').trim()) return { error: 'Какое событие и когда?' };
+        Object.assign(x, { title: String(a.title).slice(0, 200), start_ms: st.getTime(), end_ms: st.getTime() + (n(a.duration_min) || 60) * 60e3, place: a.place || '', when: nowTime(st.toISOString()) });
+      } else if (act === 'call' || act === 'sms') {
+        const ph = String(a.phone || '').replace(/[^\d+]/g, ''); if (ph.replace(/\D/g, '').length < 5) return { error: 'Какой номер? Назовите номер или клиента.' };
+        Object.assign(x, { phone: ph, label: act === 'sms' ? String(a.label || '').slice(0, 700) : undefined });
+      } else if (act === 'navigate') { if (!String(a.place || '').trim()) return { error: 'Куда проложить маршрут?' }; x.place = String(a.place).slice(0, 200); }
+      else if (act === 'open_app') { if (!String(a.app || '').trim()) return { error: 'Какое приложение открыть?' }; x.app = String(a.app).slice(0, 60); }
+      else return { error: 'Не понял, что сделать на телефоне' };
+      ctx.actions.push(x);
+      return { done_on_phone: x };
     },
   },
   reminder_add: {
@@ -3132,6 +3167,7 @@ export const TOOL_GROUPS: [RegExp, string[]][] = [
   [/напиш|отправ|скажи|сообщ|задани|пометк|запиши|поставь|передай|yoz|yubor|ayt|xabar|topshiriq/i, ['message_agent', 'crm_task', 'crm_note', 'message_client', 'client_info_add']],
   [/задач|канбан|доск|vazifa|ish ro.?yxat/i, ['task_add', 'task_list', 'task_set', 'task_delete']],
   [/напом|будильн|eslat|budilnik/i, ['reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel']],
+  [/будильн|разбуди|таймер|позвони|набери|звонок|смс|sms|маршрут|навигац|довези|как доехать|открой|запусти|календар|budilnik|uyg.?ot|taymer|qo.?ng.?iroq|telefon qil|yo.?l\b|xarita|och\b|ochib/i, ['phone_action', 'find_client', 'client_card', 'calendar_add']],
   [/занял|одолж|в долг|дал |вернул|должен мне|мне должн|долг|qarz|berdim|oldim|qaytar/i, ['personal_debt_add', 'personal_debts', 'personal_debt_delete']],
   [/запомн|забуд|забыть|помниш|памят|обо мне|знаешь|eslab|esla|unut|yodla|xotira/i, ['remember', 'forget', 'memory_list']],
   [/фото|файл|документ|блокнот|пришли|прайс|notebooklm|rasm|fayl|hujjat|yubor/i, ['save_photo', 'send_saved_file', 'notebook_search', 'notebooklm_export']],
@@ -3325,6 +3361,17 @@ const TPL: Record<string, (r: any) => string> = {
   client_info_delete: r => r.error ? '⚠️ ' + r.error : `🗑 Удалил запись #${r.deleted} у ${r.client}: ${r.text}`,
   remember: r => `🧠 Запомнил${r.kind === 'rule' ? ' правило' : ''} #${r.saved}${r.sphere && r.sphere !== 'work' ? ` (${SPH[r.sphere]})` : ''}: ${r.text}${r.until ? ` (до ${dm(r.until)})` : ''}`,
   forget: r => `🗑 Забыл #${r.deleted}: ${r.text}`,
+  phone_action: r => {
+    const x = r.done_on_phone || {}, two = (v: number) => String(v).padStart(2, '0');
+    const D: any = { mon: 'пн', tue: 'вт', wed: 'ср', thu: 'чт', fri: 'пт', sat: 'сб', sun: 'вс' };
+    return x.action === 'alarm' ? `⏰ Будильник на ${two(x.hour)}:${two(x.minute)}${x.days?.length ? ` (${x.days.map((d: string) => D[d]).join(', ')})` : ''}${x.label && x.label !== CFG.name ? ` — «${x.label}»` : ''}.`
+      : x.action === 'timer' ? `⏱ Таймер на ${x.seconds >= 3600 ? `${Math.floor(x.seconds / 3600)} ч ` : ''}${Math.floor(x.seconds % 3600 / 60) ? `${Math.floor(x.seconds % 3600 / 60)} мин ` : ''}${x.seconds % 60 ? `${x.seconds % 60} с` : ''}`.trim() + '.'
+      : x.action === 'calendar' ? `📅 Открываю календарь телефона: «${x.title}», ${x.when}${x.place ? `, ${x.place}` : ''}. Нажмите «Сохранить».`
+      : x.action === 'call' ? `📞 Набираю ${x.phone} — нажмите вызов.`
+      : x.action === 'sms' ? `✉️ SMS на ${x.phone} готово — проверьте текст и отправьте.`
+      : x.action === 'navigate' ? `🧭 Маршрут до «${x.place}».`
+      : x.action === 'open_app' ? `📱 Открываю ${x.app}.` : 'Готово.';
+  },
   bot_help: () => HELP,
   memory_list: r => {
     if (!r.facts.length && !r.rules.length) return r.sphere ? `🧠 В сфере «${SPH[r.sphere]}» пока ничего нет.` : '🧠 Пока ничего не запомнил. Скажите «запомни: …».';
@@ -3475,6 +3522,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 29. БАЗА КЛИЕНТОВ: пользователь рассказывает о клиенте то, чего нет в CRM — с кем работает, у кого берёт, какие масла / бренды у него стоят, по каким ценам (наши и чужие), договоры, владелец и телефон, объёмы, конкуренты — → client_info_add: разложи на отдельные факты, ничего не теряй, цены и даты — только названные. Не remember. «Всё про клиента X», «досье / полная инфа по X», «что знаешь о X» → client_info с client (там и CRM: агент, долг, заказы). «У кого стоит Mobil / кто работает с X» → client_info с query. «Пришли базу клиентов / всю инфу в Excel» → client_info без client, excel=true. Ошибочная запись → client_info_delete.
 31. УЧИСЬ НА ПОПРАВКАХ. Если пользователь говорит, что ты ошибся («нет, не так», «неправильно», «я же говорил», «xato», «unday emas») — исправь ответ и, если поправка — общее правило на будущее, сохрани его remember kind=rule и напиши «📌 Запомнил правило: …». Перед ответом сверяйся с ПРАВИЛАМИ ниже: одну и ту же ошибку дважды не повторяй.
 32. СЛОЖНЫЙ ВОПРОС («почему», анализ, сравнение, совет, план): сначала собери цифры функциями (несколько сразу, explain=true), потом коротко: 1) что видно по цифрам, 2) главная причина, 3) 2–3 конкретных действия с именами клиентов и агентов. Догадку называй догадкой.
+34. ТЕЛЕФОН: если вопрос начинается с «[приложение]» — пользователь в приложении JUMAVOY на телефоне: будильник, таймер, позвонить, SMS, маршрут, открыть приложение, событие в календарь телефона (если Google не подключён или сказано «в телефон») → phone_action. Позвонить / написать клиенту — сначала client_card за номером. В Telegram (без «[приложение]») phone_action не вызывай: предложи reminder_add.
 33. ТЫ ЗНАЕШЬ ПОЛЬЗОВАТЕЛЯ. Перед ответом посмотри факты из памяти: его вкусы, привычки, как он любит получать ответы, его людей, цели и решения. Если вопрос про выбор (что купить, куда пойти, что подарить, как поступить, что предложить клиенту) — сразу предложи 2–3 варианта, которые подходят именно ему, и коротко скажи почему («вы любите …, поэтому …»). Не перечисляй факты о нём без повода и не говори «согласно памяти». Если важного предпочтения не знаешь, а оно меняет ответ, — коротко спроси одно.
 ${skills.length ? `\nНАВЫКИ (название — когда применять):\n${skills.map(s => `${s.name} — ${s.description}`).join('\n')}\n` : ''}${memText}`;
 }
@@ -3769,7 +3817,8 @@ async function sendExcel(chatId: number, tool: string, args: any, result: any): 
   return name;
 }
 
-export async function ask(db: any, chatId: number, userParts: any[], qText: string, media?: { file_id: string; mime: string }) {
+export async function ask(db: any, chatId: number, userParts: any[], qText: string, media?: { file_id: string; mime: string }, app = false) {
+  const actions: any[] = []; // things to do on the phone (phone_action) — the app does them after the answer
   const [hist, mem, skills] = await Promise.all([getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
   // a correction of the previous answer: the AI is told to fix it and to keep a general rule from it (learning)
   const fix = hist.length > 0 && isCorrection(qText);
@@ -3808,7 +3857,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       text = text || 'Не нашёл, что ответить. Переформулируйте, пожалуйста.';
       if (files.length && !/📎/.test(text)) text += `\n\n📎 Excel: ${files.join(', ')}`;
       await remember(chatId, heard || qText, text, used.join(','));
-      return { text, used, requests };
+      return { text, used, requests, actions };
     }
     const responses = [], done: { name: string; args: any; result: any }[] = [];
     for (const p of calls) {
@@ -3819,7 +3868,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       try {
         result = !TOOLS[name] ? { error: 'нет такой функции' }
           : db.meta.data_error && !NO_CRM.has(name) ? { error: db.meta.data_error } // no CRM data → say so, never answer with zeros
-          : await TOOLS[name].run(db, args, { chatId, media });
+          : await TOOLS[name].run(db, args, { chatId, media, app, actions });
       } catch (e) { result = { error: redact((e as Error).message) }; }
       // Excel: the file is made by the code from the function's own result — the same numbers as in the answer
       if (xls && result && !result.error && !result.retry && !files.length) {
@@ -3840,7 +3889,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       const xl = files.length ? `\n\n📎 Excel-файл отправлен: ${files.join(', ')}` : done.find(c => c.result?.excel_error)?.result.excel_error ? `\n\n⚠️ ${done.find(c => c.result?.excel_error)!.result.excel_error}` : '';
       const text = (heard ? `🎤 «${heard}»\n\n` : '') + body + xl;
       await remember(chatId, heard || qText, text.slice(0, 1500), used.join(','));
-      return { text, used, requests };
+      return { text, used, requests, actions };
     }
     contents.push({ role: 'user', parts: responses });
   }

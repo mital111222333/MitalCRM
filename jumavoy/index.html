@@ -171,6 +171,11 @@ async function ask(body, shown) {
     if (j.heard !== undefined && body.audio) bubble({ who: 'me', text: j.heard ? '🎤 ' + j.heard : '🎤 …' });
     bubble({ who: 'bot', text: j.text || '…', ms: Math.round(performance.now() - t0) });
     if (j.telegram) note('✉️ Черновик пришёл в Telegram — отправьте его там кнопкой «✅ Отправить».');
+    for (const x of j.actions || []) { // alarm, timer, calendar, call, SMS, route, app — done by the Android app
+      if (!window.JumavoyDevice) { note('📱 Это умеет только Android-приложение JUMAVOY.'); break; }
+      const r = window.JumavoyDevice.run(JSON.stringify(x));
+      if (r !== 'ok') note('⚠️ ' + r, 'err');
+    }
     if (voiceOn && (body.audio || body.voice || ASSIST) && j.text) speak(j.text);
   } catch (e) {
     th.remove(); note('⚠️ ' + e.message, 'err');

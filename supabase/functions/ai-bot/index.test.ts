@@ -1683,3 +1683,20 @@ D.test('app API: text written down by the phone (voice:true) is answered as a vo
   const r = await (await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': '111', 'x-app-key': k }, body: JSON.stringify({ text: 'qancha qarz bor', voice: true }) }))).json();
   assert(q.includes('(голосовое сообщение, расшифровка) qancha qarz bor') && r.heard === 'qancha qarz bor' && typeof r.ms === 'number', JSON.stringify(r) + q);
 });
+
+D.test('phone actions: in the app the AI asks for an alarm → the app gets it; in Telegram → offered a reminder instead', async () => {
+  await tgPost({ text: '/app' });
+  const k = (lastText().match(/#c=111&k=([0-9a-f]{32})/) || [])[1];
+  let first = '';
+  GEM = (b: any) => { first = first || JSON.stringify(b.contents?.at(-1)); return call('phone_action', { action: 'alarm', hour: 6, minute: 30, days: ['mon', 'tue', 'wed', 'thu', 'fri'], label: 'Работа' }); };
+  const r = await (await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': '111', 'x-app-key': k }, body: JSON.stringify({ text: 'разбуди по будням в 6:30' }) }))).json();
+  assert(first.includes('[приложение] разбуди'), 'the AI knows it is the app');
+  eq(r.actions, [{ action: 'alarm', hour: 6, minute: 30, days: ['mon', 'tue', 'wed', 'thu', 'fri'], label: 'Работа' }], 'action for the phone');
+  assert(/⏰ Будильник на 06:30 \(пн, вт, ср, чт, пт\) — «Работа»/.test(r.text), r.text);
+  assert(M.toolsFor('разбуди меня в 7', '').some((d: any) => d.name === 'phone_action'), 'declared for such questions');
+
+  const tgr = await M.TOOLS.phone_action.run(null, { action: 'alarm', hour: 7, minute: 0 }, { chatId: 111, actions: [] });
+  assert(/только приложение JUMAVOY/.test(tgr.error), 'Telegram: ' + JSON.stringify(tgr));
+  const cal = await M.TOOLS.phone_action.run(null, { action: 'calendar', title: 'Встреча с Fozilxon', start: '2099-01-05T15:00' }, { chatId: 111, app: true, actions: [] });
+  eq(cal.done_on_phone.end_ms - cal.done_on_phone.start_ms, 3600e3, 'calendar: an hour by default');
+});
