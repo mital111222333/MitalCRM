@@ -1599,3 +1599,56 @@ D.test('learning: the day\'s talk → new facts about the owner (marked 🧠), a
   await tgPost({ text: '/learn' }); assert(/Нового о вас/.test(lastText()), 'nothing new');
   assert(M.toolsFor('что ты знаешь обо мне', '').some((d: any) => d.name === 'memory_list'), 'memory tools for «обо мне»');
 });
+
+D.test('proactive: the code finds what needs the owner, one message with actions, told once, daily limit, 👎 mutes, /pings, ✍️ runs the action', async () => {
+  DB.ai_memory.length = 0; DB.ai_events.length = 0; M.NBC.clear();
+  const db = await M.loadDB(true), t = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tashkent' }).format(new Date());
+  db.promises = { 'Big Client': [{ d: t, s: 700 }] };
+  db.recom = [{ name: 'Mitanol X-Force 5W30 4L', left_units: 6, per_day: 3, days_left: 2 }];
+  const ev = M.proactiveEvents(db, 14);
+  assert(ev[0].type === 'pt' && /Big Client обещал сегодня \$700/.test(ev[0].text) && ev.some((e: any) => e.type === 'sk'), 'events: ' + JSON.stringify(ev.map((e: any) => e.type)));
+  assert(!M.proactiveEvents(db, 10).some((e: any) => e.type === 'pt'), 'a promise for today is not chased in the morning');
+
+  const r = await M.proactiveRun(db, 111, 14);
+  assert(r && r.sent >= 2, 'sent: ' + JSON.stringify(r));
+  const msg = SENT.filter(s => s.method === 'sendMessage').at(-1)!;
+  assert(/обратите внимание/.test(msg.body.text) && /→ Напиши агенту/.test(msg.body.text), 'text: ' + msg.body.text);
+  const kb = msg.body.reply_markup.inline_keyboard;
+  assert(kb[0][0].callback_data === 'px:do:1' && kb.at(-1)[1].callback_data.startsWith('px:down:'), 'buttons');
+  eq(await M.proactiveRun(db, 111, 16), null, 'the same things are not told again');
+
+  // ✍️ 1 → the action line goes to the AI as a question
+  let asked = '';
+  GEM = (b: any) => { asked = JSON.stringify(b.contents?.at(-1) || ''); return say('Черновик готов'); };
+  const press = (data: string) => M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: 77000 + Math.floor(Math.random() * 1e5), callback_query: { id: 'q', from: { id: 111 }, data, message: { chat: { id: 111 }, message_id: 5, text: msg.body.text } } }) }));
+  await press('px:do:1');
+  assert(/Big Client обещал сегодня оплатить \$700/.test(asked), 'action asked: ' + asked);
+
+  // 👎 → a 🔕 rule; that kind is not sent any more
+  await press('px:down:sk');
+  assert(DB.ai_memory.some((m: any) => m.kind === 'rule' && /Не присылать первым: товар заканчивается/.test(m.text)), 'muted rule');
+  db.recom = [{ name: 'Liman ATF 5L', left_units: 2, per_day: 2, days_left: 1 }];
+  const r2 = await M.proactiveRun(db, 111, 16);
+  assert(!r2 || !/sk/.test(r2.types), 'muted kind not sent: ' + JSON.stringify(r2));
+
+  // /pings off → nothing; limit
+  await tgPost({ text: '/pings off' }); assert(/выключены/.test(lastText()), lastText());
+  db.promises = { 'Small Shop': [{ d: t, s: 300 }] };
+  eq(await M.proactiveRun(db, 111, 18), null, 'switched off');
+  await tgPost({ text: '/pings 1' }); assert(/до 1 в день/.test(lastText()), lastText());
+  eq(await M.proactiveRun(db, 111, 18), null, 'the daily limit (1) was already used today');
+  await tgPost({ text: '/pings' }); assert(/до 1 в день/.test(lastText()) && /товар заканчивается/.test(lastText()), 'status: ' + lastText());
+});
+
+D.test('idea of the day: one AI request with the CRM picture and what the bot knows about the owner', async () => {
+  DB.ai_memory.length = 0; DB.ai_events.length = 0;
+  DB.ai_memory.push({ id: 950, chat_id: 111, kind: 'fact', sphere: 'work', text: '🧠 Хочет стать лучшим супервайзером по сбору долгов', created_at: new Date().toISOString() });
+  const db = await M.loadDB(true);
+  let body = '';
+  GEM = (b: any) => { body = JSON.stringify(b); return say('**Сегодня** дожмите Fozilxon Fargona: долг $800.'); };
+  const r = await M.ideaOfDay(db, 111);
+  assert(r && /Fozilxon/.test(r.idea) && !/\*\*/.test(r.idea), 'idea: ' + JSON.stringify(r));
+  assert(body.includes('Fozilxon Fargona'), 'CRM in the request');
+  assert(body.includes('лучшим супервайзером') || body.includes('ЧТО ТЫ О НЁМ ЗНАЕШЬ'), 'memory in the request');
+  assert(/^💡 Идея дня/.test(lastText()), lastText());
+});
