@@ -1,10 +1,10 @@
 // Service worker: the CRM opens like an app from the home screen and works without internet with the last saved data.
-// Pages and scripts: network first (so every update reaches the phone at once), the saved copy when offline.
+// Pages and scripts: network first (so every update reaches the phone at once), the saved copy when offline or when the network takes over 2 s.
 // Fonts: saved once and reused. Calls to GitHub, Gemini and Telegram are never cached.
-const CACHE = 'mital-crm-v115';
+const CACHE = 'mital-crm-v116';
 const SHELL = ['./', './index.html', './manifest.json', './me.html', './me.js', './me-uz.js', './me-manifest.json', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png',
   './style.css', './theme.css', './ios.css', './nova.css', './work.css', './charts.js', './ui.js', './xl.js', './xgrid.js', './wh.js', './ag.js', './engine.bundle.js', './static-api.js', './auth.js', './menuorder.js', './cloud.js', './up.js',
-  './rep.js', './tg.js', './chat.js', './ai.js', './copilot.js', './lb.js', './cl.js', './card.js', './sig.js', './agent.js', './wh2.js', './route.js', './lx.js', './remind.js', './assort.js', './anew.js', './wake.js', './credit.js', './inst.js', './debt.js', './invo.js', './disc.js', './pay.js', './archive.js', './talk.js', './agentcab.js', './atask.js', './wcount.js', './visits.js', './dolg.js', './gps.js', './linko-jobs.json', './linko.js', './ux.js', './pwa.js', './refresh.js', './live.js', './bal.js', './my.js', './day.js', './abc.js', './gone.js', './nova.js', './app.js', './icon-maskable-512.png', './splash-192.png', './splash-512.png'];
+  './rep.js', './tg.js', './chat.js', './ai.js', './copilot.js', './lb.js', './cl.js', './card.js', './sig.js', './agent.js', './wh2.js', './route.js', './lx.js', './remind.js', './assort.js', './anew.js', './wake.js', './credit.js', './inst.js', './debt.js', './invo.js', './disc.js', './pay.js', './archive.js', './talk.js', './agentcab.js', './atask.js', './wcount.js', './visits.js', './dolg.js', './gps.js', './linko-jobs.json', './linko.js', './ux.js', './pwa.js', './refresh.js', './live.js', './bal.js', './my.js', './day.js', './abc.js', './gone.js', './nova.js', './app.js', './icon-maskable-512.png', './splash-192.png', './splash-512.png', './app-maskable-192.png', './app-maskable-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => Promise.all(SHELL.map(u => c.add(new Request(u, { cache: 'reload' })).catch(() => {})))).then(() => self.skipWaiting()));
@@ -22,10 +22,13 @@ self.addEventListener('fetch', e => {
   if (url.origin !== location.origin) return; // GitHub, Gemini, Telegram, CDN: straight to the network
   e.respondWith((async () => {
     const c = await caches.open(CACHE), key = url.pathname.endsWith('/') ? new Request(url.origin + url.pathname + 'index.html') : new Request(url.origin + url.pathname);
+    // slow internet: if the network hasn't answered in 2 s, open the saved copy now; the network answer still refreshes it for next time
+    const net = fetch(req, { cache: 'no-cache' }).then(r => { if (r.ok) c.put(key, r.clone()); return r; });
+    const saved = await c.match(key);
     try {
-      const r = await fetch(req, { cache: 'no-cache' });
-      if (r.ok) c.put(key, r.clone());
-      return r;
+      if (!saved) return await net;
+      net.catch(() => {});
+      return await Promise.race([net, new Promise(res => setTimeout(() => res(saved), 2000))]);
     } catch {
       return (await c.match(key)) || (await c.match('./index.html')) || new Response('Нет интернета', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
     }
