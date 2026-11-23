@@ -158,6 +158,13 @@
   .send.idle { background: none; color: var(--text2); }
   .dock { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 16px 24px 4px; }
   .lang { justify-self: start; height: 34px; min-width: 50px; padding: 0 12px; border-radius: 17px; border: 0; background: var(--fill2); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.1); font-size: 14px; font-weight: 600; letter-spacing: .04em; color: var(--text2); }
+  /* ✕ next to the orb: cancel what is being said (nothing is sent) / ■ stop the voice answer */
+  .stop { justify-self: end; width: 48px; height: 48px; padding: 0; border-radius: 50%; border: 0; display: grid; place-items: center; color: #fff;
+    background: var(--fill); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.16); opacity: 0; visibility: hidden; transform: scale(.7);
+    transition: opacity .18s, transform .18s, visibility 0s .18s; }
+  .stop svg { width: 22px; height: 22px; }
+  .stop:active { background: rgba(255,69,58,.35); }
+  body.can-stop .stop { opacity: 1; visibility: visible; transform: none; transition: opacity .18s, transform .18s; }
   .hint { min-height: 20px; margin-top: 8px; padding: 0 24px; text-align: center; font-size: 13px; color: var(--text3); }
   body.typing .dock, body.typing .hint { display: none; }
 
@@ -381,7 +388,7 @@
   <div class="dock">
     <button class="lang" id="langBtn" aria-label="Язык, на котором вы говорите">RU</button>
     <button class="orb" id="mic" aria-label="Говорить"><i></i><i></i><i></i><i></i></button>
-    <span></span>
+    <button class="stop" id="stopBtn" aria-label="Отменить"></button>
   </div>
   <div class="hint" id="hint"></div>
 </footer>
@@ -462,6 +469,7 @@ const ICON = {
   muted: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
   play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>',
+  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>',
   up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg>',
   mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21"/></svg>',
   minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 12h12"/></svg>',
@@ -575,10 +583,17 @@ function note(text, cls = 'note') {
 // ── state: the words under the name, and the mode the orb and the screen glow follow ──
 const MODE = { 'готов': 'idle', 'слушаю': 'listen', 'распознаю': 'think', 'думаю': 'think', 'озвучиваю': 'think', 'говорю': 'speak' };
 const setLvl = v => document.documentElement.style.setProperty('--lvl', Math.max(0, Math.min(1, +v || 0)).toFixed(2));
+// stopKind: 'cancel' while you speak (✕ — nothing is sent), 'stop' while JUMAVOY speaks (■ — it goes quiet, voice stays on)
+let stopKind = '';
 function setState(s, mode) {
   $('state').textContent = s[0].toUpperCase() + s.slice(1);
   document.body.dataset.mode = mode || MODE[s] || 'idle';
   if (document.body.dataset.mode !== 'listen') setLvl(0);
+  const k = s === 'слушаю' || (s === 'распознаю' && !busy) ? 'cancel' : s === 'говорю' || s === 'озвучиваю' ? 'stop' : '';
+  if (k !== stopKind) {
+    stopKind = k; document.body.classList.toggle('can-stop', !!k);
+    const b = $('stopBtn'); if (b) { b.innerHTML = k === 'stop' ? ICON.stop : ICON.x; b.setAttribute('aria-label', k === 'stop' ? 'Остановить ответ' : 'Отменить, не отправлять'); }
+  }
 }
 
 // ── talking to JUMAVOY ──
@@ -662,13 +677,22 @@ async function ask(body, shown, voiced) {
     th.remove();
     if (e.net) { busy = false; setState('готов'); return queueQ(body, meText, voiced || !!body.audio, me); }
     const n = note(e.message, 'err');
-    if (!e.auth && body.audio) { // the recording is still here: send it again with one tap instead of saying it twice
-      const again = document.createElement('button'); again.className = 'retry'; again.textContent = 'Отправить голосовое ещё раз';
-      again.onclick = () => { if (busy) return; n.remove(); ask(body, shown, voiced); };
-      n.append(' ', again);
-    }
+    // the question (or the recording) is still here: one tap sends it again — and when Google is only busy, by itself
+    if (!e.auth) retryIn(n, body.audio ? 'Отправить голосовое ещё раз' : 'Спросить ещё раз', () => ask(body, null, voiced), e.message);
     if (e.auth && !TG) { store.del('key'); setTimeout(() => showApp(false), 1500); }
   } finally { if (busy) { busy = false; setState('готов'); } }
+}
+// «Gemini перегружен» / the per-minute limit pass by themselves: the same question goes again in 30 s (once), the button
+// sends it at once. Nothing is lost — not the question, not the photo with «запомни».
+const BUSY_RE = /перегружен|лимит Gemini в минуту|band \(vaqtincha\)/i;
+function retryIn(n, label, fn, msg) {
+  const again = document.createElement('button'); again.className = 'retry'; again.textContent = label;
+  let left = BUSY_RE.test(msg || '') ? 30 : 0, timer = 0;
+  const go = () => { clearInterval(timer); if (!n.isConnected) return; if (busy) { left = 5; timer = setInterval(tick, 1000); return; } n.remove(); fn(); };
+  const tick = () => { if (!n.isConnected) return clearInterval(timer); if (--left <= 0) return go(); again.textContent = `${label} (через ${left} с)`; };
+  again.onclick = () => { if (!busy) go(); };
+  n.append(' ', again);
+  if (left) { again.textContent = `${label} (через ${left} с)`; timer = setInterval(tick, 1000); }
 }
 function afterAnswer(j) {
   if (j.telegram) note('Черновик пришёл в Telegram — отправьте его там кнопкой «✅ Отправить».');
@@ -841,7 +865,8 @@ for (const b of $('chips').querySelectorAll('button')) b.onclick = () => b.datas
 let voiceOn = store.get('voice', true), player = null;
 const vb = $('voiceBtn');
 const paintVoice = () => { vb.classList.toggle('off', !voiceOn); vb.innerHTML = voiceOn ? ICON.speaker : ICON.muted; vb.setAttribute('aria-pressed', voiceOn); };
-vb.onclick = () => { voiceOn = !voiceOn; store.set('voice', voiceOn); if (!voiceOn) stopSpeaking(); paintVoice(); };
+vb.onclick = () => { if (stopKind === 'stop') { stopSpeaking(); buzz(8); return; } // speaking now → just quiet, voice answers stay on
+  voiceOn = !voiceOn; store.set('voice', voiceOn); if (!voiceOn) stopSpeaking(); paintVoice(); };
 paintVoice();
 const APPV = N && N.version ? N.version() : 1;
 const isUz = t => /[ўқғҳ]/i.test(t) || /\b(va|uchun|bilan|qancha|narx\w*|yo'q|kerak|mijoz|qarz\w*|sizga|ham|emas|yoki|bo'l\w*|qil\w*|bor|yoq|dona|karobka|bugun|ertaga|kecha|siz|men|bu|uchun|qildim|bo'yicha)\b/i.test(t);
@@ -852,7 +877,7 @@ function stopSpeaking() {
   speakSeq++; endSpeakBtn();
   if (player) { player.pause(); player = null; }
   if (N) try { N.stopSpeak(); } catch {}
-  if (document.body.dataset.mode === 'speak') setState('готов');
+  if (document.body.dataset.mode === 'speak' || stopKind === 'stop') setState('готов');
 }
 async function speak(text, btn, reset) {
   const again = btn && speakBtn && speakBtn.btn === btn; // the same «Прослушать» pressed while it plays → stop
@@ -904,9 +929,10 @@ const nativeListen = l => !!(phoneVoice && N && N.canListen() && nativeOff[l] !=
 let lang = store.get('lang', 'ru-RU');
 const langBtn = $('langBtn'), paintLang = () => { langBtn.textContent = lang === 'uz-UZ' ? 'UZ' : 'RU'; langBtn.style.visibility = phoneVoice && N && N.canListen() ? '' : 'hidden'; };
 langBtn.onclick = () => { lang = lang === 'uz-UZ' ? 'ru-RU' : 'uz-UZ'; store.set('lang', lang); paintLang(); hint.textContent = nativeListen(lang) ? HINT : 'Этот язык телефон не распознаёт — запишу голос и расшифрую на сервере'; };
-let rec = null, nativeOn = false, micStarting = false;
+let rec = null, nativeOn = false, micStarting = false, nativeCancel = false, recognizing = null;
 const mic = $('mic'), hint = $('hint'), live = $('live');
 const HINT = 'Нажмите на сферу и говорите';
+const HINT_REC = 'Сфера — отправить, ✕ — отменить';
 function micIdle() { nativeOn = false; setLvl(0); live.textContent = ''; hint.textContent = HINT; }
 function failNative(f) {
   lastFail = { ...f, at: Date.now() }; store.set('lastFail', lastFail);
@@ -927,12 +953,13 @@ window.jvNative = {
   // speaking ended (or was stopped): only when nothing else has started since
   onSpeakDone: () => { endSpeakBtn(); if (document.body.dataset.mode === 'speak') setState('готов'); },
   onReady: () => { if (nativeOn) setState('слушаю'); },
+  // after ✕ the recognizer still reports what it heard (or «nothing said») — all of it is dropped
   onLevel: v => { if (nativeOn) setLvl(v); },
   onPartial: t => { if (nativeOn) live.textContent = t; },
   onEnd: () => { if (nativeOn) setState('распознаю'); },
-  onResult: t => { micIdle(); if (t) ask({ text: t, voice: true }, t, true); else setState('готов'); },
-  onFail: j => { let f = {}; try { f = JSON.parse(j); } catch {} failNative(f); },
-  onError: m => { // nothing said («»), no microphone — and older Android apps report every failure here
+  onResult: t => { if (nativeCancel) { nativeCancel = false; return; } micIdle(); if (t) ask({ text: t, voice: true }, t, true); else setState('готов'); },
+  onFail: j => { if (nativeCancel) { nativeCancel = false; return; } let f = {}; try { f = JSON.parse(j); } catch {} failNative(f); },
+  onError: m => { if (nativeCancel) { nativeCancel = false; return; } // nothing said («»), no microphone — and older Android apps report every failure here
     if (m && /ошибка (\d+)/.test(m)) return failNative({ code: +m.match(/ошибка (\d+)/)[1], lang, msg: m });
     micIdle(); setState('готов');
     if (m) note(m, 'err');
@@ -984,7 +1011,7 @@ async function listen(server = false) {
   if (N && N.hasMic && !N.hasMic()) { note('Нужен доступ к микрофону.', 'err'); if (N.requestMic) N.requestMic(); return; }
   stopSpeaking(); buzz(12); warm();
   if (!server && nativeListen(lang)) { // the phone's recognizer: words appear while speaking, no upload, no Gemini request
-    nativeOn = true; hint.textContent = 'Говорите — нажмите ещё раз, чтобы закончить'; setState('слушаю');
+    nativeOn = true; nativeCancel = false; hint.textContent = HINT_REC; setState('слушаю');
     N.listen(lang); return;
   }
   if (micStarting) return; // a second tap while the microphone is still opening — it would start a second recording
@@ -1019,16 +1046,33 @@ async function listen(server = false) {
     cancelAnimationFrame(raf); closeMic(stream); ctx.close().catch(() => {});
     rec = null; micIdle();
     if (cancelled || !chunks.length) { setState('готов'); return; }
+    recognizing = () => { cancelled = true; }; // ✕ while the recording is being packed: it is not sent
     setState('распознаю');
     let blob = new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' });
     try { blob = await toWav(blob); } catch { /* the original goes as it is */ }
-    ask({ audio: await b64of(blob), mime: blob.type });
+    const audio = await b64of(blob);
+    recognizing = null;
+    if (cancelled) { setState('готов'); return; }
+    ask({ audio, mime: blob.type });
   };
-  rec = { stop };
-  mr.start(250); setState('слушаю'); hint.textContent = 'Говорите — нажмите ещё раз, чтобы закончить';
+  rec = { stop, cancel: () => { cancelled = true; stop(); } };
+  mr.start(250); setState('слушаю'); hint.textContent = HINT_REC;
   raf = requestAnimationFrame(loop);
 }
 mic.onclick = () => listen();
+// ✕ / ■ next to the orb (and «Back» on Android): you changed your mind — the recording is thrown away, nothing goes to
+// JUMAVOY; or JUMAVOY is talking — it stops at once (voice answers stay on for the next question)
+function stopVoice() {
+  if (!stopKind) return false;
+  buzz(12);
+  if (nativeOn) { nativeCancel = true; nativeOn = false; try { N.stopListen(); } catch {} micIdle(); setState('готов'); hint.textContent = 'Отменено — ничего не отправлено'; }
+  else if (rec && rec.cancel) { rec.cancel(); setTimeout(() => { if (!stopKind) hint.textContent = 'Отменено — ничего не отправлено'; }, 60); }
+  else if (recognizing) { recognizing(); recognizing = null; setState('готов'); hint.textContent = 'Отменено — ничего не отправлено'; }
+  else stopSpeaking();
+  setTimeout(() => { if (!stopKind && hint.textContent.startsWith('Отменено')) hint.textContent = HINT; }, 2500);
+  return true;
+}
+$('stopBtn').onclick = stopVoice;
 
 // ── menu ──
 const menu = $('menu'), closeMenu = () => { menu.classList.add('hidden'); armLogout(false); };
@@ -1053,7 +1097,7 @@ function openSheet(id) { closeMenu(); $(id).classList.remove('hidden'); }
 function closeSheets() { let any = false; for (const s of document.querySelectorAll('.sheet:not(.hidden)')) { s.classList.add('hidden'); any = true; } return any; }
 for (const s of document.querySelectorAll('.sheet')) s.addEventListener('click', e => { if (e.target === s || e.target.closest('[data-close]')) s.classList.add('hidden'); });
 // Android «Back»: a sheet or the menu closes first
-window.jumavoyBack = () => { const top = [...document.querySelectorAll('.sheet:not(.hidden)')].pop(); if (top) { top.classList.add('hidden'); return true; } if (!menu.classList.contains('hidden')) { closeMenu(); return true; } return false; };
+window.jumavoyBack = () => { if (stopVoice()) return true; const top = [...document.querySelectorAll('.sheet:not(.hidden)')].pop(); if (top) { top.classList.add('hidden'); return true; } if (!menu.classList.contains('hidden')) { closeMenu(); return true; } return false; };
 
 // ── small helpers for the sheets ──
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -1111,11 +1155,13 @@ async function shrink(f) {
   return b && b.size < f.size ? new File([b], f.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : f;
 }
 // the file goes with upload progress (XHR), the answer comes with its stages like any question
-function sendFile(text) {
-  const { file, url } = attached; attached = null; paintAtt(); autosize();
+function sendFile(text, again) {
+  const { file, url } = again || attached;
+  if (!again) { attached = null; paintAtt(); autosize(); }
   if (!online()) { attached = { file, url }; paintAtt(); note('Файлы отправляются только с интернетом. Файл остался прикреплённым — отправьте, когда связь появится.', 'err'); return; }
   busy = true; setState('отправляю', 'think');
-  bubble({ who: 'me', text, file: { name: file.name, kind: fileKind(file) }, img: url });
+  if (!again) bubble({ who: 'me', text, file: { name: file.name, kind: fileKind(file) }, img: url });
+  const fail = m => { const n = note(m, 'err'); if (!/Нет доступа/.test(m)) retryIn(n, 'Отправить файл ещё раз', () => sendFile(text, { file, url }), m); };
   const th = note('Загружаю файл…', 'thinking'), t0 = performance.now();
   const fd = new FormData(); fd.append('json', JSON.stringify({ text, stream: true })); fd.append('file', file, file.name);
   const x = new XMLHttpRequest(); let seen = 0, fin = null;
@@ -1130,11 +1176,11 @@ function sendFile(text) {
   };
   const end = msg => {
     th.remove(); busy = false; setState('готов');
-    if (msg) { note(msg, 'err'); return; }
+    if (msg) { fail(msg); return; }
     lines();
     const j = fin;
-    if (!j) { const err = (() => { try { return JSON.parse(x.responseText).error; } catch { return ''; } })(); note(err || 'Ответ не пришёл. Попробуйте ещё раз.', 'err'); return; }
-    if (j.status && j.status !== 200) { note(j.error || 'Ошибка ' + j.status, 'err'); return; }
+    if (!j) { const err = (() => { try { return JSON.parse(x.responseText).error; } catch { return ''; } })(); fail(err || 'Ответ не пришёл. Попробуйте ещё раз.'); return; }
+    if (j.status && j.status !== 200) { fail(j.error || 'Ошибка ' + j.status); return; }
     bubble({ who: 'bot', text: j.text || '…', ms: Math.round(performance.now() - t0) }); buzz(8);
     afterAnswer(j);
   };

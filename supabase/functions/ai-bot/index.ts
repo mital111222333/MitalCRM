@@ -3913,6 +3913,24 @@ export const fallbackModel = (cur = CFG.model()) => {
   if (v === 'off') return 'off';
   return v.split(/[,\s]+/).filter(Boolean).find(m => m !== cur && !isDead(m)) || '';
 };
+// every model to try after `cur` failed, in order: the whole fallback chain (not only its first model), then the main
+// model (when `cur` was the search / another model) and, for an overload only, the smart model — each one is a different
+// model with its own servers and quota. On 23.11.2026 Google's main AND first fallback were both «high demand» at once
+// and a photo with «запомни» got «Gemini перегружен» while the next model in the chain was never asked.
+export function fallbackChain(cur = CFG.model(), overload = false) {
+  const v = env('GEMINI_FALLBACK_MODEL', 'gemini-3.1-flash-lite,gemini-2.5-flash-lite');
+  const list = v === 'off' ? [] : v.split(/[,\s]+/).filter(Boolean);
+  list.push(CFG.model());
+  if (overload && smartOn()) list.push(smartModel());
+  return [...new Set(list)].filter(m => m && m !== cur && !isDead(m));
+}
+async function tryChain(body0: any, cur: string, why: string, overload = false) {
+  for (const fb of fallbackChain(cur, overload)) {
+    try { const out = await gemini(body0, fb, false); console.log(`gemini fallback used (${why}):`, fb); return out; }
+    catch (e) { console.warn('gemini fallback', fb, redact((e as Error).message)); }
+  }
+  return null;
+}
 // a model Google answers «not found / not available» for (a retired name, a model this key may not use) is skipped for
 // the rest of Google's day — every request used to pay for that refusal again before reaching the fallback
 const DEAD = new Map<string, string>();
@@ -4015,10 +4033,8 @@ async function gemini(body: any, model = CFG.model(), canFallback = true, think 
   }
   // the per-minute limit (free tier ~15 a minute) passes by itself: wait as long as Google asks (≤ 20 s) and try once more
   // the per-minute limit with a fallback model at hand: that model answers at once (its own quota) — nobody waits 20 s
-  const fb0 = fallbackModel(model);
-  if (r.status === 429 && !search && !noWait && !perDayLimit(d) && canFallback && fb0 && fb0 !== 'off' && fb0 !== model) {
-    try { const out = await gemini(body0, fb0, false); console.log('gemini 429 per minute → fallback at once:', fb0); return out; }
-    catch (e) { console.warn('gemini fallback', fb0, redact((e as Error).message)); }
+  if (r.status === 429 && !search && !noWait && !perDayLimit(d) && canFallback) {
+    const out = await tryChain(body0, model, '429 per minute'); if (out) return out;
   }
   if (r.status === 429 && !search && !noWait && !perDayLimit(d)) {
     const s = retrySeconds(d);
@@ -4027,11 +4043,7 @@ async function gemini(body: any, model = CFG.model(), canFallback = true, think 
   if (r.status === 429) {
     console.warn('gemini 429', model, JSON.stringify(d.error || {}).slice(0, 600));
     if (search) throw Object.assign(new Error('Лимит поиска в интернете (Google Search в Gemini) на сегодня исчерпан. Обычные вопросы по CRM работают.'), { searchLimit: true });
-    const fb = fallbackModel(model);
-    if (canFallback && fb && fb !== 'off' && fb !== model) {
-      try { const out = await gemini(body0, fb, false); console.log('gemini fallback used:', fb); return out; }
-      catch (e) { console.warn('gemini fallback', fb, redact((e as Error).message)); }
-    }
+    if (canFallback) { const out = await tryChain(body0, model, '429'); if (out) return out; }
     const rs = quotaReset();
     throw new Error(perDayLimit(d)
       ? `Дневной лимит Gemini исчерпан. Обновится в ${rs.at} (через ${rs.in}). Пока работают команды без ИИ: /today /dolg /k /plan /brief /tasks. Подробнее: /limits`
@@ -4041,12 +4053,8 @@ async function gemini(body: any, model = CFG.model(), canFallback = true, think 
   // model on other servers and usually answers; if it is busy too, a plain message instead of Google's English text
   if (r.status === 500 || r.status === 503) {
     console.warn('gemini overloaded', model, r.status, String(d.error?.message || '').slice(0, 200));
-    const fb = fallbackModel(model);
-    if (canFallback && fb && fb !== 'off' && fb !== model) {
-      try { const out = await gemini(body0, fb, false); console.log('gemini fallback used (overload):', fb); return out; }
-      catch (e) { console.warn('gemini fallback', fb, redact((e as Error).message)); }
-    }
-    throw new Error('Gemini сейчас перегружен — это временно, на стороне Google. Подождите минуту-две и спросите снова. Команды /today /dolg /k /plan /brief работают без ИИ.');
+    if (canFallback) { const out = await tryChain(body0, model, 'overload', true); if (out) return out; }
+    throw Object.assign(new Error('Gemini сейчас перегружен — это временно, на стороне Google. Подождите минуту-две и спросите снова. Команды /today /dolg /k /plan /brief работают без ИИ.'), { overload: true });
   }
   if (!r.ok) throw new Error(`Gemini ${r.status}: ${d.error?.message || ''}`);
   Object.defineProperty(d, '_model', { value: model, enumerable: false }); // which model really answered (for the app's timing)

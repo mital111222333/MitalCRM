@@ -410,6 +410,12 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   // 503 «high demand» on the main model after its retries → the fallback model answers
   GEM = (_b: any, url: string) => /gemini-fallback-test/.test(url) ? say('Ответ при перегрузке') : { __status: 503, body: { error: { code: 503, message: 'This model is currently experiencing high demand.' } } };
   await tgPost({ text: 'вопрос семь' }); assert(lastText().startsWith('Ответ при перегрузке'), 'fallback model on 503: ' + lastText());
+  // main AND the first fallback overloaded → the second model of the chain answers (23.11.2026: a photo with «запомни»
+  // got «перегружен» while the next model was never asked)
+  D.env.set('GEMINI_FALLBACK_MODEL', 'gemini-fallback-test,gemini-fallback-two');
+  GEM = (_b: any, url: string) => /gemini-fallback-two/.test(url) ? say('Ответила вторая запасная') : { __status: 503, body: { error: { code: 503, message: 'This model is currently experiencing high demand.' } } };
+  await tgPost({ text: 'вопрос семь с половиной' }); assert(lastText().startsWith('Ответила вторая запасная'), 'second fallback on 503: ' + lastText());
+  D.env.set('GEMINI_FALLBACK_MODEL', 'gemini-fallback-test');
   // both overloaded → a plain Russian message, not Google's English text
   GEM = () => ({ __status: 503, body: { error: { code: 503, message: 'This model is currently experiencing high demand.' } } });
   await tgPost({ text: 'вопрос восемь' }); assert(lastText().includes('перегружен') && !lastText().includes('high demand'), '503 everywhere: ' + lastText());
