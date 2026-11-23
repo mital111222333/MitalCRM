@@ -127,7 +127,7 @@ function render() {
 }
 function route() {
   const el = $('#page'); if (!el) return;
-  const name = location.hash.replace('#/', '') || 'my';
+  const name = (location.hash.replace('#/', '') || 'my').split('?')[0]; // #/kb?c=… — the part after «?» is the page's own address
   const hub = (window.HUBS || []).find(h => h.some(x => x[0] === name)), inMenu = r => !!document.querySelector(`.sidenav a[data-r="${r}"]`);
   const head = hub ? (inMenu(name) ? name : (hub.find(x => inMenu(x[0])) || hub[0])[0]) : name; // the menu line this page belongs to
   document.querySelectorAll('.sidenav a, .tabbar a[data-r]').forEach(x => x.classList.toggle('on', x.dataset.r === head || x.dataset.r === name));

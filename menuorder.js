@@ -23,7 +23,7 @@
     }
     for (const [top, items] of DEF) {
       const fresh = items.map(([, r]) => r).filter(r => !seen.has(r)); if (!fresh.length && model.some(m => m[0] === top)) continue;
-      let sec = model.find(m => m[0] === top); if (!sec) { sec = [top, []]; model.push(sec); }
+      let sec = model.find(m => m[0] === top); if (!sec) { sec = [top, []]; model.splice(Math.min(DEF.findIndex(x => x[0] === top), model.length), 0, sec); } // a new section takes its place from the code, not the bottom
       fresh.forEach(r => { sec[1].push(r); seen.add(r); });
     }
     return model.filter(([top, items]) => items.length || DEF.some(d => d[0] === top));

@@ -1513,6 +1513,39 @@ D.test('client base: facts from the chat, CRM link, replacement with history, se
   assert(/пока пуста/.test(await M.command('/база', 111)), 'empty');
 });
 
+D.test('client base shared with the CRM page: owner rows, rows typed in the CRM, buy / sell prices, «было → стало», CRM link', async () => {
+  DB.ai_client_info = [{ id: 9001, chat_id: 222, client: 'Old Bot Row', crm_client: null, category: 'oil', subject: 'Lukoil', party: '', detail: '', price: null, currency: null, unit: '', valid_from: null, valid_to: null, replaced_by: null, created_at: '2026-11-01T10:00:00Z' }];
+  const db = await M.loadDB(true), ctx = { chatId: 222 }, T = M.TOOLS;
+  const a = await T.client_info_add.run(db, { client: 'fozilxon', facts: [
+    { category: 'price', subject: 'Mitanol 5W-30 4л', party: 'MITAL', price: 11, side: 'buy', unit: 'шт' },
+    { category: 'price', subject: 'Mitanol 5W-30 4л', price: 13, side: 'sell', unit: 'шт' },
+    { category: 'preference', detail: 'любит бонус товаром, не любит долгие разговоры' },
+    { category: 'volume', detail: 'oyiga 40 karobka moy' },
+  ] }, ctx);
+  const mine = DB.ai_client_info.filter((r: any) => r.client === 'Fozilxon Fargona');
+  eq([mine.length, mine.every((r: any) => r.owner_id === 'u1' && r.source === 'bot')], [4, true], 'owner + source written');
+  eq(DB.ai_client_info.find((r: any) => r.id === 9001).owner_id, 'u1', 'an older bot row is given to the owner');
+  assert(M.TPL.client_info_add(a).includes('закупает $11/шт') && M.TPL.client_info_add(a).includes('продаёт $13/шт') && M.TPL.client_info_add(a).includes('#/kb?c=Fozilxon%20Fargona'), M.TPL.client_info_add(a));
+  // buy and sell of the same product are two facts: a new buy price replaces only the buy price
+  const b = await T.client_info_add.run(db, { client: 'Fozilxon', facts: [{ category: 'price', subject: 'mitanol 5w-30 4л', party: 'MITAL', price: 11.5, side: 'buy', unit: 'шт' }] }, ctx);
+  eq(b.replaced, 1, 'only the buy price replaced');
+  // a fact typed in the CRM (no chat, owner only) is seen by the bot
+  DB.ai_client_info.push({ id: 9100, chat_id: null, owner_id: 'u1', source: 'crm', client: 'Fozilxon Fargona', crm_client: 'Fozilxon Fargona', category: 'contract', subject: 'поставка', party: 'Valvoline', detail: 'до весны', price: null, currency: null, unit: '', side: '', valid_from: null, valid_to: null, replaced_by: null, created_at: new Date().toISOString() });
+  DB.ai_client_info.push({ id: 9101, chat_id: null, owner_id: 'someone-else', source: 'crm', client: 'Fozilxon Fargona', category: 'note', subject: '', party: '', detail: 'чужая запись', side: '', replaced_by: null, created_at: new Date().toISOString() });
+  const card = await T.client_info.run(db, { client: 'Fozilxon' }, ctx);
+  eq([card.deals?.length, card.notes, card.likes?.length, card.prices.length], [1, undefined, 1, 2], 'CRM row in, another owner\'s row out');
+  const buy = card.prices.find((x: any) => x.side === 'buy');
+  eq([buy.price, buy.fresh, /\$11\/шт/.test(buy.was)], [11.5, true, true], 'current buy price with the old one');
+  const t = M.TPL.client_info(card);
+  assert(t.includes('(было: закупает $11/шт до') && t.includes('🆕') && t.includes('❤️ Что любит') && t.includes('Досье в CRM: https://mital111222333.github.io/MitalCRM/#/kb?c='), t);
+  // delete from the bot also works on a CRM row
+  const d = await T.client_info_delete.run(db, { id: 9100 }, ctx);
+  eq(d.deleted, 9100, 'deleted a CRM row');
+  const other = await T.client_info_delete.run(db, { id: 9101 }, ctx);
+  assert(other.error, 'cannot delete another owner\'s row');
+  DB.ai_client_info = [];
+});
+
 D.test('client base through the AI: a told price is saved (no price-list self-check), «в Excel» sends the whole base', async () => {
   DB.ai_client_info = [];
   const g0 = GEM_LOG.length;
