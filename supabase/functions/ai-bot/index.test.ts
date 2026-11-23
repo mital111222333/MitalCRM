@@ -156,6 +156,10 @@ function say(text: string) { return { candidates: [{ content: { role: 'model', p
     let body: any = init.body;
     if (body instanceof FormData) { const o: any = {}; for (const [k, v] of body) o[k] = typeof v === 'string' ? v : await (v as File).text(); body = o; } else body = JSON.parse(body || '{}');
     SENT.push({ method: methodName, body, bot: url.pathname.split('/')[1] });
+    if (methodName === 'sendDocument' && typeof body.document === 'string' && /Из приложения/.test(body.caption || '')) { // a file from the app → its file_id
+      const id = 'app' + SENT.length; FILES[id] = new TextEncoder().encode(body.document);
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1, document: { file_id: id } } }));
+    }
     if (methodName === 'getFile') return new Response(JSON.stringify({ ok: true, result: { file_path: 'docs/' + body.file_id, file_size: FILES[body.file_id]?.length || 10 } }));
     return new Response(JSON.stringify({ ok: true, result: true }));
   }
@@ -1737,4 +1741,64 @@ D.test('app API: «Jumavoy, …» is not part of the question; stream gives stag
   const m2 = await (await call({ op: 'memory' })).json();
   assert(!m2.items.some((x: any) => x.id === it.id), 'forgotten');
   eq((await call({ op: 'forget', id: 999999 })).status, 404, 'no such record');
+});
+
+D.test('app API: kanban (add, urgent, plan for a month, done, history), «Итоги», memory add / edit', async () => {
+  DB.ai_tasks = DB.ai_tasks || [];
+  await tgPost({ text: '/app' });
+  const k = (lastText().match(/#c=111&k=([0-9a-f]{32})/) || [])[1];
+  const call = async (body: any) => { const r = await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': '111', 'x-app-key': k }, body: JSON.stringify(body) })); return { status: r.status, j: await r.json() }; };
+  const a = await call({ tasks: { op: 'add', title: 'Позвонить Fozilxon', priority: 2 } });
+  eq(a.status, 200, 'add ' + JSON.stringify(a.j));
+  const t = a.j.tasks.find((x: any) => x.title === 'Позвонить Fozilxon');
+  assert(t && t.priority === 2 && t.status === 'todo', 'urgent task: ' + JSON.stringify(a.j));
+  const pl = await call({ tasks: { op: 'edit', id: t.id, priority: 0, due: '2099-01-31', status: 'todo' } });
+  assert(pl.j.tasks.find((x: any) => x.id === t.id).due === '2099-01-31', 'planned for January');
+  await call({ tasks: { op: 'move', id: t.id, status: 'done' } });
+  const h = await call({ tasks: { op: 'history' } });
+  assert(h.j.history.some((x: any) => x.id === t.id && x.done_at), 'history keeps it');
+  eq((await call({ tasks: { op: 'nope' } })).status, 400, 'unknown op');
+
+  const d = await call({ op: 'dashboard' });
+  assert(d.j.tasks && d.j.tasks.done_week >= 1 && d.j.tasks.weeks.length === 8 && d.j.questions.days.length === 14, 'dashboard: ' + JSON.stringify(d.j).slice(0, 400));
+  assert(d.j.plan && typeof d.j.plan.pct === 'number' && d.j.plan.agents.length >= 1, 'team plan: ' + JSON.stringify(d.j.plan));
+
+  const m = await call({ op: 'memory_add', text: 'Любит чай', kind: 'fact', sphere: 'personal' });
+  assert(m.j.saved, 'memory add: ' + JSON.stringify(m.j));
+  const e = await call({ op: 'memory_edit', id: m.j.saved, text: 'Любит зелёный чай', sphere: 'family' });
+  assert(e.j.item.text === 'Любит зелёный чай' && e.j.item.sphere === 'family', 'edit: ' + JSON.stringify(e.j));
+  eq((await call({ op: 'memory_edit', id: m.j.saved, text: ' ' })).status, 400, 'empty text refused');
+});
+
+D.test('task stats: streak, on time, month share', () => {
+  const T0 = '2026-11-23', iso = (d: string) => d + 'T07:00:00Z';
+  const rows = [
+    { id: 1, status: 'done', due: '2026-11-22', done_at: iso('2026-11-23'), created_at: iso('2026-11-01'), sphere: 'work' },
+    { id: 2, status: 'done', due: '2026-11-25', done_at: iso('2026-11-22'), created_at: iso('2026-11-01'), sphere: 'work' },
+    { id: 3, status: 'done', done_at: iso('2026-11-21'), created_at: iso('2026-11-20'), sphere: 'family' },
+    { id: 4, status: 'todo', due: '2026-11-20', created_at: iso('2026-11-02'), priority: 2 },
+    { id: 5, status: 'todo', due: '2027-01-31', created_at: iso('2026-11-02') },
+  ];
+  const s = M.taskStats(rows, T0);
+  eq([s.streak, s.on_time_pct, s.overdue, s.urgent, s.done_month, s.month_pct], [3, 50, 1, 1, 3, 75], 'stats');
+});
+
+D.test('app API: a file — without a question saved to the notebook (and kept in Telegram), with a question answered', async () => {
+  await tgPost({ text: '/app' });
+  const k = (lastText().match(/#c=111&k=([0-9a-f]{32})/) || [])[1];
+  const send = async (text: string, name: string, body: string, mime = 'text/plain') => {
+    const fd = new FormData(); fd.append('json', JSON.stringify({ text })); fd.append('file', new File([body], name, { type: mime }));
+    const r = await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'x-app-chat': '111', 'x-app-key': k }, body: fd }));
+    return { status: r.status, j: await r.json() };
+  };
+  const s0 = SENT.length;
+  const a = await send('', 'Заметки по клиентам.txt', 'Fozilxon берёт Mitanol 5W-30 каждую неделю');
+  assert(a.status === 200 && /блокнот/.test(a.j.text), 'saved: ' + JSON.stringify(a.j));
+  assert(SENT.slice(s0).some((x: any) => x.method === 'sendDocument' && /Из приложения/.test(x.body.caption)), 'the file went to the Telegram chat');
+  let seen = '';
+  GEM = (b: any) => { seen = JSON.stringify(b.contents?.at(-1)); return say('Fozilxon берёт каждую неделю.'); };
+  const q = await send('Как часто берёт Fozilxon?', 'notes.txt', 'Fozilxon берёт Mitanol 5W-30 каждую неделю');
+  assert(q.status === 200 && /каждую неделю/.test(q.j.text) && seen.includes('Fozilxon берёт Mitanol') && seen.includes('Как часто'), 'answered from the file: ' + JSON.stringify(q.j) + seen.slice(0, 300));
+  const big = new FormData(); big.append('json', '{}'); big.append('file', new File([new Uint8Array(26e6)], 'big.mp4', { type: 'video/mp4' }));
+  eq((await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'x-app-chat': '111', 'x-app-key': k }, body: big }))).status, 413, 'too big');
 });

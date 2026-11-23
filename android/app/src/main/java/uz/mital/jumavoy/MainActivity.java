@@ -3,7 +3,11 @@ package uz.mital.jumavoy;
 import android.Manifest;
 import android.app.Activity;
 import android.app.KeyguardManager;
+import android.content.ContentValues;
 import android.content.Intent;
+import android.provider.MediaStore;
+import android.webkit.ValueCallback;
+import java.util.ArrayList;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
@@ -34,7 +38,9 @@ import java.util.regex.Pattern;
  */
 public class MainActivity extends Activity {
   static final String BASE = "https://mital111222333.github.io/MitalCRM/jumavoy/";
-  static final int MIC = 1, MIC_NATIVE = 2;
+  static final int MIC = 1, MIC_NATIVE = 2, PICK = 3;
+  ValueCallback<Uri[]> fileCb; // the page waits for the chosen files
+  Uri cameraUri;               // where the camera puts a new photo
   WebView web;
   WebFiles files;
   long lastUpdate;
@@ -76,6 +82,32 @@ public class MainActivity extends Activity {
       }
     });
     web.setWebChromeClient(new WebChromeClient() {
+      // «📎»: any file from the phone (photo, video, PDF, Word, Excel…), or a new photo / video from the camera
+      @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
+        if (fileCb != null) fileCb.onReceiveValue(null);
+        fileCb = cb;
+        Intent get = new Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+        get.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, p.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE);
+        ArrayList<Intent> cams = new ArrayList<>();
+        cameraUri = null;
+        if (Build.VERSION.SDK_INT >= 29) { // a new photo is saved to Pictures/JUMAVOY (no storage permission needed)
+          try {
+            ContentValues cv = new ContentValues();
+            cv.put(MediaStore.Images.Media.DISPLAY_NAME, "JUMAVOY_" + System.currentTimeMillis() + ".jpg");
+            cv.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            cv.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/JUMAVOY");
+            cameraUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+            if (cameraUri != null) cams.add(new Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT, cameraUri)
+              .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION));
+          } catch (Exception ignored) { cameraUri = null; }
+        }
+        cams.add(new Intent(MediaStore.ACTION_VIDEO_CAPTURE));
+        Intent ch = Intent.createChooser(get, "Файл для JUMAVOY");
+        ch.putExtra(Intent.EXTRA_INITIAL_INTENTS, cams.toArray(new Intent[0]));
+        try { startActivityForResult(ch, PICK); return true; }
+        catch (Exception e) { dropCamera(); fileCb = null; cb.onReceiveValue(null); return false; }
+      }
+
       @Override public void onPermissionRequest(PermissionRequest r) {
         runOnUiThread(() -> {
           if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) r.grant(r.getResources());
@@ -175,6 +207,24 @@ public class MainActivity extends Activity {
     if (t == null) return null;
     Matcher m = Pattern.compile("c=(\\d+)&k=([0-9a-f]{32})").matcher(t);
     return m.find() ? "c=" + m.group(1) + "&k=" + m.group(2) : null;
+  }
+
+  void dropCamera() { if (cameraUri != null) { try { getContentResolver().delete(cameraUri, null, null); } catch (Exception ignored) { } cameraUri = null; } }
+
+  @Override protected void onActivityResult(int code, int res, Intent data) {
+    super.onActivityResult(code, res, data);
+    if (code != PICK || fileCb == null) return;
+    Uri[] out = null;
+    if (res == RESULT_OK) {
+      if (data != null && data.getClipData() != null) {
+        out = new Uri[data.getClipData().getItemCount()];
+        for (int k = 0; k < out.length; k++) out[k] = data.getClipData().getItemAt(k).getUri();
+      } else if (data != null && data.getData() != null) out = new Uri[] { data.getData() };
+      else if (cameraUri != null) { out = new Uri[] { cameraUri }; cameraUri = null; } // the camera wrote the photo there
+    }
+    if (out == null || cameraUri != null && !java.util.Arrays.asList(out).contains(cameraUri)) dropCamera(); // the empty camera slot
+    fileCb.onReceiveValue(out);
+    fileCb = null;
   }
 
   @Override public void onRequestPermissionsResult(int code, String[] p, int[] res) {
