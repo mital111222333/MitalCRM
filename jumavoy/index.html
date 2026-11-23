@@ -417,7 +417,7 @@
 </div>
 
 <script>
-const WEB_VERSION = '2026.11.23-6';
+const WEB_VERSION = '2026.11.23-7';
 const API = 'https://oxchgcfyzszemqlvdjjr.supabase.co/functions/v1/ai-bot/app';
 const $ = id => document.getElementById(id);
 const store = {
@@ -425,6 +425,20 @@ const store = {
   set: (k, v) => { try { localStorage.setItem('jv_' + k, JSON.stringify(v)); return true; } catch { return false; } },
   del: k => { try { localStorage.removeItem('jv_' + k); } catch {} },
 };
+// The app and the panel over other apps are two windows with ONE storage: the queue of questions, the queue of board
+// changes and the chat log are read from storage before every change (never from a stale copy in this window), and only
+// one window at a time sends a queue (a lock with a deadline) — otherwise a queued question or task went out twice.
+const ME = Math.random().toString(36).slice(2);
+const sleepMs = ms => new Promise(r => setTimeout(r, ms));
+async function withLock(name, fn) {
+  const k = 'lock_' + name, held = () => { const l = store.get(k, null); return l && l.who !== ME && l.until > Date.now(); };
+  if (held()) return false;
+  store.set(k, { who: ME, until: Date.now() + 180e3 });
+  await sleepMs(40 + Math.random() * 40);                       // both windows wrote at once → only the last one goes on
+  const l = store.get(k, null); if (!l || l.who !== ME) return false;
+  const keep = setInterval(() => store.set(k, { who: ME, until: Date.now() + 180e3 }), 60e3);
+  try { await fn(); return true; } finally { clearInterval(keep); const x = store.get(k, null); if (x && x.who === ME) store.del(k); }
+}
 let attached = null; // a file waiting to be sent: { file, url }
 const params = new URLSearchParams(location.search);
 const ASSIST = params.has('assist');            // opened by the Android assistant gesture / app → listen at once
@@ -441,6 +455,8 @@ const ICON = {
 };
 const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch {} };
 const online = () => { try { if (N && N.isOnline) return !!N.isOnline(); } catch {} return navigator.onLine !== false; };
+// 1 день, 2 дня, 5 дней, 11 дней, 21 день, 22 дня
+const plural = (k, one, few, many) => { const a = Math.abs(k) % 100, b = a % 10; return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many; };
 const sec = ms => (ms / 1000).toFixed(1).replace('.', ',') + ' с';
 
 // ── the personal link: #c=<chat>&k=<key> (from /app in Telegram) ──
@@ -471,6 +487,8 @@ addEventListener('hashchange', () => {
 
 // ── chat log (kept on the phone) ──
 let history_ = store.get('log', []);
+// a change of the saved chat log: on top of what is stored now (the other window may have added to it)
+function editLog(fn) { history_ = store.get('log', history_); fn(history_); history_ = history_.slice(-60); store.set('log', history_); }
 const log = $('log');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 // the answer as the bot writes it: **bold**, <b>…</b>, links — everything else stays plain text
@@ -526,7 +544,7 @@ function bubble(m, save = true) {
   }
   if (save) d.classList.add('new');
   log.append(d); scrollDown();
-  if (save) { history_.push({ who: m.who, text, voice: voiced || undefined, ms: m.ms, pending: m.pending, re: m.re, file: m.file, screen: m.screen }); history_ = history_.slice(-60); store.set('log', history_); }
+  if (save) editLog(h => h.push({ who: m.who, text, voice: voiced || undefined, ms: m.ms, pending: m.pending, re: m.re, file: m.file, screen: m.screen }));
   return d;
 }
 function note(text, cls = 'note') {
@@ -546,42 +564,50 @@ function setState(s, mode) {
 // ── talking to JUMAVOY ──
 // a request that never reached the server (no connection) is marked .net and goes to the queue;
 // one the server may already be working on is never sent twice (a reminder or a debt would be saved twice)
-async function api(body, timeout = 90000) {
+// keep = the time limit stays on while the answer streams in (r.release() ends it): a mobile connection that silently
+// dies in the middle of an answer used to leave the app «Думаю…» forever, with every next question ignored
+const tooLong = ms => new Error('JUMAVOY не ответил за ' + Math.round(ms / 1000) + ' с. Спросите ещё раз.');
+async function api(body, timeout = 90000, keep = false) {
   const c = creds(), ac = new AbortController(), t = setTimeout(() => ac.abort(), timeout);
   let r;
   try { r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': c.chat, 'x-app-key': c.key }, body: JSON.stringify(body), signal: ac.signal }); }
   catch (e) {
     clearTimeout(t);
-    if (e.name === 'AbortError') throw new Error('JUMAVOY не ответил за ' + Math.round(timeout / 1000) + ' с. Спросите ещё раз.');
+    if (e.name === 'AbortError') throw tooLong(timeout);
     throw Object.assign(new Error('Нет связи с JUMAVOY.'), { net: true });
   }
-  clearTimeout(t);
-  if (r.status === 401) { const j = await r.json().catch(() => ({})); throw Object.assign(new Error(j.error || 'Нет доступа'), { auth: true }); }
+  if (keep) { r.release = () => clearTimeout(t); r.timedOut = () => ac.signal.aborted; r.signal = ac.signal; } else clearTimeout(t);
+  if (r.status === 401) { r.release?.(); const j = await r.json().catch(() => ({})); throw Object.assign(new Error(j.error || 'Нет доступа'), { auth: true }); }
   return r;
 }
 // the answer with its stages: {stage} lines while the server works («Смотрю прайс»), then the answer itself
+const ANSWER_MS = 160000; // the server itself stops a request after ~150 s
 async function send(body, onStage) {
-  const r = await api({ ...body, stream: true });
-  if (!/ndjson/.test(r.headers.get('content-type') || '')) { // an older server: one JSON answer
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || ('Ошибка ' + r.status));
-    return j;
-  }
-  const rd = r.body.getReader(), dec = new TextDecoder();
-  let buf = '';
-  for (;;) {
-    const { value, done } = await rd.read().catch(() => ({ done: true }));
-    if (value) buf += dec.decode(value, { stream: true });
-    let k;
-    while ((k = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1);
-      if (!line) continue;
-      let j; try { j = JSON.parse(line); } catch { continue; }
-      if (j.stage) { onStage && onStage(j.stage); continue; }
-      if (j.done) { if (j.status && j.status !== 200) throw new Error(j.error || ('Ошибка ' + j.status)); return j; }
+  const r = await api({ ...body, stream: true }, ANSWER_MS, true);
+  try {
+    if (!/ndjson/.test(r.headers.get('content-type') || '')) { // an older server: one JSON answer
+      const j = await r.json().catch(() => ({}));
+      if (r.timedOut()) throw tooLong(ANSWER_MS);
+      if (!r.ok) throw new Error(j.error || ('Ошибка ' + r.status));
+      return j;
     }
-    if (done) throw new Error('Связь оборвалась, ответ не пришёл. Спросите ещё раз.');
-  }
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    r.signal.addEventListener('abort', () => rd.cancel().catch(() => {})); // the time is up → the waiting read ends
+    let buf = '';
+    for (;;) {
+      const { value, done } = await rd.read().catch(() => ({ done: true }));
+      if (value) buf += dec.decode(value, { stream: true });
+      let k;
+      while ((k = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1);
+        if (!line) continue;
+        let j; try { j = JSON.parse(line); } catch { continue; }
+        if (j.stage) { onStage && onStage(j.stage); continue; }
+        if (j.done) { if (j.status && j.status !== 200) throw new Error(j.error || ('Ошибка ' + j.status)); return j; }
+      }
+      if (done) throw r.timedOut() ? tooLong(ANSWER_MS) : new Error('Связь оборвалась, ответ не пришёл. Спросите ещё раз.');
+    }
+  } finally { r.release(); }
 }
 // the server loads the CRM data, history and memory while the person is still speaking
 let lastWarm = 0;
@@ -632,46 +658,57 @@ function afterAnswer(j) {
 let outbox = store.get('outbox', []), flushing = false;
 function queueQ(body, meText, voiced, el) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const next = [...outbox, { id, body, shown: meText, voice: voiced, at: Date.now() }];
+  const next = [...store.get('outbox', outbox), { id, body, shown: meText, voice: voiced, at: Date.now() }];
   if (!store.set('outbox', next)) { note('Нет места, чтобы сохранить ' + (body.audio ? 'голосовое' : 'вопрос') + ' до появления интернета. Скажите короче или напишите текстом.', 'err'); return; }
   outbox = next;
-  if (el) { el.dataset.q = id; pendMark(el, true); const h = [...history_].reverse().find(x => x.who === 'me' && !x.pending); if (h) { h.pending = id; store.set('log', history_); } }
+  if (el) { el.dataset.q = id; pendMark(el, true); editLog(l => { const h = [...l].reverse().find(x => x.who === 'me' && !x.pending); if (h) h.pending = id; }); }
   else bubble({ who: 'me', text: meText, voice: voiced, pending: id });
   paintNet();
 }
 async function flush() {
-  if (taskQ.length && online()) flushTasks().catch(() => {});
+  if (store.get('taskq', []).length && online()) flushTasks().catch(() => {});
+  outbox = store.get('outbox', outbox);
   if (flushing || busy || !outbox.length || !online() || !creds().key) return;
   flushing = true; busy = true;
   let spoke = null;
   try {
-    while (outbox.length && online()) {
-      const it = outbox[0];
-      setState('отправляю', 'think');
-      let j;
-      try { j = await send(it.body, st => setState(st.toLowerCase(), 'think')); }
-      catch (e) {
-        if (e.net) break;
-        if (e.auth) { note(e.message, 'err'); break; }
-        j = { text: '⚠️ ' + e.message };
+    await withLock('outbox', async () => { // the other window (app / panel) is sending the queue → it answers them
+      while ((outbox = store.get('outbox', [])).length && online()) {
+        const it = outbox[0];
+        setState('отправляю', 'think');
+        let j;
+        try { j = await send(it.body, st => setState(st.toLowerCase(), 'think')); }
+        catch (e) {
+          if (e.net) break;
+          if (e.auth) { note(e.message, 'err'); break; }
+          j = { text: '⚠️ ' + e.message };
+        }
+        outbox = store.get('outbox', []).filter(x => x.id !== it.id); store.set('outbox', outbox);
+        editLog(l => { for (const h of l) if (h.pending === it.id) delete h.pending; });
+        const el = log.querySelector(`[data-q="${it.id}"]`); if (el) pendMark(el, false);
+        bubble({ who: 'bot', text: j.text || '…', re: j.heard || it.shown });
+        afterAnswer(j);
+        if (it.voice && j.text) spoke = j.text;
+        paintNet();
       }
-      outbox = outbox.filter(x => x.id !== it.id); store.set('outbox', outbox);
-      for (const h of history_) if (h.pending === it.id) delete h.pending;
-      store.set('log', history_);
-      const el = log.querySelector(`[data-q="${it.id}"]`); if (el) pendMark(el, false);
-      bubble({ who: 'bot', text: j.text || '…', re: j.heard || it.shown });
-      afterAnswer(j);
-      if (it.voice && j.text) spoke = j.text;
-      paintNet();
-    }
+    });
   } finally {
     flushing = false; busy = false; setState('готов'); paintNet();
     if (spoke && voiceOn && !document.hidden) speak(spoke); // the last spoken question gets its answer aloud
   }
 }
+// the other window queued or sent a question: the line «Нет интернета…» and the marks follow at once
+addEventListener('storage', e => {
+  if (e.key === 'jv_outbox') {
+    outbox = store.get('outbox', []); paintNet();
+    for (const d of log.querySelectorAll('[data-q]')) if (!outbox.some(x => x.id === d.dataset.q)) pendMark(d, false);
+  }
+  if (e.key === 'jv_taskq') taskQ = store.get('taskq', []);
+});
 function paintNet() {
+  outbox = store.get('outbox', outbox);
   const off = !online(), n = outbox.length, el = $('net');
-  const w = k => k === 1 ? 'вопрос' : k >= 2 && k <= 4 ? 'вопроса' : 'вопросов';
+  const w = k => plural(k, 'вопрос', 'вопроса', 'вопросов');
   el.textContent = off ? (n ? `Нет интернета. ${n} ${w(n)} отправлю, когда связь вернётся` : 'Нет интернета. Спрашивайте — отправлю, когда связь вернётся')
     : n ? `Отправляю отложенные: ${n} ${w(n)}` : '';
   el.classList.toggle('hidden', !creds().key || (!off && !n));
@@ -686,6 +723,11 @@ function localAction(text, isOnline) {
   if (!D) return null;
   const s = String(text).toLowerCase().replace(/ё/g, 'е').replace(/[ʻ’‘`]/g, "'").trim();
   if (s.length > 80 || /\?|сколько|какой|когда|qachon|qancha/.test(s)) return null;
+  // «будильник на 5 и напомни позвонить Фозилу» — two requests: with the internet the AI does both (it was only the alarm)
+  if (isOnline && /\s(и|а также|потом|затем|va|keyin esa)\s|напомн|eslat|запиши|запомни/.test(s)) return null;
+  // «таймер на полчаса / на час»
+  const half = s.match(/^(?:поставь\s+)?(?:таймер|taymer|timer)\s+(?:на\s+)?(полчаса|час|полтора часа|yarim soat|bir soat)$/);
+  if (half) { const sec = { 'полчаса': 1800, 'yarim soat': 1800, 'час': 3600, 'bir soat': 3600, 'полтора часа': 5400 }[half[1]]; return { act: { action: 'timer', seconds: sec, label: 'JUMAVOY' }, say: `⏱ Таймер на ${half[1]}` }; }
   let m = s.match(/(?:таймер|taymer|timer)\D{0,14}(\d+(?:[.,]\d+)?)\s*(секунд\S*|сек|с|минут\S*|мин|м|час\S*|ч|soniya|sekund|daqiqa|minut|soat)(?![a-zа-я'])/);
   if (m) {
     const n = Math.round(parseFloat(m[1].replace(',', '.')) * UNITS(m[2]));
@@ -702,6 +744,7 @@ function localAction(text, isOnline) {
   if (m) {
     let h = +m[1]; const mi = +(m[2] || 0);
     if (/вечера|дня|kech|tushdan/.test(m[3] || '') && h < 12) h += 12;
+    if (/ночи/.test(m[3] || '') && h === 12) h = 0; // «в 12 ночи» = 00:00, not noon
     if (h > 23 || mi > 59) return null;
     const hh = String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
     return { act: { action: 'alarm', hour: h, minute: mi, label: 'JUMAVOY' }, say: `⏰ Будильник на ${hh}` };
@@ -721,7 +764,7 @@ function localAction(text, isOnline) {
   if (!isOnline) { // without the internet: the AI cannot be asked, simple phone actions still work
     m = s.match(/^(?:открой|запусти|включи|och(?:ib ber)?)\s+(.{2,30})$/);
     if (m) return { act: { action: 'open_app', app: m[1] }, say: `📱 Открываю ${m[1]}` };
-    m = s.match(/^(?:позвони|набери|qo'ng'iroq qil)\D{0,12}(\+?\d[\d\s-]{6,16}\d)$/);
+    m = s.match(/^(?:позвони|набери|qo'ng'iroq qil)[^\d+]{0,12}(\+?\d[\d\s-]{6,16}\d)$/); // the «+» stays: +998… without it is not dialled
     if (m) return { act: { action: 'call', phone: m[1].replace(/[\s-]/g, '') }, say: `📞 Набираю ${m[1]}` };
   }
   return null;
@@ -737,9 +780,17 @@ function doLocal(la, shown, voiced) {
 
 function sendText() {
   const t = input.value.trim();
-  if (attached) { if (busy) return; input.value = ''; autosize(); return sendFile(t); }
+  // still answering the last question: the new one stays in the field (it used to vanish without being sent)
+  if (busy) { if (t || attached) { buzz(30); waitNote(); } return; }
+  if (attached) { input.value = ''; autosize(); return sendFile(t); }
   if (!t) return;
   input.value = ''; autosize(); ask({ text: t }, t);
+}
+let waitShown = null;
+function waitNote() {
+  if (waitShown?.isConnected) return;
+  waitShown = note('Ещё отвечаю на прошлый вопрос — новый остался в поле, отправьте его через секунду.');
+  setTimeout(() => { waitShown?.remove(); waitShown = null; }, 4000);
 }
 const input = $('input'), sendBtn = $('sendBtn');
 const autosize = () => {
@@ -759,7 +810,7 @@ addEventListener('resize', () => { kb(); if (document.activeElement === input) s
 input.addEventListener('focus', () => { warm(); setTimeout(() => { kb(); scrollDown(); }, 350); });
 input.addEventListener('blur', () => document.body.classList.remove('typing'));
 autosize();
-for (const b of $('chips').querySelectorAll('button')) b.onclick = () => b.dataset.q === '/tasks' ? openTasks() : ask({ text: b.dataset.q }, b.textContent);
+for (const b of $('chips').querySelectorAll('button')) b.onclick = () => b.dataset.q === '/tasks' ? openTasks() : busy ? waitNote() : ask({ text: b.dataset.q }, b.textContent);
 
 // ── voice answers: the text is on the screen at once, the voice follows ──
 let voiceOn = store.get('voice', true), player = null;
@@ -824,7 +875,7 @@ const nativeListen = l => !!(N && N.canListen() && nativeOff[l] !== APPV && Date
 let lang = store.get('lang', 'ru-RU');
 const langBtn = $('langBtn'), paintLang = () => { langBtn.textContent = lang === 'uz-UZ' ? 'UZ' : 'RU'; langBtn.style.visibility = N && N.canListen() ? '' : 'hidden'; };
 langBtn.onclick = () => { lang = lang === 'uz-UZ' ? 'ru-RU' : 'uz-UZ'; store.set('lang', lang); paintLang(); hint.textContent = nativeListen(lang) ? HINT : 'Этот язык телефон не распознаёт — запишу голос и расшифрую на сервере'; };
-let rec = null, nativeOn = false;
+let rec = null, nativeOn = false, micStarting = false;
 const mic = $('mic'), hint = $('hint'), live = $('live');
 const HINT = 'Нажмите на сферу и говорите';
 function micIdle() { nativeOn = false; setLvl(0); live.textContent = ''; hint.textContent = HINT; }
@@ -887,9 +938,12 @@ async function listen(server = false) {
     nativeOn = true; hint.textContent = 'Говорите — нажмите ещё раз, чтобы закончить'; setState('слушаю');
     N.listen(lang); return;
   }
+  if (micStarting) return; // a second tap while the microphone is still opening — it would start a second recording
   let stream;
+  micStarting = true;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
   catch (e) { note('Нет доступа к микрофону. Разрешите его в настройках браузера или приложения.', 'err'); return; }
+  finally { micStarting = false; }
   const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
   const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined), chunks = [];
   const ctx = new (window.AudioContext || window.webkitAudioContext)(); ctx.resume().catch(() => {});
@@ -936,7 +990,7 @@ const paintAuto = () => { $('autoSw').classList.toggle('on', autoListen); $('aut
 $('autoListen').onclick = () => { autoListen = !autoListen; store.set('autoListen', autoListen); paintAuto(); };
 paintAuto();
 $('newChat').onclick = () => { closeMenu(); stopSpeaking(); clearScreen(); ask({ text: '/new' }); };
-function clearScreen() { history_ = history_.filter(h => h.pending); store.set('log', history_); log.innerHTML = ''; for (const h of history_) bubble(h, false); if (!history_.length) greet(); }
+function clearScreen() { editLog(l => { const keep = l.filter(h => h.pending); l.length = 0; l.push(...keep); }); log.innerHTML = ''; for (const h of history_) bubble(h, false); if (!history_.length) greet(); }
 $('clearLocal').onclick = () => { clearScreen(); closeMenu(); };
 let logoutArmed = false;
 function armLogout(on) { logoutArmed = on; $('logout').querySelector('span').textContent = on ? 'Нажмите ещё раз, чтобы отключить' : 'Отключить приложение'; }
@@ -1067,17 +1121,28 @@ async function loadTasks() {
   try { const j = await apiJson({ tasks: { op: 'list' } }); tasks = j.tasks || []; store.set('tasks', tasks); renderTasks(); }
   catch (e) { renderTasks('Не удалось обновить доску: ' + e.message); }
 }
+// a queued change: { q: id, op } (older copies of the app kept the bare op)
+const qOp = x => x && x.q && x.op && typeof x.op === 'object' ? x.op : x;
+const qId = x => x && x.q && x.op && typeof x.op === 'object' ? x.q : null;
+function taskQueue(op) { taskQ = [...store.get('taskq', taskQ), { q: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), op }]; store.set('taskq', taskQ); }
 async function taskDo(op, local) {
   if (local) { local(); store.set('tasks', tasks); renderTasks(); }
-  if (!online()) { taskQ.push(op); store.set('taskq', taskQ); renderTasks('Нет интернета — изменение сохранено и уйдёт само.'); return; }
+  if (!online()) { taskQueue(op); renderTasks('Нет интернета — изменение сохранено и уйдёт само.'); return; }
   try { const j = await apiJson({ tasks: op }); tasks = j.tasks || tasks; store.set('tasks', tasks); renderTasks(); buzz(8); }
-  catch (e) { if (e.net) { taskQ.push(op); store.set('taskq', taskQ); renderTasks('Нет связи — изменение уйдёт само.'); } else { renderTasks('Не получилось: ' + e.message); loadTasks(); } }
+  catch (e) { if (e.net) { taskQueue(op); renderTasks('Нет связи — изменение уйдёт само.'); } else { renderTasks('Не получилось: ' + e.message); loadTasks(); } }
 }
-async function flushTasks() {
-  while (taskQ.length && online()) {
-    try { await apiJson({ tasks: taskQ[0] }); } catch (e) { if (e.net) return; }
-    taskQ.shift(); store.set('taskq', taskQ);
-  }
+// one sender at a time (in this window and across the app and the panel): the same «add» used to go twice
+let taskFlush = null;
+function flushTasks() {
+  return taskFlush ||= withLock('taskq', async () => {
+    for (;;) {
+      taskQ = store.get('taskq', []);
+      if (!taskQ.length || !online()) return;
+      const first = taskQ[0], id = qId(first);
+      try { await apiJson({ tasks: qOp(first) }); } catch (e) { if (e.net) return; } // another error: that change cannot be made, dropped
+      taskQ = store.get('taskq', []).filter((x, k) => id ? qId(x) !== id : k !== 0); store.set('taskq', taskQ);
+    }
+  }).finally(() => { taskFlush = null; });
 }
 function renderTasks(msg) {
   const b = $('taskBody'), keep = b.querySelector('.board')?.scrollLeft || 0; b.innerHTML = '';
@@ -1155,13 +1220,13 @@ function renderHistory() {
   const sr = el('input', 'search'); sr.placeholder = 'Поиск в истории'; sr.value = histQ;
   sr.oninput = () => { histQ = sr.value; const pos = sr.selectionStart; renderTasks(); const n = $('taskBody').querySelector('.search'); n.focus(); n.setSelectionRange(pos, pos); };
   b.append(sr);
-  const q = histQ.trim().toLowerCase(), list = taskHist.filter(t => !q || t.title.toLowerCase().includes(q));
+  const q = histQ.trim().toLowerCase(), list = taskHist.filter(t => t.done_at && (!q || String(t.title || '').toLowerCase().includes(q)));
   if (!list.length) { b.append(el('div', 'empty', q ? 'Ничего не нашёл' : 'Сделанные задачи будут храниться здесь — все, по месяцам.')); return; }
   const groups = new Map();
   for (const t of list) { const k = (t.done_at || '').slice(0, 7); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); }
   for (const [k, l] of groups) {
     const onTime = l.filter(t => t.due && t.done_at.slice(0, 10) <= t.due).length, withDue = l.filter(t => t.due).length;
-    b.append(el('div', 'group-title', `${monthName(k)} · ${l.length} ${l.length % 10 === 1 && l.length % 100 !== 11 ? 'задача' : 'задач'}${withDue ? ` · вовремя ${Math.round(onTime / withDue * 100)}%` : ''}`));
+    b.append(el('div', 'group-title', `${monthName(k)} · ${l.length} ${plural(l.length, 'задача', 'задачи', 'задач')}${withDue ? ` · вовремя ${Math.round(onTime / withDue * 100)}%` : ''}`));
     const g = el('div', 'group'); b.append(g);
     for (const t of l) {
       const r = el('div', 'row'), m = el('div', 'main', t.title);
@@ -1203,7 +1268,7 @@ function renderStats(d, msg) {
   const T = d.tasks || {};
   const hero = el('div', 'hero'); hero.innerHTML = ring(T.month_pct);
   const hv = el('div'); hv.append(el('div', 'big', `${T.done_month || 0} сделано`), el('div', 'lbl', 'задач в этом месяце — доля от всех задач месяца'));
-  hv.append(el('div', 'streak', T.streak ? `🔥 ${T.streak} ${T.streak === 1 ? 'день' : T.streak < 5 ? 'дня' : 'дней'} подряд с выполненными задачами` : 'Сделайте задачу сегодня — начнётся серия дней'));
+  hv.append(el('div', 'streak', T.streak ? `🔥 ${T.streak} ${plural(T.streak, 'день', 'дня', 'дней')} подряд с выполненными задачами` : 'Сделайте задачу сегодня — начнётся серия дней'));
   hero.append(hv); b.append(hero);
   const tiles = el('div', 'tiles');
   for (const [v, lbl, red] of [[T.done_week || 0, 'сделано за 7 дней'], [T.on_time_pct == null ? '—' : T.on_time_pct + '%', 'вовремя (из задач со сроком)'], [T.doing || 0, 'в процессе'], [T.overdue || 0, 'просрочено', (T.overdue || 0) > 0], [T.urgent || 0, 'срочных открыто', (T.urgent || 0) > 0], [T.open || 0, 'всего открыто']]) {
@@ -1393,7 +1458,7 @@ function checkAssistant() {
   $('assistFix').textContent = noMic ? 'Разрешить' : 'Вернуть';
   w.classList.toggle('hidden', !(noMic || bad));
 }
-jvNative.onMic = () => checkAssistant();
+window.jvNative.onMic = () => checkAssistant();
 $('assistFix').onclick = () => { if ($('assistWarn').dataset.kind === 'mic') { if (N.requestMic) N.requestMic(); } else if (N && N.openAssistantSettings) N.openAssistantSettings(); };
 $('assistLater').onclick = () => { warnLater = true; checkAssistant(); };
 document.addEventListener('visibilitychange', () => { if (document.hidden) return; checkAssistant(); paintNet(); warm(); flush(); });
@@ -1428,7 +1493,7 @@ if (PANEL) {
   ex.onclick = () => N.openApp();
   const cl = el('button', 'round', '✕'); cl.setAttribute('aria-label', 'Закрыть'); cl.onclick = () => N.closePanel();
   $('head').append(ex, cl);
-  jvNative.onScreen = readScreen;
+  window.jvNative.onScreen = readScreen;
   window.jumavoyPanelShow = () => { stopSpeaking(); log.innerHTML = ''; greet(); scrOn = false; readScreen(); setTimeout(() => listen(), 200); };
   window.jumavoyPanelHide = () => { stopSpeaking(); if (rec) { try { rec.stop(); } catch {} } micIdle(); setState('готов'); };
 }

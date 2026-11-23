@@ -1819,3 +1819,31 @@ D.test('app API: «Про экран» — the screen text and screenshot go to 
   assert((await M.TOOLS.phone_action.run(null, { action: 'open_url', url: 'javascript:alert(1)' }, ctx)).error, 'only http(s) links');
   assert(/Wi-Fi/.test(M.TPL.phone_action({ done_on_phone: { action: 'settings', panel: 'wifi' } })), 'settings text');
 });
+
+D.test('audit 23.11: a hedged (second) Gemini request is counted in the usage; app API failures still carry CORS', async () => {
+  D.env.set('GEMINI_HEDGE_MS', '40');
+  const g = (globalThis as any).fetch; let n = 0;
+  // the first Gemini request hangs for a while → the hedge sends a second one, which answers at once
+  (globalThis as any).fetch = async (input: any, init: any = {}) => {
+    const u = String(typeof input === 'string' ? input : input.url);
+    if (u.includes('generativelanguage') && n++ === 0) await new Promise(r => setTimeout(r, 250));
+    return g(input, init);
+  };
+  const used = () => DB.ai_usage.reduce((s: number, r: any) => s + r.requests, 0);
+  GEM = () => say('ok');
+  const before = used();
+  try { await tgPost({ text: 'как дела у агентов сегодня?' }); await M.usageSettled?.(); await new Promise(r => setTimeout(r, 300)); await M.usageSettled?.(); }
+  finally { (globalThis as any).fetch = g; D.env.set('GEMINI_HEDGE_MS', '0'); }
+  assert(n >= 2, 'the hedge fired: ' + n);
+  assert(used() - before >= 2, 'both requests counted: ' + (used() - before));
+
+  // a Supabase failure on the «Память» screen («forget» with the table gone): a JSON error with CORS (the app must not take it for «no internet»)
+  await tgPost({ text: '/app' });
+  const k = (lastText().match(/#c=111&k=([0-9a-f]{32})/) || [])[1];
+  const saved = DB.ai_memory; delete DB.ai_memory;
+  try {
+    const r = await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': '111', 'x-app-key': k }, body: JSON.stringify({ op: 'forget', id: 1 }) }));
+    assert(r.headers.get('access-control-allow-origin') === '*', 'CORS on an error: ' + r.status);
+    assert(r.status >= 400 && (await r.json()).error, 'an error answer: ' + r.status);
+  } finally { DB.ai_memory = saved; }
+});

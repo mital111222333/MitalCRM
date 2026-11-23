@@ -111,7 +111,7 @@ public class MainActivity extends Activity {
       @Override public void onPermissionRequest(PermissionRequest r) {
         runOnUiThread(() -> {
           if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) r.grant(r.getResources());
-          else { pending = r; requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MIC); }
+          else { if (pending != null) pending.deny(); pending = r; requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MIC); } // an older request never left waiting
         });
       }
     });

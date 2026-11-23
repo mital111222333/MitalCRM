@@ -1202,17 +1202,18 @@ export async function appApi(req: Request) {
     return out({ ok: true });
   }
   // the «Память» screen: what JUMAVOY remembers about the owner, and «forget» one record
-  if (b.op === 'memory') {
-    if (!sbOn()) return out({ error: NO_DB }, 500);
-    MEM.delete(chatId);
-    const rows = await memoryOf(chatId);
-    return out({ items: rows.map((r: any) => ({ id: r.id, kind: r.kind, text: r.text, sphere: r.sphere || 'work', until: r.until || undefined, at: r.created_at })) });
-  }
-  if (b.op === 'forget') {
-    const r = await TOOLS.forget.run(null, { id: n(b.id) }, { chatId });
-    return r.error ? out(r, 404) : out(r);
-  }
   try {
+    // (inside the try: a Supabase failure here answered without the CORS headers, and the app showed «Нет связи»)
+    if (b.op === 'memory') {
+      if (!sbOn()) return out({ error: NO_DB }, 500);
+      MEM.delete(chatId);
+      const rows = await memoryOf(chatId);
+      return out({ items: rows.map((r: any) => ({ id: r.id, kind: r.kind, text: r.text, sphere: r.sphere || 'work', until: r.until || undefined, at: r.created_at })) });
+    }
+    if (b.op === 'forget') {
+      const r = await TOOLS.forget.run(null, { id: n(b.id) }, { chatId });
+      return r.error ? out(r, 404) : out(r);
+    }
     // the memory screen: add a record by hand, change its text / kind / sphere / end date
     if (b.op === 'memory_add') {
       const r = await TOOLS.remember.run(null, { text: b.text, kind: b.kind, sphere: b.sphere, until: b.until }, { chatId });
@@ -3896,7 +3897,12 @@ async function gemini(body: any, model = CFG.model(), canFallback = true): Promi
       const take = (r: Response) => { if (settled) { r.body?.cancel().catch(() => {}); return; } settled = true; clearTimeout(t); res(r); };
       const fail = (e: any) => { if (--left <= 0 && !settled) { settled = true; clearTimeout(t); rej(e); } };
       once1().then(take, fail);
-      t = setTimeout(() => { if (settled) return; left++; console.warn('gemini slow:', model, h, 'ms → a second request'); once1().then(take, fail); }, h);
+      t = setTimeout(() => {
+        if (settled) return; left++; console.warn('gemini slow:', model, h, 'ms → a second request'); once1().then(take, fail);
+        // the second request is spent from Google's daily quota too (only the winner is counted below) → /limits and the
+        // 80% warning saw fewer requests than Google did
+        USAGE_P.push(trackUsage(model, false, null));
+      }, h);
     });
   };
   const call = async () => {
@@ -5051,7 +5057,8 @@ async function serve(req: Request) {
   // the kanban Mini App (tasks.html) → <function url>/tasks, signed with Telegram initData
   if (url.pathname.endsWith('/tasks')) return await tasksApi(req);
   // the JUMAVOY app (jumavoy/index.html, Android) → <function url>/app
-  if (url.pathname.endsWith('/app')) return await appApi(req);
+  // any failure still answers with the CORS headers: without them the app sees only «нет связи» and queues the question again
+  if (url.pathname.endsWith('/app')) return await appApi(req).catch(e => { console.error('app api', redact((e as Error)?.stack || e)); return new Response(JSON.stringify({ error: redact((e as Error).message) || 'Ошибка' }), { status: 500, headers: { ...APP_CORS, 'Content-Type': 'application/json; charset=utf-8' } }); });
   // schedule: pg_cron → ?cron=1 with the x-mital-cron header (= TG_SECRET). Answer at once, work in the background
   if (url.searchParams.has('cron')) {
     if (!CFG.secret() || req.headers.get('x-mital-cron') !== CFG.secret()) return new Response('forbidden', { status: 403 });

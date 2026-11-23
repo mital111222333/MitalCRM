@@ -1,6 +1,6 @@
 package uz.mital.jumavoy;
 
-import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -16,6 +16,8 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Things JUMAVOY does on the phone when the owner asks (phone_action in the bot): alarm, timer, an event in the phone's
@@ -51,7 +53,7 @@ public class Device {
                 case "sun": days.add(Calendar.SUNDAY); break;
               }
             }
-            i.putExtra(AlarmClock.EXTRA_DAYS, days);
+            i.putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, days); // the clock app reads an Integer list, not a Serializable
           }
           break;
         }
@@ -116,8 +118,18 @@ public class Device {
       i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
       final Intent go = i;
       final boolean quiet = a.equals("alarm") || a.equals("timer"); // set without a screen: the panel stays
-      ui.post(() -> { try { act.startActivity(go); if (host != null && !quiet) host.close(); } catch (Exception e) { /* reported below as well */ } });
-      return go.resolveActivity(act.getPackageManager()) != null ? "ok" : "На телефоне нет приложения для этого действия";
+      // the answer is what really happened: resolveActivity() said «no app» for the settings panels and other system
+      // screens hidden by Android 11+ package visibility, although they opened fine (this runs on the JS bridge thread)
+      final String[] err = { null };
+      final CountDownLatch done = new CountDownLatch(1);
+      ui.post(() -> {
+        try { act.startActivity(go); if (host != null && !quiet) host.close(); }
+        catch (ActivityNotFoundException e) { err[0] = "На телефоне нет приложения для этого действия"; }
+        catch (Exception e) { err[0] = "Не получилось: " + e.getMessage(); }
+        finally { done.countDown(); }
+      });
+      try { if (!done.await(3, TimeUnit.SECONDS)) return "ok"; } catch (InterruptedException e) { return "ok"; }
+      return err[0] == null ? "ok" : err[0];
     } catch (Exception e) {
       return "Не получилось: " + e.getMessage();
     }
@@ -149,16 +161,42 @@ public class Device {
   }
 
   // an app by the name the owner said: exact name first, then a name that contains it (Telegram, Карты, LINKO…)
+  // A short label inside the words used to win by chance: «OK» (Одноклассники) is inside «facebook», «X» inside almost
+  // anything — so a label counts as said only as a whole word, and the closest one wins (exact > starts with > a word).
   Intent findApp(String name) {
-    String q = name.toLowerCase(Locale.ROOT).trim();
+    String q = name.toLowerCase(Locale.ROOT).replace('ё', 'е').trim();
+    if (q.isEmpty()) return null;
     PackageManager pm = act.getPackageManager();
     List<ResolveInfo> apps = pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0);
-    ResolveInfo part = null;
+    String[] qs = { q, ALIAS.getOrDefault(q, q) }; // «телеграм» → Telegram (the label is often in Latin letters)
+    ResolveInfo best = null; int bestScore = 0;
     for (ResolveInfo r : apps) {
-      String label = String.valueOf(r.loadLabel(pm)).toLowerCase(Locale.ROOT);
-      if (label.equals(q)) return pm.getLaunchIntentForPackage(r.activityInfo.packageName);
-      if (part == null && (label.contains(q) || q.contains(label))) part = r;
+      String label = String.valueOf(r.loadLabel(pm)).toLowerCase(Locale.ROOT).replace('ё', 'е').trim();
+      if (label.isEmpty()) continue;
+      for (String w : qs) {
+        int sc = label.equals(w) ? 100
+          : label.startsWith(w) && w.length() >= 3 ? 80 - Math.min(30, label.length() - w.length())
+          : w.length() >= 3 && wordIn(w, label) ? 60
+          : label.length() >= 3 && wordIn(label, w) ? 50 + Math.min(9, label.length())
+          : 0;
+        if (sc > bestScore) { bestScore = sc; best = r; }
+      }
     }
-    return part == null ? null : pm.getLaunchIntentForPackage(part.activityInfo.packageName);
+    return best == null ? null : pm.getLaunchIntentForPackage(best.activityInfo.packageName);
+  }
+  static final java.util.Map<String, String> ALIAS = new java.util.HashMap<>();
+  static {
+    String[][] al = { { "телеграм", "telegram" }, { "телеграмм", "telegram" }, { "ватсап", "whatsapp" }, { "вацап", "whatsapp" }, { "вотсап", "whatsapp" },
+      { "ютуб", "youtube" }, { "инстаграм", "instagram" }, { "инста", "instagram" }, { "хром", "chrome" }, { "гугл", "google" }, { "линко", "linko" },
+      { "карты", "maps" }, { "яндекс", "yandex" }, { "яндекс go", "yandex go" }, { "яндекс такси", "yandex go" }, { "тикток", "tiktok" }, { "клик", "click" }, { "пейме", "payme" } };
+    for (String[] x : al) ALIAS.put(x[0], x[1]);
+  }
+  /** «w» stands in «s» as whole words (not inside another word) */
+  static boolean wordIn(String w, String s) {
+    for (int k = s.indexOf(w); k >= 0; k = s.indexOf(w, k + 1)) {
+      boolean l = k == 0 || !Character.isLetterOrDigit(s.charAt(k - 1)), r = k + w.length() >= s.length() || !Character.isLetterOrDigit(s.charAt(k + w.length()));
+      if (l && r) return true;
+    }
+    return false;
   }
 }
