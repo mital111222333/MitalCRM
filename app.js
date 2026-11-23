@@ -107,7 +107,7 @@ function render() {
     <div class="shell"><nav class="top"><button class="burger" id="burger" aria-label="Меню" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON.more}</svg></button><a class="logo" href="#/${landing() || 'home'}">mital</a><span class="crumb" id="crumb"></span><span class="spacer"></span>
     ${me.branch ? `<span class="branchlock" title="Ваш доступ ограничен этим филиалом">Филиал: ${esc(me.branch)}</span>` : '<select id="branch" class="branch" title="Филиал" aria-label="Филиал"><option value="">Все филиалы</option></select>'}
         <span class="user" id="me" title="Профиль и смена пароля">${esc(me.name)}<span class="role"> · ${esc(me.role)}</span></span><span class="user" id="out">Выйти</span></nav><div class="hubwrap"><nav class="tabs no-print" id="hubtabs" aria-label="Вкладки раздела" hidden></nav></div><main id="page"></main></div>
-    <nav class="tabbar" aria-label="Быстрые разделы">${tab('my', 'Мой день')}${tab('collect', 'Сбор')}${tab('lxpay', 'Оплаты')}${tab('leaders', 'Лидеры')}<a href="#" id="tbMore"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON.more}</svg><span>Ещё</span></a></nav>
+    <nav class="tabbar" aria-label="Быстрые разделы">${tab('my', 'Мой день')}${tab('lxday', 'Заказы')}${tab('lxpay', 'Оплаты')}${tab('leaders', 'Лидеры')}<a href="#" id="tbMore"><svg viewBox="0 0 24 24" aria-hidden="true">${ICON.more}</svg><span>Ещё</span></a></nav>
     <div class="scrim" id="scrim"></div>`;
   const burger = $('#burger'), side = $('#side');
   const setOpen = open => { document.body.classList.toggle('drawer', open); burger.setAttribute('aria-expanded', open); };
