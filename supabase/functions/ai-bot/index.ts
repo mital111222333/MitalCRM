@@ -50,7 +50,8 @@ const CFG = {
   secret: () => env('TG_SECRET'),
   allowed: () => env('ALLOWED_USERS').split(/[,\s]+/).filter(Boolean),
   gKey: () => env('GEMINI_KEY'),
-  model: () => env('GEMINI_MODEL', 'gemini-3.1-flash-lite'),
+  // 3.5 Flash-Lite: Google's fastest current model, newer than 3.1 (better Uzbek); 3.1 stays the fallback with its own quota
+  model: () => env('GEMINI_MODEL', 'gemini-3.5-flash-lite'),
   ghToken: () => env('GH_TOKEN'),
   owner: () => env('GH_OWNER', 'mital111222333'),
   repo: () => env('GH_REPO', 'mitalcrm-data'),
@@ -1312,9 +1313,7 @@ async function appAnswer(chatId: number, b: any, stage?: (s: string) => void): P
       stage?.('Расшифровываю голос');
       const media = { inlineData: { mimeType: String(b.mime || 'audio/webm').split(';')[0], data: String(b.audio) } };
       const t1 = Date.now();
-      let h = await transcribe(media);
-      const fb = fallbackModel();
-      if (h === null && fb && fb !== 'off') h = await transcribe(media, fb); // one more try on the other model
+      const h = await transcribe(media, DBC?.db); // the chain of models is inside (Google's speech model first)
       ms.transcribe = Date.now() - t1;
       if (h === null) return { status: 502, body: { error: 'Не удалось распознать голос. Скажите ещё раз или напишите текстом.' } };
       if (!h) return { status: 200, body: { text: '🎤 Не расслышал. Повторите, пожалуйста.', heard: '' } };
@@ -3730,6 +3729,15 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
   return `Ты — ${CFG.name}, личный AI-помощник Саидбонура (как Джарвис). Его сферы: работа — он супервайзер продаж компании MITAL (моторные масла Mitanol, Liman OIL, фильтры ECO FILTER; регионы Фергана, Наманган, Андижан), а также личное, семья, друзья и бизнес-идеи.
 Плановый период в компании — с 16-го числа по 15-е следующего месяца. «Этот месяц/период» = текущий плановый период, если не сказано «календарный».
 
+ХАРАКТЕР (как Джарвис из «Железного человека»):
+• Ты не справочник, а умный личный ассистент-собеседник: спокойный, уверенный, внимательный, с лёгким юмором к месту. Говоришь живо, как человек, без канцелярита («Ваш запрос обработан», «Согласно данным», «Я — языковая модель»).
+• Обращайся по имени изредка, не в каждом ответе: по-русски «Саидбонур», по-узбекски «Saidbonur aka». Не начинай каждый ответ с приветствия и не повторяй его вопрос.
+• Понимай СМЫСЛ, а не буквы. Голос расшифровывается с ошибками, он говорит быстро, смешивает узбекский и русский, обрывает фразу. Догадайся, что он имеет в виду, по истории разговора и данным. Неточно расслышанное имя клиента, агента или товара передавай функции как есть — она найдёт похожее. Переспрашивай одним коротким вопросом, только если от ответа зависят деньги или сообщение человеку и вариантов несколько; иначе бери самый вероятный и скажи, как понял («Понял как Fozilxon Fargona»).
+• Короткие продолжения — «а он?», «а за прошлый месяц?», «ещё», «подробнее», «a unichi?», «boshqasi-chi?», «shuni excel qil» — относятся к прошлому вопросу: возьми клиента, агента, товар и период из истории разговора.
+• Думай на шаг вперёд: если это реально полезно, в конце одной строкой предложи следующее действие («Напомнить ему завтра в 10?», «Скинуть в Excel?», «Написать ему черновик?»). Не в каждом ответе.
+• Приветствие, «как дела», «rahmat», благодарность, шутка, разговор не о деле — ответь коротко и тепло, как живой человек, функции не вызывай.
+• Не можешь что-то сделать — скажи честно одной фразой и предложи, что можешь.
+
 ПРАВИЛА:
 0. ИСТОЧНИК — ТОЛЬКО MitalCRM. Всё о работе (клиенты, агенты, заказы, оплаты, долги, склад, планы, зарплата, дисциплина, договоры, задания, пользователи, регионы) бери только из функций CRM: готовых или crm_explore / crm_query. Не бери это из интернета, новостей, писем, памяти разговора или своих знаний. Пользователь может попросить ЛЮБЫЕ данные платформы — найди и выдай их. ИСКЛЮЧЕНИЕ — OILBOOK, второй бизнес Саидбонура (платформа для точек замены масла, он её владелец и админ): всё про OilBook, его точки, подписки, оплаты подписок, заявки — только функции oilbook_* (суммы там в сумах, не в $). Изменить что-то в OilBook (продлить, включить, отключить, подтвердить чек, одобрить заявку, написать точке) → oilbook_action: это черновик с кнопкой, выполнится после нажатия. Данных о клиентах, машинах и выручке точек OilBook у тебя нет и не будет — так обещано точкам; на такие вопросы так и отвечай.
 1. Любые цифры (суммы, долги, количество) бери ТОЛЬКО из ответов функций. Никогда не считай и не придумывай сам. Прежде чем сказать «таких данных нет», поищи через crm_explore и crm_query; если и там нет — так и скажи.
@@ -3776,15 +3784,16 @@ ${skills.length ? `\nНАВЫКИ (название — когда примен�
 Сегодня ${t} (${wd}), сейчас ${L.time}, часовой пояс Ташкент.`;
 }
 
-// conversation: the last 6 question/answer pairs of the last 3 hours go to the AI as context. Every message is also kept
+// conversation: the last HIST_PAIRS (10) question/answer pairs of the last 12 hours go to the AI as context (it used to be
+// 6 pairs / 3 hours — «a nima bo'ldi?» after lunch had nothing to refer to). Every message is also kept
 // in Supabase (ai_messages), so after a cold start of the function the bot still remembers the talk. «/new» puts a marker.
 const HIST = new Map<number, { at: number; items: any[] }>();
-const HIST_MS = 3 * 3600e3, NEW_MARK = '/new';
+const HIST_MS = (n(env('HIST_HOURS')) || 12) * 3600e3, HIST_PAIRS = n(env('HIST_PAIRS')) || 10, NEW_MARK = '/new';
 async function getHistory(chatId: number): Promise<any[]> {
   const h = HIST.get(chatId); if (h) return Date.now() - h.at < HIST_MS ? h.items : [];
   let items: any[] = [];
   if (sbOn()) {
-    const rows = await sb(`ai_messages?chat_id=eq.${chatId}&created_at=gte.${q(new Date(Date.now() - HIST_MS).toISOString())}&order=id.desc&limit=13&select=role,text`).catch(() => []);
+    const rows = await sb(`ai_messages?chat_id=eq.${chatId}&created_at=gte.${q(new Date(Date.now() - HIST_MS).toISOString())}&order=id.desc&limit=${HIST_PAIRS * 2 + 1}&select=role,text`).catch(() => []);
     const list = rows.reverse(), cut = list.map((r: any) => r.role === 'user' && r.text === NEW_MARK).lastIndexOf(true);
     items = list.slice(cut + 1).map((r: any) => ({ role: r.role, parts: [{ text: r.text }] }));
     while (items.length && items[0].role !== 'user') items.shift();
@@ -3793,7 +3802,7 @@ async function getHistory(chatId: number): Promise<any[]> {
   return items;
 }
 async function remember(chatId: number, qText: string, a: string, tools = '') {
-  const items = [...await getHistory(chatId), { role: 'user', parts: [{ text: qText }] }, { role: 'model', parts: [{ text: a }] }].slice(-12);
+  const items = [...await getHistory(chatId), { role: 'user', parts: [{ text: qText }] }, { role: 'model', parts: [{ text: a }] }].slice(-HIST_PAIRS * 2);
   HIST.set(chatId, { at: Date.now(), items });
   // a bulk insert needs the same keys in every row (PostgREST PGRST102), so the question row has tools: null too
   if (sbOn()) await sb('ai_messages', { method: 'POST', prefer: 'return=minimal', body: [{ chat_id: chatId, role: 'user', text: qText.slice(0, 8000), tools: null }, { chat_id: chatId, role: 'model', text: a.slice(0, 8000), tools: tools || null }] }).catch(e => console.warn('log', e.message));
@@ -3846,14 +3855,35 @@ const perDayLimit = (d: any) => /per.?day|PerDay|daily/i.test(JSON.stringify(d?.
 export const retrySeconds = (d: any) => { const x = (d?.error?.details || []).find((v: any) => /RetryInfo/.test(v?.['@type'] || ''))?.retryDelay; const s = parseFloat(String(x || '')); return Number.isFinite(s) ? s : 0; };
 // GEMINI_FALLBACK_MODEL: a second free model with its own quota, used when the main one says 429 (per minute after one
 // wait, or the daily limit). «off» switches it off. If the fallback fails too, the user gets the usual limit message.
-const fallbackModel = () => env('GEMINI_FALLBACK_MODEL', 'gemini-2.5-flash-lite');
+// a comma list is a chain: the first model that is not the one that failed and that Google has not called «not found» today
+export const fallbackModel = (cur = CFG.model()) => {
+  const v = env('GEMINI_FALLBACK_MODEL', 'gemini-3.1-flash-lite,gemini-2.5-flash-lite');
+  if (v === 'off') return 'off';
+  return v.split(/[,\s]+/).filter(Boolean).find(m => m !== cur && !isDead(m)) || '';
+};
+// a model Google answers «not found / not available» for (a retired name, a model this key may not use) is skipped for
+// the rest of Google's day — every request used to pay for that refusal again before reaching the fallback
+const DEAD = new Map<string, string>();
+export const isDead = (m: string) => DEAD.get(m) === quotaDay();
+// (a 400 counts only when it is about the MODEL — «languageCodes … not supported» is a setting to drop, not a dead model)
+const deadAnswer = (status: number, d: any) => status === 404 || (status === 400 && /(models\/\S+|model\b).{0,80}(not found|not supported for|is not available|no longer)|unknown model|unsupported model/i.test(String(d?.error?.message || '')));
+// thinking: Gemini 3 Flash models think on «medium» by default (seconds per answer) — «low» keeps them quick.
+// A model that refuses the field (400 «thinking…») gets the request again without it, and never again today.
+const NOTHINK = new Set<string>();
+export function withThinking(body: any, model: string, level = '') {
+  if (body.generationConfig?.thinkingConfig || NOTHINK.has(model) || /tts|transcribe|live/i.test(model)) return body;
+  if (/^gemini-2\.5-flash(?!-lite)/.test(model)) return { ...body, generationConfig: { ...(body.generationConfig || {}), thinkingConfig: { thinkingBudget: n(env('GEMINI_THINK_BUDGET', '1024')) } } };
+  // «minimal» is not a level of every model (3.8 Flash starts at «low»)
+  if (/^gemini-[3-9][.\d]*-flash(?!-lite)/.test(model)) return { ...body, generationConfig: { ...(body.generationConfig || {}), thinkingConfig: { thinkingLevel: level === 'minimal' && /^gemini-3\.8/.test(model) ? 'low' : level || env('GEMINI_THINK_LEVEL', 'low') } } };
+  return body;
+}
 // GEMINI_SMART_MODEL: a stronger free model (it thinks before answering) for hard questions — analysis, «почему»,
 // advice, plans, the user's corrections. Its free daily quota is smaller than Flash-Lite's: on 429 (or an unknown model
 // name) the same question goes on the main model at once, without waiting, and after a «per day» 429 the smart model
 // is skipped until Google resets the quota. «off» switches it off. Simple questions always stay on the main model.
-const smartModel = () => env('GEMINI_SMART_MODEL', 'gemini-2.5-flash');
+const smartModel = () => env('GEMINI_SMART_MODEL', 'gemini-3.6-flash');
 let SMART_SPENT = ''; // quotaDay() on which the smart model said «daily limit»
-export const smartOn = () => { const m = smartModel(); return !!m && m !== 'off' && m !== CFG.model() && SMART_SPENT !== quotaDay(); };
+export const smartOn = () => { const m = smartModel(); return !!m && m !== 'off' && m !== CFG.model() && SMART_SPENT !== quotaDay() && !isDead(m); };
 // hard = the AI has to think, not just fetch a number: «почему упали продажи», «что делать с агентом», «сравни», «nega»…
 const HARD_RE = /почему|отчего|из-за чего|анализ|проанализ|разбер|сравни|сравнен|объясни|причин|посоветуй|совет|что (мне )?делать|что предлагаешь|как (мне )?(улучшить|увеличить|поднять|исправить|решить|лучше)|стратег|план действий|составь план|оцени|выводы?(?![а-я])|идеи|придумай|продумай|подумай|рекоменд|tahlil|nega\b|nima uchun|maslahat|solishtir|qanday qilib|nima qilay|nima qilish kerak|taklif|strategiya|fikring/i;
 export function isHardQuestion(text: string) {
@@ -3865,7 +3895,7 @@ export function isHardQuestion(text: string) {
 const CORRECTION_RE = /^\s*(нет\s*[,.!—–-]|не так|не то(?![а-я])|неверно|ошибка|ошибся|опять не|снова не|yo'?q\s*[,.!—–-]|йўқ\s*[,.!—–-]|xato|noto'?g'?ri|нотўғри)|неправильно|не правильно|ты ошиб|ты не (так|то|понял)|я же (сказал|говорил|писал)|не надо так|сколько (раз|можно) (говорить|повторять)|xato qilding|unday emas|tushunmading|men aytdim-?ku/i;
 export const isCorrection = (text: string) => { const t = String(text || '').trim(); return !!t && !t.startsWith('/') && t.length <= 600 && CORRECTION_RE.test(t); };
 export const CORRECTION_NOTE = 'ЗАМЕТКА БОТА (пишет бот, не пользователь): похоже, пользователь поправляет твой прошлый ответ. 1) Пойми, в чём ошибка, и дай исправленный ответ (цифры снова из функций). 2) Если из поправки следует ОБЩЕЕ правило на будущее — как считать, что показывать, как понимать слово, имя, товар или период — сохрани его через remember kind=rule одной короткой фразой и в конце ответа добавь строку «📌 Запомнил правило: …». Разовую поправку (опечатка, другой клиент, другая дата) правилом не сохраняй. Если поправка противоречит правилу 1 (числа только из функций) — не сохраняй и объясни почему.';
-async function gemini(body: any, model = CFG.model(), canFallback = true): Promise<any> {
+async function gemini(body: any, model = CFG.model(), canFallback = true, think = ''): Promise<any> {
   // the smart model never makes the user wait: any trouble with it → the same request on the main model
   if (canFallback && model === smartModel() && model !== CFG.model()) {
     if (!smartOn()) return gemini(body, CFG.model(), true);
@@ -3876,13 +3906,19 @@ async function gemini(body: any, model = CFG.model(), canFallback = true): Promi
       return gemini(body, CFG.model(), true);
     }
   }
-  const isSmart = model === smartModel() && model !== CFG.model();
-  const search = !!body.tools?.some((t: any) => t.google_search);
-  // Gemini 2.5 Flash thinks as long as it likes (10–30 s on a hard question): a cap keeps the answer quick
-  if (/^gemini-2\.5-flash(?!-lite)/.test(model) && !body.generationConfig?.thinkingConfig) {
-    const budget = n(env('GEMINI_THINK_BUDGET', '1024'));
-    body = { ...body, generationConfig: { ...(body.generationConfig || {}), thinkingConfig: { thinkingBudget: budget } } };
+  // a model Google already refused today: straight to the next one in the chain, no second refusal to wait for
+  if (isDead(model)) {
+    const fb = fallbackModel(model);
+    if (canFallback && fb && fb !== 'off') return gemini(body, fb, false);
+    throw new Error(`Модель ${model} сейчас недоступна у Google`);
   }
+  const isSmart = model === smartModel() && model !== CFG.model();
+  // the smart model and the speech model never wait out a per-minute limit: their callers have a quicker way out
+  const noWait = isSmart || model === sttModel();
+  const search = !!body.tools?.some((t: any) => t.google_search);
+  // Gemini 2.5 Flash thinks as long as it likes (10–30 s on a hard question), Gemini 3 Flash on «medium»: a cap keeps it quick
+  const body0 = body;
+  body = withThinking(body, model, think);
   // the key goes in a header, not in the URL: a network error prints the whole URL, and it reached the logs
   const once1 = () => fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': headerSafe('GEMINI_KEY', CFG.gKey()) }, body: JSON.stringify(body),
@@ -3914,23 +3950,34 @@ async function gemini(body: any, model = CFG.model(), canFallback = true): Promi
     return { r, d };
   };
   let { r, d } = await call();
+  if (r.status === 400 && body !== body0 && /thinking/i.test(String(d.error?.message || ''))) {
+    console.warn('gemini: no thinking setting for', model, String(d.error?.message || '').slice(0, 160));
+    NOTHINK.add(model); body = body0; ({ r, d } = await call());
+  }
+  if (deadAnswer(r.status, d)) {
+    DEAD.set(model, quotaDay());
+    console.warn('gemini: model unavailable →', model, r.status, String(d.error?.message || '').slice(0, 200));
+    const fb = fallbackModel(model);
+    if (canFallback && fb && fb !== 'off') return gemini(body0, fb, false);
+    throw new Error(`Модель ${model} недоступна у Google (${r.status})`);
+  }
   // the per-minute limit (free tier ~15 a minute) passes by itself: wait as long as Google asks (≤ 20 s) and try once more
   // the per-minute limit with a fallback model at hand: that model answers at once (its own quota) — nobody waits 20 s
-  const fb0 = fallbackModel();
-  if (r.status === 429 && !search && !isSmart && !perDayLimit(d) && canFallback && fb0 && fb0 !== 'off' && fb0 !== model) {
-    try { const out = await gemini(body, fb0, false); console.log('gemini 429 per minute → fallback at once:', fb0); return out; }
+  const fb0 = fallbackModel(model);
+  if (r.status === 429 && !search && !noWait && !perDayLimit(d) && canFallback && fb0 && fb0 !== 'off' && fb0 !== model) {
+    try { const out = await gemini(body0, fb0, false); console.log('gemini 429 per minute → fallback at once:', fb0); return out; }
     catch (e) { console.warn('gemini fallback', fb0, redact((e as Error).message)); }
   }
-  if (r.status === 429 && !search && !isSmart && !perDayLimit(d)) {
+  if (r.status === 429 && !search && !noWait && !perDayLimit(d)) {
     const s = retrySeconds(d);
     if (s <= 20) { console.warn('gemini 429 per minute, waiting', s || 5, 's'); await sleep(Math.max(2, s || 5) * 1000); ({ r, d } = await call()); }
   }
   if (r.status === 429) {
     console.warn('gemini 429', model, JSON.stringify(d.error || {}).slice(0, 600));
     if (search) throw Object.assign(new Error('Лимит поиска в интернете (Google Search в Gemini) на сегодня исчерпан. Обычные вопросы по CRM работают.'), { searchLimit: true });
-    const fb = fallbackModel();
+    const fb = fallbackModel(model);
     if (canFallback && fb && fb !== 'off' && fb !== model) {
-      try { const out = await gemini(body, fb, false); console.log('gemini fallback used:', fb); return out; }
+      try { const out = await gemini(body0, fb, false); console.log('gemini fallback used:', fb); return out; }
       catch (e) { console.warn('gemini fallback', fb, redact((e as Error).message)); }
     }
     const rs = quotaReset();
@@ -3942,9 +3989,9 @@ async function gemini(body: any, model = CFG.model(), canFallback = true): Promi
   // model on other servers and usually answers; if it is busy too, a plain message instead of Google's English text
   if (r.status === 500 || r.status === 503) {
     console.warn('gemini overloaded', model, r.status, String(d.error?.message || '').slice(0, 200));
-    const fb = fallbackModel();
+    const fb = fallbackModel(model);
     if (canFallback && fb && fb !== 'off' && fb !== model) {
-      try { const out = await gemini(body, fb, false); console.log('gemini fallback used (overload):', fb); return out; }
+      try { const out = await gemini(body0, fb, false); console.log('gemini fallback used (overload):', fb); return out; }
       catch (e) { console.warn('gemini fallback', fb, redact((e as Error).message)); }
     }
     throw new Error('Gemini сейчас перегружен — это временно, на стороне Google. Подождите минуту-две и спросите снова. Команды /today /dolg /k /plan /brief работают без ИИ.');
@@ -3967,6 +4014,9 @@ async function limitsText() {
     cur.limited ? `⛔ Отказов из-за лимита сегодня: ${cur.limited}` : '',
     (() => { const t = rows.find(r => r.day === today && /tts/i.test(r.model)); return t ? `🔊 Голосовые ответы сегодня: ${t.requests}${t.limited ? ` · отказов из-за лимита: ${t.limited}` : ''} (${t.model}, у озвучки свой лимит)` : ''; })(),
     (() => { const sm = smartModel(); if (!sm || sm === 'off' || sm === model) return ''; const s = rows.find(r => r.day === today && r.model === sm); return `🧠 Умная модель для сложных вопросов (${sm}, свой бесплатный лимит): сегодня ${s ? s.requests : 0} запросов${s?.limited ? ` · отказов из-за лимита: ${s.limited}` : ''}${SMART_SPENT === today ? ' · лимит на сегодня кончился, сложные вопросы идут на основную модель' : ''}`; })(),
+    (() => { const st = sttModel(), sl = sttLlm(), used = rows.filter(r => r.day === today && (r.model === st || r.model === sl)).reduce((x, r) => x + r.requests, 0);
+      const dead = [st, sl, model, smartModel()].filter(m => m && m !== 'off' && isDead(m));
+      return `🎤 Распознавание голоса: ${st !== 'off' && !isDead(st) ? st : sl}${used ? ` · сегодня ${used}` : ''}${LAST_STT.at ? `\nПоследнее голосовое: ${LAST_STT.model}, ${(LAST_STT.ms / 1000).toFixed(1)} с` : ''}${dead.length ? `\n⚠️ Google сегодня не даёт модели: ${dead.join(', ')} — работают запасные` : ''}`; })(),
     `Токены сегодня: ${k(n(cur.tokens_in))} вход / ${k(n(cur.tokens_out))} ответ`,
     `🔄 Обновится в ${rs.at} по Ташкенту (через ${rs.in})`,
     byDay.size > 1 ? 'За 7 дней:\n' + [...byDay.entries()].map(([d, v]) => `• ${dm(d)} — ${v}`).join('\n') : '',
@@ -4590,6 +4640,11 @@ async function tick() {
   }
   // 2) briefs and alerts: once a day, in their hour, not on quiet days
   const L = localParts(), chats = CFG.allowed().map(Number).filter(Boolean);
+  // warm data: from 6:00 to 23:59 the CRM data is kept fresh here, so the first question after a pause is answered at once
+  // instead of first reading ~4 MB from GitHub (WARM_DATA=off switches it off)
+  if (env('WARM_DATA') !== 'off' && L.h >= 6 && (!DBC || Date.now() - DBC.at > 8 * 60e3)) {
+    const tw = Date.now(); await refreshDB().then(() => { res.warm = Date.now() - tw; }).catch(e => console.warn('warm data', (e as Error).message));
+  }
   if (!chats.length || CFG.quiet().includes(L.wd)) return res;
   let db: any = null;
   const slot = async (name: string, hour: number, fn: (db: any, chat: number) => Promise<void>) => {
@@ -4633,6 +4688,16 @@ async function tg(method: string, params: any) {
     if (j && j.ok === false && !/not modified|query is too old/i.test(j.description || '')) console.warn('telegram', method, r.status, String(j.description || '').slice(0, 200));
     return j;
   } catch (e) { console.warn('telegram', method, redact((e as Error).message)); return { ok: false, description: 'нет связи с Telegram' }; }
+}
+// the «🎤 «…» ⏳» message of a voice question becomes the answer itself (one message, like a conversation). Only when it fits
+// one message and its keyboard (if any) is an inline one; otherwise the caller sends the answer the usual way
+async function editInto(chatId: number, messageId: number, text: string) {
+  const kb = KB.get(chatId);
+  if (!text || text.length > 4000 || (kb && !kb.inline_keyboard)) return false;
+  const r = await tg('editMessageText', { chat_id: chatId, message_id: messageId, text, disable_web_page_preview: true, ...(kb ? { reply_markup: kb } : {}) }).catch(() => null);
+  if (!r?.ok) return false;
+  if (kb) KB.delete(chatId);
+  return true;
 }
 async function say(chatId: number, text: string) {
   text = text || '…';
@@ -4742,8 +4807,21 @@ const unb64 = (s: string): Uint8Array => {
   const F = (Uint8Array as any).fromBase64; if (typeof F === 'function') { try { return F(s); } catch { /* padding or alphabet issue → the loop below */ } }
   const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out;
 };
+// GEMINI_TTS_MODEL can be a chain too: the current 3.8 Flash TTS first, the old 2.5 preview if this key may not use it
 async function tts(text: string) {
-  const model = env('GEMINI_TTS_MODEL', 'gemini-2.5-flash-preview-tts');
+  const chain = env('GEMINI_TTS_MODEL', 'gemini-3.8-flash-tts,gemini-2.5-flash-preview-tts').split(/[,\s]+/).filter(Boolean);
+  const live = chain.filter(m => !isDead(m));
+  let last: Error | null = null;
+  for (const model of live.length ? live : chain) {
+    try { return await tts1(text, model); } catch (e) {
+      last = e as Error; if ((e as any).limit) throw e;
+      if ((e as any).dead) { DEAD.set(model, quotaDay()); continue; }
+      throw e;
+    }
+  }
+  throw last || new Error('Нет модели озвучки');
+}
+async function tts1(text: string, model: string) {
   const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': headerSafe('GEMINI_KEY', CFG.gKey()) },
     body: JSON.stringify({
@@ -4754,7 +4832,7 @@ async function tts(text: string) {
   const d = await r.json().catch(() => ({}));
   await trackUsage(model, r.status === 429, d.usageMetadata);
   if (r.status === 429) throw Object.assign(new Error('дневной лимит озвучки Gemini исчерпан — до сброса отвечаю текстом'), { limit: true });
-  if (!r.ok) throw new Error(`Gemini TTS ${r.status}: ${d.error?.message || ''}`);
+  if (!r.ok) throw Object.assign(new Error(`Gemini TTS ${r.status}: ${d.error?.message || ''}`), { dead: deadAnswer(r.status, d) || (r.status === 400 && /voice/i.test(String(d.error?.message || ''))) });
   const part = d.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.data);
   if (!part) throw new Error('Gemini не вернул аудио');
   const rate = parseInt((String(part.inlineData.mimeType).match(/rate=(\d+)/) || [])[1] || '24000', 10);
@@ -4809,12 +4887,70 @@ export const TRANSCRIBE_PROMPT = `Запиши ДОСЛОВНО, что сказ
 5W-30, 10W-40, 5W-40, 0W-20, ATF, SQ, SN, SP, qizil (red), binafsha (purple), karobka (коробка), dona (штука), litr;
 aksiya, prays-list, narx / narxi (цена), chegirma (скидка), bonus, qarz (долг), to'lov (оплата), qoldiq (остаток), ombor / sklad (склад), zakaz, mijoz (клиент), agent, reja (план), oylik, hisobla (посчитай), yubor (отправь), ayt (скажи).
 Если речи нет или ничего не разобрать — ответь одним словом: ПУСТО`;
-async function transcribe(media: any, model = CFG.model()): Promise<string | null> {
-  try {
-    const d = await gemini({ contents: [{ role: 'user', parts: [media, { text: TRANSCRIBE_PROMPT }] }], generationConfig: { temperature: 0 } }, model, model === CFG.model());
-    const t = (d.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join(' ').replace(/\s+/g, ' ').trim().replace(/^[«"]|[»"]$/g, '');
-    return /^ПУСТО\.?$/i.test(t) ? '' : t.slice(0, 2000);
-  } catch (e) { console.warn('transcribe', redact((e as Error).message)); if ((e as Error).message.includes('лимит')) throw e; return null; }
+// Speech → text, best first (23.11: Uzbek speech came out half wrong on Flash-Lite):
+// 1) GEMINI_STT_MODEL (gemini-3.5-transcribe): Google's own speech-to-text model — Uzbek (uz-UZ) and Russian, switching
+//    languages inside one sentence, and a custom vocabulary: product names, agents and the most active clients from the CRM;
+// 2) GEMINI_STT_LLM (gemini-3.6-flash, thinking «minimal») with TRANSCRIBE_PROMPT — much better ears than Flash-Lite;
+// 3) the main model, as before. «off» switches step 1 or 2 off. A model Google refuses is skipped for the day (isDead).
+export const sttModel = () => env('GEMINI_STT_MODEL', 'gemini-3.5-transcribe');
+const sttLlm = () => env('GEMINI_STT_LLM', 'gemini-3.6-flash');
+const STT_WORDS = ['Jumavoy', 'MITAL', 'Golden Booster', 'Liman', 'Mitanol', 'Delpin', 'ECO FILTER', 'X-Force', 'Dexron', 'Captiva', 'Spark', 'Matiz', 'Nexia', 'Cobalt', 'Damas', 'Gentra', 'Lacetti',
+  '5W-30', '5W-40', '10W-40', '0W-20', '15W-40', '20W-50', 'ATF', 'qizil', 'binafsha', 'karobka', 'dona', 'litr', 'aksiya', 'prays-list', 'narxi', 'chegirma', 'bonus', 'qarz', "to'lov", 'qoldiq',
+  'ombor', 'sklad', 'zakaz', 'mijoz', 'agent', 'reja', 'oylik', 'hisobla', 'yubor', 'ayt', "ko'rsat", 'eslat', 'Valvoline', 'Lukoil', 'LINKO', 'MitalCRM', 'Fargona', 'Namangan', 'Andijon', 'Qo\'qon', 'Marg\'ilon'];
+// the vocabulary: the fixed words + agents + clients with the most orders in the last 60 days (≈100 terms work best)
+export function sttVocabulary(db: any) {
+  const out = new Set<string>(STT_WORDS);
+  for (const a of (db?.agents || []) as string[]) if (a) out.add(String(a));
+  if (db?.orders?.values) {
+    const since = addDays(todayStr(), -60), cnt = new Map<string, number>();
+    for (const o of db.orders.values()) if (o.client && String(o.date || '') >= since) cnt.set(o.client, (cnt.get(o.client) || 0) + 1);
+    for (const [c] of [...cnt].sort((a, b) => b[1] - a[1]).slice(0, 110 - out.size)) out.add(c);
+  }
+  return [...out].slice(0, 120);
+}
+// the transcript is in parts[].text or (word timestamps) in parts[].audioTranscription.words[]
+function sttText(d: any) {
+  const parts = d?.candidates?.[0]?.content?.parts || [];
+  const t = parts.map((p: any) => p.text || p.audioTranscription?.text || (p.audioTranscription?.words || []).map((w: any) => w.word).join(' ') || '').join(' ');
+  return cleanHeard(t);
+}
+// «Tashkent ʻ ’ ` → '», spaces, quotes; «Jumavoy, …» at the start is the wake word, not the question
+export const cleanHeard = (t: string) => String(t || '').replace(/[ʻʼ‘’`´]/g, "'").replace(/\s+/g, ' ').trim().replace(/^[«"]|[»"]$/g, '').slice(0, 2000);
+export const LAST_STT = { model: '', ms: 0, at: 0, text: '' }; // for /stt — which ears heard the last voice message
+async function transcribe(media: any, db?: any): Promise<string | null> {
+  const t0 = Date.now();
+  const done = (model: string, t: string) => { Object.assign(LAST_STT, { model, ms: Date.now() - t0, at: Date.now(), text: t }); console.log('stt', model, Date.now() - t0, 'ms'); return t; };
+  let limitErr: Error | null = null;
+  const stt = sttModel();
+  if (stt && stt !== 'off' && !isDead(stt)) {
+    const cfg: any = { languageCodes: ['uz-UZ', 'ru-RU'], customVocabulary: sttVocabulary(db) };
+    for (const c of [cfg, { customVocabulary: cfg.customVocabulary }]) { // a refused language list → automatic language detection
+      try {
+        const d = await gemini({ contents: [{ role: 'user', parts: [media] }], generationConfig: { audioTranscriptionConfig: c } }, stt, false);
+        const t = sttText(d);
+        return done(stt, /^ПУСТО\.?$/i.test(t) ? '' : t);
+      } catch (e) {
+        const m = (e as Error).message; console.warn('transcribe', stt, redact(m).slice(0, 200));
+        if (/лимит/i.test(m)) { limitErr = e as Error; break; }
+        if (isDead(stt) || !/400|INVALID|language/i.test(m)) break;
+      }
+    }
+  }
+  const llm = sttLlm();
+  for (const model of [...new Set([llm && llm !== 'off' ? llm : '', CFG.model(), fallbackModel(CFG.model())])].filter(m => m && m !== 'off')) {
+    if (isDead(model)) continue;
+    try {
+      const body: any = { contents: [{ role: 'user', parts: [media, { text: TRANSCRIBE_PROMPT }] }], generationConfig: { temperature: 0 } };
+      const d = await gemini(body, model, false, 'minimal'); // writing down needs no thinking
+      const t = cleanHeard((d.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join(' '));
+      return done(model, /^ПУСТО\.?$/i.test(t) ? '' : t);
+    } catch (e) {
+      const m = (e as Error).message; console.warn('transcribe', model, redact(m).slice(0, 200));
+      if (/лимит/i.test(m)) limitErr = e as Error;
+    }
+  }
+  if (limitErr) throw limitErr;
+  return null;
 }
 // a photo or document for a one-off question: Gemini reads PDF and images itself, other files are turned into text
 async function filePart(doc: any, photo: any, have?: Uint8Array) { // have: the file is already here (sent from the app)
@@ -4993,6 +5129,7 @@ async function handle(u: any) {
   if (!text && !voice && !doc && !photo) return say(chatId, 'Пришлите вопрос текстом, голосовым, фото или документом.');
   await tg('sendChatAction', { chat_id: chatId, action: doc || photo ? 'upload_document' : 'typing' });
   const typing = setInterval(() => tg('sendChatAction', { chat_id: chatId, action: 'typing' }), 4500);
+  const echo = { id: 0, text: '' }; // the «🎤 «…» ⏳» message of a voice question
   try {
     const t0 = Date.now();
     const nb = text.match(/^\/nb(?:@\w+)?(?:\s+([\s\S]*))?$/i);
@@ -5020,11 +5157,18 @@ async function handle(u: any) {
     if (hit && Date.now() - hit.at < 300e3 && (await getHistory(chatId)).at(-1)?.parts?.[0]?.text === hit.mem) return await say(chatId, hit.text);
     // the CRM data, the file and the chat's history / memory / skills are fetched at the same time (ask() then reads them
     // from the caches). Without the CRM data the bot still answers everything that does not need it (see NO_CRM)
-    const [db, media] = await Promise.all([loadDB(), voice ? voicePart(voice) : doc || photo ? filePart(doc, photo) : null,
-      getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
-    // voice: written down first by a request without the history, then answered as the text it is (see transcribe)
-    const heard = voice ? await transcribe(media) : null;
-    if (voice && heard === '') return await say(chatId, '🎤 Не расслышал. Повторите, пожалуйста, или напишите текстом.');
+    // voice: written down first by a request without the history (see transcribe) — it starts the moment the audio is
+    // here, not after the CRM data, and what was heard is shown at once (🎤 «…»); the answer then replaces that message
+    const mediaP = voice ? voicePart(voice) : doc || photo ? filePart(doc, photo) : Promise.resolve(null);
+    const heardP = voice ? mediaP.then(md => transcribe(md, DBC?.db)).then(async h => {
+      if (h) { echo.text = `🎤 «${h}»`; const r = await tg('sendMessage', { chat_id: chatId, text: echo.text + '\n\n⏳', disable_web_page_preview: true }).catch(() => null); echo.id = n(r?.result?.message_id); }
+      return h;
+    }) : Promise.resolve(null);
+    heardP.catch(() => {}); // awaited below; this only keeps an early failure from being «unhandled»
+    const [db, media] = await Promise.all([loadDB(), mediaP, getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
+    const heard0 = await heardP;
+    if (voice && heard0 === '') return await say(chatId, '🎤 Не расслышал. Повторите, пожалуйста, или напишите текстом.');
+    const heard = heard0 ? stripWake(heard0) : heard0;
     const parts = heard ? [{ text: `(голосовое сообщение, расшифровка) ${heard}` }]
       : voice ? [media, { text: '(голосовое сообщение: передай в поле heard, что услышал)' }]
       : media ? [media, { text: (text || 'Что здесь? Если это накладная или чек — распиши товары, количество и суммы.') + (savedNote ? `\n(${SAVED_MARK}: бот уже сохранил этот файл в блокнот. Кратко скажи, что в нём главное; цены потом бери через price_list.)` : '') }] : [{ text }];
@@ -5032,15 +5176,20 @@ async function handle(u: any) {
     const fileInfo = photo ? { file_id: photo.file_id, mime: 'image/jpeg' } : doc ? { file_id: doc.file_id, mime: doc.mime_type || '' } : undefined;
     const res = await ask(db, chatId, parts, qText, fileInfo);
     if (savedNote) res.text = `${savedNote}\n\n${res.text}`;
-    if (heard) res.text = `🎤 «${heard}»\n\n` + res.text.replace(/^🎤\s*«[^»]*»\s*/, '');
-    console.log('ok', Date.now() - t0, 'ms', 'gemini requests:', res.requests, res.used.join(','));
+    if (heard) res.text = `🎤 «${heard0}»\n\n` + res.text.replace(/^🎤\s*«[^»]*»\s*/, '');
+    console.log('ok', Date.now() - t0, 'ms', 'gemini requests:', res.requests, res.used.join(','), voice ? `stt ${LAST_STT.model} ${LAST_STT.ms} ms` : '');
     if (key && !res.used.some(x => WRITES.has(x))) { ANS.set(key, { at: Date.now(), text: res.text, mem: (await getHistory(chatId)).at(-1)?.parts?.[0]?.text }); if (ANS.size > 200) ANS.clear(); }
     await usageSettled(); // the day's total for the «🔋 Лимит» line
-    await say(chatId, res.text + usageLine(res.requests));
+    const out = res.text + usageLine(res.requests);
+    if (!(echo.id && await editInto(chatId, echo.id, out))) {
+      if (echo.id) await tg('editMessageText', { chat_id: chatId, message_id: echo.id, text: echo.text }).catch(() => null); // no «⏳» left behind
+      await say(chatId, out);
+    }
     if (await wantsVoice(chatId, !!voice, text)) await sayVoice(chatId, res.text);
   } catch (e) {
     console.error(redact((e as Error)?.stack || e));
-    await say(chatId, '⚠️ ' + (redact((e as Error).message) || 'Ошибка'));
+    const msg = '⚠️ ' + (redact((e as Error).message) || 'Ошибка');
+    if (!(echo.id && await editInto(chatId, echo.id, `${echo.text}\n\n${msg}`))) await say(chatId, msg);
   } finally {
     clearInterval(typing);
     KB.delete(chatId); // a keyboard a tool prepared for an answer that never went out must not stick to the next message

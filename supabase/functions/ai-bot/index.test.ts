@@ -138,6 +138,8 @@ const sentTexts = () => SENT.filter(s => s.method === 'sendMessage').map(s => s.
 let GEM: (body: any, url?: any) => any = () => say('ok');
 const GEM_LOG: any[] = [];
 let HEARD: any = 'как дела'; // what the transcription request «hears» in a voice message
+let STT: any = null; // a scripted speech model
+let TG_IDS = false; // Telegram answers sendMessage with a message_id (needed to edit the «🎤 …⏳» message) // a scripted speech model (null → every transcription hears HEARD)
 function call(name: string, args: any) { return { candidates: [{ content: { role: 'model', parts: [{ functionCall: { name, args } }] } }] }; }
 function say(text: string) { return { candidates: [{ content: { role: 'model', parts: [{ text }] } }] }; }
 
@@ -160,13 +162,16 @@ function say(text: string) { return { candidates: [{ content: { role: 'model', p
       const id = 'app' + SENT.length; FILES[id] = new TextEncoder().encode(body.document);
       return new Response(JSON.stringify({ ok: true, result: { message_id: 1, document: { file_id: id } } }));
     }
+    if (methodName === 'sendMessage' && TG_IDS) return new Response(JSON.stringify({ ok: true, result: { message_id: SENT.length } }));
+    if (methodName === 'editMessageText' && TG_IDS) return new Response(JSON.stringify({ ok: true, result: { message_id: body.message_id } }));
     if (methodName === 'getFile') return new Response(JSON.stringify({ ok: true, result: { file_path: 'docs/' + body.file_id, file_size: FILES[body.file_id]?.length || 10 } }));
     return new Response(JSON.stringify({ ok: true, result: true }));
   }
   if (url.host === 'generativelanguage.googleapis.com') {
     const b = JSON.parse(init.body); GEM_LOG.push(b);
     // a voice message is first transcribed by its own request (no tools, only the audio + TRANSCRIBE_PROMPT)
-    const isTr = !b.tools && JSON.stringify(b.contents || []).includes('Запиши ДОСЛОВНО');
+    const isTr = !b.tools && (JSON.stringify(b.contents || []).includes('Запиши ДОСЛОВНО') || !!b.generationConfig?.audioTranscriptionConfig);
+    if (isTr && STT) { const r = STT(b, String(url)); if (r) { if (r.__status) return new Response(JSON.stringify(r.body), { status: r.__status }); return new Response(JSON.stringify(r)); } }
     const res = isTr ? (HEARD.__status ? HEARD : say(HEARD)) : GEM(b, String(url));
     if (res.__status) return new Response(JSON.stringify(res.body), { status: res.__status });
     return new Response(JSON.stringify({ usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 50 }, ...res }));
@@ -371,7 +376,8 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
 
   // Gemini usage: every request counted; /limits and a plain question about limits answer without AI; 80% warning once; 429 explained
   eq(DB.ai_usage.reduce((s, r) => s + r.requests, 0), GEM_LOG.length, 'every Gemini request is counted (answers + voice)');
-  const used = DB.ai_usage.filter(r => !/tts/.test(r.model)).reduce((s, r) => s + r.requests, 0);
+  // voice is written down by its own model (gemini-3.5-transcribe, its own quota): only the main model counts here
+  const used = DB.ai_usage.filter(r => r.model === 'gemini-3.5-flash-lite').reduce((s, r) => s + r.requests, 0);
   assert(DB.ai_usage.some(r => /tts/.test(r.model)), 'the voice reply to a voice message is counted on its own model');
   const g0 = GEM_LOG.length;
   await tgPost({ text: '/limits' }); assert(lastText().includes(`Сегодня: ${used} из ~500 запросов`) && lastText().includes('Обновится в') && lastText().includes('тыс. вход'), '/limits: ' + lastText());
@@ -1261,8 +1267,12 @@ D.test('a wrong skill name goes back to the AI; voice is transcribed without the
   HEARD = 'Golden Booster narxlarini yubor';
   GEM = () => say('🎤 «что-то старое»\n\nMana narxlar.');
   await tgPost({ voice: { file_id: 'v2', mime_type: 'audio/ogg' } });
-  const tr = GEM_LOG.findLast((b: any) => !b.tools && JSON.stringify(b.contents).includes('Запиши ДОСЛОВНО')), main = GEM_LOG.findLast((b: any) => b.tools);
-  assert(!tr.tools && !JSON.stringify(tr.contents).includes('hisoblab bera olasanmi'), 'the transcription request has no history');
+  const tr = GEM_LOG.findLast((b: any) => b.generationConfig?.audioTranscriptionConfig), main = GEM_LOG.findLast((b: any) => b.tools);
+  assert(tr && !tr.tools && !JSON.stringify(tr.contents).includes('hisoblab bera olasanmi'), 'the transcription request has no history');
+  const ac = tr.generationConfig.audioTranscriptionConfig;
+  assert(ac.languageCodes.includes('uz-UZ') && ac.languageCodes.includes('ru-RU'), 'Uzbek and Russian hints: ' + JSON.stringify(ac.languageCodes));
+  assert(ac.customVocabulary.includes('Golden Booster') && ac.customVocabulary.includes('Adxamjon Umarov') && ac.customVocabulary.includes('Fozilxon Fargona'), 'vocabulary: products, agents, active clients: ' + ac.customVocabulary.slice(-8).join(', '));
+  assert(sentTexts().includes('🎤 «Golden Booster narxlarini yubor»\n\n⏳'), 'what was heard is shown at once, before the answer');
   const lastUser = JSON.stringify(main.contents.at(-1));
   assert(lastUser.includes('расшифровка) Golden Booster narxlarini yubor') && !lastUser.includes('inlineData'), 'the AI answers the transcribed text: ' + lastUser.slice(0, 200));
   assert(sentTexts().some(t => t.startsWith('🎤 «Golden Booster narxlarini yubor»\n\nMana narxlar.')), 'heard line from the transcription, the model one removed');
@@ -1846,4 +1856,69 @@ D.test('audit 23.11: a hedged (second) Gemini request is counted in the usage; a
     assert(r.headers.get('access-control-allow-origin') === '*', 'CORS on an error: ' + r.status);
     assert(r.status >= 400 && (await r.json()).error, 'an error answer: ' + r.status);
   } finally { DB.ai_memory = saved; }
+});
+
+D.test('audit 23.11 Telegram: Uzbek speech model with fallbacks, dead models skipped, thinking levels, one message per voice question, longer history', async () => {
+  const D0 = { ...Object.fromEntries(['GEMINI_STT_MODEL', 'GEMINI_STT_LLM', 'GEMINI_MODEL', 'GEMINI_FALLBACK_MODEL', 'GEMINI_SMART_MODEL'].map(k => [k, D.env.get(k)])) };
+  const restore = () => { for (const [k, v] of Object.entries(D0)) v == null ? D.env.delete(k) : D.env.set(k, v as string); STT = null; TG_IDS = false; };
+  try {
+    FILES.v3 = new Uint8Array([4, 5, 6]);
+    // 1) the speech model answers with word timestamps; curly apostrophes become «'», «Jumavoy, …» is not part of the question
+    D.env.set('GEMINI_STT_MODEL', 'stt-words-test');
+    STT = (_b: any, url: string) => /stt-words-test/.test(url) ? { candidates: [{ content: { parts: [{ audioTranscription: { words: ['Jumavoy,', 'Fozilxon', 'qarzi', 'qancha?'].map(word => ({ word })) } }] } }] } : null;
+    let g0 = GEM_LOG.length;
+    GEM = () => say('Fozilxon Fargona qarzi $800.');
+    TG_IDS = true;
+    await tgPost({ voice: { file_id: 'v3', mime_type: 'audio/ogg' } });
+    const main = GEM_LOG.slice(g0).find((b: any) => b.tools);
+    assert(JSON.stringify(main.contents.at(-1)).includes('расшифровка) Fozilxon qarzi qancha?'), 'wake word cut, the question goes on: ' + JSON.stringify(main.contents.at(-1)).slice(0, 160));
+    // one message: «🎤 «…» ⏳» is sent at once and then edited into the answer
+    const echo = SENT.filter(x => x.method === 'sendMessage').at(-1)!, ed = SENT.filter(x => x.method === 'editMessageText').at(-1)!;
+    assert(echo.body.text === '🎤 «Jumavoy, Fozilxon qarzi qancha?»\n\n⏳', 'echo first: ' + echo.body.text);
+    assert(ed && ed.body.text.startsWith('🎤 «Jumavoy, Fozilxon qarzi qancha?»\n\nFozilxon Fargona qarzi $800.'), 'answer edited into the same message: ' + ed?.body.text);
+    eq(M.cleanHeard('o‘g‘il  to’lov  `ok`'), "o'g'il to'lov 'ok'", 'apostrophes normalised');
+
+    // 2) the speech model does not exist for this key (404) → the Flash model writes it down (thinking «minimal»); the speech
+    // model is not asked again today
+    D.env.set('GEMINI_STT_MODEL', 'stt-dead-test'); D.env.set('GEMINI_STT_LLM', 'gemini-3.6-flash');
+    let sttCalls = 0;
+    STT = (b: any, url: string) => { if (/stt-dead-test/.test(url)) { sttCalls++; return { __status: 404, body: { error: { code: 404, message: 'models/stt-dead-test is not found for API version v1beta' } } }; } return /gemini-3\.6-flash/.test(url) && b.generationConfig?.thinkingConfig?.thinkingLevel === 'minimal' ? say('Adxamjon bugun nechta zakaz oldi') : say('NO THINKING SETTING'); };
+    g0 = GEM_LOG.length; GEM = () => say('Bugun 1 ta zakaz.');
+    await tgPost({ voice: { file_id: 'v3', mime_type: 'audio/ogg' } });
+    assert(SENT.filter(x => x.method === 'editMessageText').at(-1)!.body.text.startsWith('🎤 «Adxamjon bugun nechta zakaz oldi»'), 'Flash fallback heard it: ' + SENT.at(-1)?.body.text);
+    await tgPost({ voice: { file_id: 'v3', mime_type: 'audio/ogg' } });
+    eq(sttCalls, 1, 'a model Google said «not found» for is skipped for the rest of the day');
+    assert(M.isDead('stt-dead-test'), 'marked dead');
+    await tgPost({ text: '/limits' }); assert(/Распознавание голоса: gemini-3\.6-flash/.test(lastText()) && /не даёт модели: stt-dead-test/.test(lastText()), '/limits tells which ears work: ' + lastText());
+    TG_IDS = false;
+
+    // 3) the main model is gone (404) → the next model of the chain answers, and later questions go straight to it
+    D.env.set('GEMINI_MODEL', 'main-dead-test'); D.env.set('GEMINI_FALLBACK_MODEL', 'main-dead-test,fb-alive-test'); D.env.set('GEMINI_SMART_MODEL', 'off');
+    let deadCalls = 0;
+    GEM = (_b: any, url: string) => /main-dead-test/.test(url) ? (deadCalls++, { __status: 404, body: { error: { code: 404, message: 'models/main-dead-test is not found' } } }) : say('Запасная на месте');
+    await tgPost({ text: 'как дела у агентов?' }); assert(lastText().startsWith('Запасная на месте'), 'fallback answered: ' + lastText());
+    await tgPost({ text: 'а у склада?' }); assert(lastText().startsWith('Запасная на месте'), 'again: ' + lastText());
+    eq(deadCalls, 1, 'the dead main model is not asked again');
+
+    // 4) Gemini 3 Flash (smart model) thinks on «low»; a model that refuses the setting is asked again without it
+    // (the smart model's daily limit was spent by an earlier test, so a 3.x Flash main model is used to see the retry)
+    D.env.set('GEMINI_MODEL', 'gemini-3.6-flash-nothink-test'); D.env.set('GEMINI_SMART_MODEL', 'off');
+    eq(M.withThinking({}, 'gemini-3.6-flash').generationConfig.thinkingConfig, { thinkingLevel: 'low' }, '3.x Flash → low');
+    eq(M.withThinking({}, 'gemini-3.8-flash', 'minimal').generationConfig.thinkingConfig, { thinkingLevel: 'low' }, '3.8 has no minimal');
+    eq(M.withThinking({ a: 1 }, 'gemini-3.5-flash-lite'), { a: 1 }, 'Flash-Lite keeps its own default');
+    let tries = 0;
+    GEM = (b: any, url: string) => { if (!/nothink-test/.test(url)) return say('main'); tries++; return b.generationConfig?.thinkingConfig ? { __status: 400, body: { error: { code: 400, message: 'Thinking level is not supported for this model.' } } } : say('Умный ответ без настройки'); };
+    await tgPost({ text: 'почему упали продажи у Адхамжона?' });
+    await tgPost({ text: 'и что делать?' });
+    D.env.set('GEMINI_MODEL', 'gemini-3.5-flash-lite');
+    assert(lastText().startsWith('Умный ответ без настройки') && tries === 3, 'retried without thinking: ' + tries + ' ' + lastText());
+
+    // 5) history: 10 question/answer pairs go to the AI (was 6)
+    GEM = () => say('ок');
+    await tgPost({ text: '/new' });
+    for (let i = 1; i <= 12; i++) await tgPost({ text: `вопрос номер ${i}` });
+    const last = GEM_LOG.at(-1);
+    eq(last.contents.length, 21, '10 pairs + the new question');
+    assert(JSON.stringify(last.systemInstruction).includes('ХАРАКТЕР (как Джарвис'), 'the character is in the prompt');
+  } finally { restore(); GEM = () => say('ok'); }
 });
