@@ -38,7 +38,7 @@ import java.util.regex.Pattern;
  */
 public class MainActivity extends Activity {
   static final String BASE = "https://mital111222333.github.io/MitalCRM/jumavoy/";
-  static final int MIC = 1, MIC_NATIVE = 2, PICK = 3;
+  static final int MIC = 1, MIC_NATIVE = 2, PICK = 3, MIC_ASK = 4;
   ValueCallback<Uri[]> fileCb; // the page waits for the chosen files
   Uri cameraUri;               // where the camera puts a new photo
   WebView web;
@@ -126,6 +126,12 @@ public class MainActivity extends Activity {
     if (b != null) web.restoreState(b);
     open(getIntent(), b == null);
     updatePage();
+    // the first start (and the first start after an update): ask for the microphone at once — JUMAVOY is a voice assistant
+    android.content.SharedPreferences sp = getSharedPreferences("app", MODE_PRIVATE);
+    if (b == null && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED && sp.getLong("micAsked", -1) != WebFiles.apkVersion(this)) {
+      sp.edit().putLong("micAsked", WebFiles.apkVersion(this)).apply();
+      requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MIC_ASK);
+    }
   }
 
   // a newer page from GitHub, in the background, at most every 30 minutes; used at the next opening
@@ -196,6 +202,15 @@ public class MainActivity extends Activity {
   }
 
   @Override public void onRequestPermissionsResult(int code, String[] p, int[] res) {
+    if (code == MIC_ASK) {
+      boolean ok = res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED;
+      // «Don't ask again» earlier: Android shows no dialog any more → the app's settings, where «Микрофон» is switched on
+      if (!ok && !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
+        try { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))); } catch (Exception ignored) { }
+      }
+      if (web != null) web.evaluateJavascript("window.jvNative && window.jvNative.onMic && window.jvNative.onMic('" + (ok ? 1 : 0) + "')", null);
+      return;
+    }
     if (code == MIC_NATIVE) { voice.permissionResult(res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED); return; }
     if (code != MIC || pending == null) return;
     if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pending.grant(pending.getResources());

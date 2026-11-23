@@ -417,7 +417,7 @@
 </div>
 
 <script>
-const WEB_VERSION = '2026.11.23-5';
+const WEB_VERSION = '2026.11.23-6';
 const API = 'https://oxchgcfyzszemqlvdjjr.supabase.co/functions/v1/ai-bot/app';
 const $ = id => document.getElementById(id);
 const store = {
@@ -881,6 +881,7 @@ async function listen(server = false) {
   if (busy) return;
   if (nativeOn) { N.stopListen(); return; }
   if (rec) return rec.stop();
+  if (N && N.hasMic && !N.hasMic()) { note('Нужен доступ к микрофону.', 'err'); if (N.requestMic) N.requestMic(); return; }
   stopSpeaking(); buzz(12); warm();
   if (!server && nativeListen(lang)) { // the phone's recognizer: words appear while speaking, no upload, no Gemini request
     nativeOn = true; hint.textContent = 'Говорите — нажмите ещё раз, чтобы закончить'; setState('слушаю');
@@ -1357,7 +1358,7 @@ async function openDiag() {
     const p = document.createElement('div'); p.className = 'group'; b.append(p);
     for (const x of T.steps) {
       const r = document.createElement('div'); r.className = 'row';
-      const m = document.createElement('div'); m.className = 'main'; m.textContent = x.tool ? 'Функция ' + x.tool : 'ИИ ' + (x.m || '') + (x.f ? ' → ' + x.f : '');
+      const m = document.createElement('div'); m.className = 'main'; m.textContent = x.tool ? 'Функция ' + x.tool : 'ИИ ' + (x.m || '') + (x.f ? ' → ' + x.f : '') + (x.tin ? ` (${Math.round(x.tin / 1000)} тыс. токенов${x.cached ? ', из кэша ' + Math.round(x.cached / 1000) + ' тыс.' : ''})` : '');
       const v = document.createElement('div'); v.className = 'val ' + (x.ms > 8000 ? 'no' : x.ms > 3000 ? 'bad' : 'ok'); v.textContent = sec(x.ms);
       r.append(m, v); p.append(r);
     }
@@ -1368,6 +1369,7 @@ async function openDiag() {
     r.textContent = [lastFail && `${lastFail.msg || 'ошибка ' + lastFail.code} (${lastFail.lang})`, lastFail?.tried || d.lastTry].filter(Boolean).join(' — '); p.append(r); b.append(p);
   }
   const btn = (text, fn) => { const x = document.createElement('button'); x.className = 'sheet-btn'; x.textContent = text; x.onclick = fn; b.append(x); return x; };
+  if (N && d.mic === false && N.requestMic) btn('Разрешить микрофон', () => N.requestMic());
   if (N && d.assistant === false) btn('Сделать JUMAVOY помощником', () => N.openAssistantSettings());
   if (N && (Object.keys(nativeOff).length || nativeBadUntil)) btn('Снова пробовать распознавание телефона', () => { nativeOff = {}; nativeBadUntil = 0; store.set('nativeOff2', {}); openDiag(); });
   if (outbox.length && online()) btn('Отправить отложенные сейчас', () => { closeSheets(); flush(); });
@@ -1380,12 +1382,19 @@ async function openDiag() {
 $('diagBtn').onclick = openDiag;
 
 // ── is JUMAVOY still the phone's assistant? Google sometimes switches the assistant back to Gemini by itself ──
+// and has it the microphone? (without it there is no voice at all)
 let warnLater = false;
 function checkAssistant() {
+  const noMic = !!(N && N.hasMic && !N.hasMic()) && !!creds().key;
   const bad = !PANEL && !!(N && N.isAssistant && !N.isAssistant()) && !warnLater && !!creds().key;
-  $('assistWarn').classList.toggle('hidden', !bad);
+  const w = $('assistWarn');
+  w.dataset.kind = noMic ? 'mic' : 'assistant';
+  w.querySelector('span').textContent = noMic ? 'Нет доступа к микрофону — голосом спросить нельзя.' : 'По кнопке питания сейчас открывается Gemini, а не JUMAVOY.';
+  $('assistFix').textContent = noMic ? 'Разрешить' : 'Вернуть';
+  w.classList.toggle('hidden', !(noMic || bad));
 }
-$('assistFix').onclick = () => { if (N && N.openAssistantSettings) N.openAssistantSettings(); };
+jvNative.onMic = () => checkAssistant();
+$('assistFix').onclick = () => { if ($('assistWarn').dataset.kind === 'mic') { if (N.requestMic) N.requestMic(); } else if (N && N.openAssistantSettings) N.openAssistantSettings(); };
 $('assistLater').onclick = () => { warnLater = true; checkAssistant(); };
 document.addEventListener('visibilitychange', () => { if (document.hidden) return; checkAssistant(); paintNet(); warm(); flush(); });
 

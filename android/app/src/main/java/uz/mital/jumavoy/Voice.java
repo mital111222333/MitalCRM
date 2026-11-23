@@ -175,6 +175,16 @@ public class Voice {
     return o.toString();
   }
 
+  // ── the microphone: without it no voice at all (it was off on the owner's phone after a reinstall) ──
+  @JavascriptInterface public boolean hasMic() { return act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED; }
+  @JavascriptInterface public void requestMic() {
+    ui.post(() -> {
+      if (hasMic()) { js("onMic", "1"); return; }
+      if (activity == null) { if (host != null) host.expand(); return; } // the panel cannot ask: the app asks
+      activity.requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MainActivity.MIC_ASK);
+    });
+  }
+
   // ── the panel over other apps ──
   @JavascriptInterface public boolean isPanel() { return host != null; }
   @JavascriptInterface public void closePanel() { ui.post(() -> { if (host != null) host.close(); else if (activity != null) activity.moveTaskToBack(true); }); }
