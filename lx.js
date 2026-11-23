@@ -85,9 +85,11 @@ const LX = {
   sym(cur) { return !cur || /usd|\$|долл/i.test(cur) ? '$' : cur + ' '; },
   u(cur) { return !cur || /usd|\$|долл/i.test(cur) ? ' $' : ' ' + cur; },
   money(v, cur) { return LX.sym(cur) + UI.fmt0(v); },
-  ORDER_ST: { new: 'новый', requested: 'запрошен', request: 'запрошен', unconfirmed: 'не подтверждён', confirmed: 'подтверждён', accepted: 'принят', ready: 'готов к отгрузке', given: 'отгружен', delivering: 'в пути', on_way: 'в пути', delivered: 'доставлен', finished: 'завершён', done: 'завершён', cancelled: 'отменён', canceled: 'отменён', rejected: 'отклонён', returned: 'возвращён', draft: 'черновик' },
+  // LINKO API gives the order status as a number: 1 — new, 3 — shipped, 4 — cancelled (old exports had words)
+  dead: s => { const t = String(s ?? '').trim().toLowerCase(); return t === '4' || /cancel|reject|отмен|отклон/.test(t); },
+  ORDER_ST: { 1: 'новый', 3: 'отгружен', 4: 'отменён', new: 'новый', requested: 'запрошен', request: 'запрошен', unconfirmed: 'не подтверждён', confirmed: 'подтверждён', accepted: 'принят', ready: 'готов к отгрузке', given: 'отгружен', delivering: 'в пути', on_way: 'в пути', delivered: 'доставлен', finished: 'завершён', done: 'завершён', cancelled: 'отменён', canceled: 'отменён', rejected: 'отклонён', returned: 'возвращён', draft: 'черновик' },
   st2: s => LX.ORDER_ST[String(s).toLowerCase()] || String(s ?? '—'),
-  closed: s => /deliver|finish|done|cancel|reject|return|отмен|достав|заверш/i.test(String(s)),
+  closed: s => LX.dead(s) || String(s ?? '').trim() === '3' || /deliver|finish|done|return|достав|заверш/i.test(String(s)),
   PAY_T: { cash: 'наличные', bank: 'перечисление', card: 'карта / перечисление', transfer: 'перевод', terminal: 'терминал', click: 'Click', payme: 'Payme' },
   pt: s => LX.PAY_T[String(s).toLowerCase()] || String(s || '—'),
 
@@ -108,7 +110,8 @@ const LX = {
     const orders = LX.d('orders'), items = LX.d('items'), pays = LX.d('pays'), rets = LX.d('returns');
     const cur = LX.curOf(orders.length ? orders : items), inCur = r => !r['currency.name'] || r['currency.name'] === cur;
     const ordById = new Map(orders.map(o => [o.id, o]));
-    const lines = LX.mapLines(items.filter(inCur), ordById);
+    // a cancelled order (LINKO status 4) is not a sale: it and its goods are left out of every sum; kept aside in «dead»
+    const lines = LX.mapLines(items.filter(i => inCur(i) && !LX.dead(ordById.get(i.order_id)?.status)), ordById);
     const payCur = LX.curOf(pays) || cur;
     // a payment counts when it is in the main currency (any dollar spelling counts as dollars, e.g. a card payment in "USD karta"),
     // is not a return and is positive; everything else is kept with the reason so the page can show what was left out
@@ -137,9 +140,9 @@ const LX = {
         if (extra > 0.005) payments.push({ date: u.taken_at, time: '', ts: t2, amount: Math.round(extra * 100) / 100, type: 'по балансу', ptype: 'card', cur: '', client: r.client, agent: LX.clientAgent(r.client, ''), by: '', courier: '', bal: true });
       }
     }
-    const ords = LX.mapOrds(orders.filter(inCur));
-    const returns = rets.filter(r => !r['currency.name'] || r['currency.name'] === (LX.curOf(rets) || cur)).map(r => ({ date: LX.day(r.created_date), status: r.status, sum: LX.n(r.total_price), client: r['client.name'] || '', agent: r['client.name'] ? LX.clientAgent(r['client.name'], LX.person(r, 'responsible_agent')) : LX.agentName(LX.person(r, 'responsible_agent')) || 'Без агента', reason: [r.reason, r.comment].filter(Boolean).join(' · ') }));
-    return (LX.cache = { cur, payCur, lines, payments, skipped, ords, returns });
+    const ordsAll = LX.mapOrds(orders.filter(inCur)), ords = ordsAll.filter(o => !LX.dead(o.status)), dead = ordsAll.filter(o => LX.dead(o.status));
+    const returns = rets.filter(r => (!r['currency.name'] || r['currency.name'] === (LX.curOf(rets) || cur)) && !/cancel|reject|отмен|отклон/i.test(String(r.status ?? ''))).map(r => ({ date: LX.day(r.created_date), status: r.status, sum: LX.n(r.total_price), client: r['client.name'] || '', agent: r['client.name'] ? LX.clientAgent(r['client.name'], LX.person(r, 'responsible_agent')) : LX.agentName(LX.person(r, 'responsible_agent')) || 'Без агента', reason: [r.reason, r.comment].filter(Boolean).join(' · ') }));
+    return (LX.cache = { cur, payCur, lines, payments, skipped, ords, dead, returns });
   },
   // LINKO order rows / order product rows → the rows the pages use
   mapOrds(orders) { return orders.map(o => ({ id: o.id, date: LX.day(o.created_date), time: String(o.created_date || '').slice(11, 16), status: o.status, ptype: o.payment_type, sum: LX.n(o.total_price), fact: LX.n(o.fact_price), ret: LX.n(o.total_return_price), paid: !!o.is_paid, deliver: LX.day(o.date_delivery), client: o['client.name'] || '', address: o['market.address'] || '', agent: o['client.name'] ? LX.clientAgent(o['client.name'], LX.person(o, 'user')) : LX.agentName(LX.person(o, 'user')) || 'Без агента' })); },
@@ -161,8 +164,8 @@ const LX = {
     };
     const [o, i] = await Promise.all(['orders', 'items'].map(id => all(LX.fill(job(id).path, from, to)).then(r => r.map(x => LX.pick(x, job(id).pick)))));
     const cur = LX.model().cur, inCur = r => !r['currency.name'] || r['currency.name'] === cur;
-    const O = o.filter(inCur);
-    return { ords: LX.mapOrds(O), lines: LX.mapLines(i.filter(inCur), new Map(O.map(x => [x.id, x]))) };
+    const O = o.filter(x => inCur(x) && !LX.dead(x.status)), byId = new Map(O.map(x => [x.id, x]));
+    return { ords: LX.mapOrds(O), lines: LX.mapLines(i.filter(x => inCur(x) && byId.has(x.order_id)), byId) };
   },
   agentsOf(rows) { return [...new Set(rows.map(r => r.agent).filter(Boolean))].sort((a, b) => a.localeCompare(b)); },
   sumBy(rows, key, val = r => r.sum) { const m = new Map(); for (const r of rows) { const k = typeof key === 'function' ? key(r) : r[key]; m.set(k, (m.get(k) || 0) + val(r)); } return [...m.entries()].sort((a, b) => b[1] - a[1]); },
@@ -318,16 +321,19 @@ LX.payDay = (body, P, M, days) => {
 };
 
 // ---------- Заказы по дням: who ordered what today ----------
-LX.dead = s => /cancel|reject|отмен|отклон/i.test(String(s));
 LX.qnorm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
 LX.ORD_MAX = 3000; // rows drawn in the orders table at once; the Excel file has them all
 EXT_PAGES.lxday = async el => {
   const body = await LX.shell(el, 'lxday', '<button class="btn gray" id="lxCsv">⬇ Excel</button>'); if (!body) return;
   const M = LX.model(), f = UI.fmt0, $$ = v => LX.money(v, M.cur), t0 = UI.localDate(Date.now()), y0 = UI.localDate(Date.now() - 864e5), wk = UI.localDate(Date.now() - 6 * 864e5);
-  const all = M.ords.filter(o => !LX.agent || o.agent === LX.agent), O = all.filter(o => !LX.dead(o.status)), dead = all.filter(o => LX.dead(o.status));
+  const mine = o => !LX.agent || o.agent === LX.agent, O = M.ords.filter(mine), dead = (M.dead || []).filter(mine);
   const sum = a => a.reduce((x, o) => x + o.sum, 0), onDay = d => O.filter(o => o.date === d);
+  // returns are counted on the day they were made (as LINKO does): real sales = ordered − returned
+  const R = M.returns.filter(mine), retIn = (a, z) => R.filter(r => r.date >= a && r.date <= z).reduce((x, r) => x + r.sum, 0);
+  const fact = (a, z) => { const o = sum(O.filter(x => x.date >= a && x.date <= z)), r = retIn(a, z); return { o, r, f: o - r }; };
+  const factTile = (title, a, z, n, hero) => { const F = fact(a, z); return UI.tile(title, $$(F.f), { sub: `${F.r > 0.005 ? `заказано ${$$(F.o)} − возвраты ${$$(F.r)} · ` : ''}${n}`, hero }); };
   const days = [...new Set(O.map(o => o.date))].sort(), agents = LX.agentsOf(O);
-  const today = onDay(t0).sort((a, b) => b.time.localeCompare(a.time)), deadToday = dead.filter(o => o.date === t0);
+  const today = onDay(t0).sort((a, b) => b.time.localeCompare(a.time));
   const IL = typeof INVO !== 'undefined' ? new Map(INVO.list().map(x => [x.id, x])) : null;
   // period for the orders table: today (default), yesterday, all orders, or a from–to range
   // «today» / «yesterday» are kept as words, not dates, so the page left open over midnight moves to the new day
@@ -356,6 +362,7 @@ EXT_PAGES.lxday = async el => {
   const xNote = !needX ? '' : X?.busy ? '<p class="mut" style="margin:6px 0">⏳ Загружаю заказы из LINKO за ' + (isAll ? 'всё время' : 'этот период') + '… Это может занять до минуты.</p>' : X?.err ? `<p class="neg" style="margin:6px 0">⚠ ${esc(X.err)} Показаны только заказы с ${UI.dateRu(base)}.</p>` : '';
   const what = o => { const L = items.get(o.id) || []; return L.length ? L.map(l => `${esc(l.product)} <span class="mut">×${f(l.qty - l.ret)}${l.bonus ? ' бонус' : ''}</span>`).join('<br>') : '<span class="mut">—</span>'; };
   const shownIds = new Set(shown.map(o => o.id));
+  const deadShown = dead.filter(o => (Q ? hit(o) : inPer(o))), retShown = Q ? [] : R.filter(r => inPer(r)).sort((a, b) => b.date.localeCompare(a.date)), retSum = retShown.reduce((x, r) => x + r.sum, 0);
   const brandsPer = LX.sumBy(linesP.filter(l => (!LX.agent || l.agent === LX.agent) && shownIds.has(l.order)), 'brand');
   const clientsToday = new Set(today.map(o => o.client)).size;
   const perBar = `<div class="dp-seg" role="group" aria-label="Период">
@@ -366,13 +373,15 @@ EXT_PAGES.lxday = async el => {
       <small class="mut">Период:</small><input type="date" id="lxFrom" value="${pFrom}" max="${t0}" aria-label="С даты"><small class="mut">—</small><input type="date" id="lxTo" value="${pTo}" max="${t0}" aria-label="По дату">
     </span>`;
   body.innerHTML = `<div class="bar">${LX.agentSel(agentsAll)}${perBar}</div>${xNote}
-    <div class="kpis">${UI.tile('Сегодня', $$(sum(today)), { sub: `${today.length} заказов · ${clientsToday} клиентов · данные на ${LX.ordAt() ? new Date(LX.ordAt()).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—'}`, hero: true })}${UI.tile('Вчера', $$(sum(onDay(y0))), { sub: `${onDay(y0).length} заказов` })}${UI.tile('За 7 дней', $$(sum(O.filter(o => o.date >= wk))), { sub: `${O.filter(o => o.date >= wk).length} заказов` })}${UI.tile('За период', $$(sum(O)), { sub: `${O.length} заказов` })}</div>
+    <div class="kpis">${factTile('Сегодня — фактически', t0, t0, `${today.length} заказов · ${clientsToday} клиентов · данные на ${LX.ordAt() ? new Date(LX.ordAt()).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—'}`, true)}${factTile('Вчера', y0, y0, `${onDay(y0).length} заказов`)}${factTile('За 7 дней', wk, t0, `${O.filter(o => o.date >= wk).length} заказов`)}${factTile('За период', '', '9999', `${O.length} заказов`)}</div>
+    ${deadShown.length ? `<p class="mut" style="margin:8px 0">🚫 Отменено ${Q ? 'по поиску' : perLbl}: ${deadShown.map(o => `№${esc(o.id)} ${esc(o.client)} <b>${$$(o.sum)}</b>`).join(' · ')} — в суммы не входят.</p>` : ''}
     <div class="grid">
     ${UI.panel('Заказано по дням', days.length > 1 ? CH.columns(days.slice(-31).map(d => ({ label: UI.dm(d), values: [sum(onDay(d))] })), [{ name: 'Заказы', color: 'var(--c1)' }], { fmt: f, height: 230 }) : '<p class="mut">Мало дней для графика.</p>', { cls: 'w12' })}
     ${UI.panel(`${perCap} по агентам`, shown.length ? CH.hbars(LX.sumBy(shown, 'agent').map(([label, value]) => ({ label: `${label} (${shown.filter(o => o.agent === label).length})`, value })), { unit: LX.u(M.cur), fmt: f }) : '<p class="mut">За этот период заказов нет.</p>', { cls: 'w6' })}
     ${UI.panel(`${perCap} по брендам`, brandsPer.length ? CH.hbars(brandsPer.map(([label, value]) => ({ label, value })), { unit: LX.u(M.cur), fmt: f, share: true }) : '<p class="mut">Нет товаров в заказах за этот период.</p>', { cls: 'w6' })}
-    ${UI.panel(`${Q ? perCap + ' — по всем заказам' : isAll ? 'Все заказы' : 'Заказы ' + perLbl} (${shown.length}) · ${$$(sum(shown))}`, shown.length ? LX.table(['Накладная', 'Клиент / агент', '#Сумма', 'Что входит', 'Когда оплатить', 'Напоминание', ''], shown.slice(0, LX.ORD_MAX).map(o => { const r = IL ? INVO.rowOf(o, IL) : null, c = r ? r.x : {}, on = typeof INST !== 'undefined' && INST.cfg().on, pl = r ? INVO.planOf(r) : [], agreed = !!(c.plan || c.days); return `<tr data-oid="${esc(o.id)}" style="cursor:pointer"><td><b>№${esc(o.id)}</b><br><small class="mut">${multiDay ? esc(UI.dm(o.date)) + ' · ' : ''}${esc(o.time || '—')}</small></td><td>${LX.cl(o.client)}<br><small class="mut">${esc(o.agent)}</small></td><td class="n"><b>${f(o.sum)}</b>${r && r.disc > 0.05 ? `<br><small class="mut">скидка ${Math.round(r.disc * 10) / 10}%</small>` : ''}</td><td><small>${what(o)}</small></td><td style="white-space:nowrap">${pl.length ? pl.map(p => `${UI.dm(p.d)} · $${f(p.s)}`).join('<br>') : '—'}<br><small class="${agreed ? 'pos' : 'mut'}">${agreed ? '🤝 как договорились' : 'стандартный график'}</small></td><td><small>${on ? (pl.length ? '🔔 ' + pl.slice(0, 4).map(p => p.d > t0 ? `${UI.dm(INVO.addDays(p.d, -1))} и ${UI.dm(p.d)}` : '—').join('<br>🔔 ') + (pl.length > 4 ? '<br>…' : '') : '—') : '<span class="neg">выключены</span>'}</small></td><td><button class="btn gray sm" data-ocard="${esc(o.id)}" type="button">Открыть</button></td></tr>`; }), { max: '560px' }) : X?.busy ? '<p class="mut">⏳ Загружаю из LINKO…</p>' : Q ? `<p class="mut">По «${esc(Q)}» ничего не найдено. Номер накладной — цифрами (например 20145), клиента — частью имени.</p>` : '<p class="mut">Заказов за этот период нет.</p>', { cls: 'w12', sub: 'Нажмите на заказ: состав, срок оплаты, напоминания, «Договор» (печать и картинка)' + (shown.length > LX.ORD_MAX ? ` · показаны последние ${f(LX.ORD_MAX)} из ${f(shown.length)} — все есть в «⬇ Excel», или выберите период короче` : '') })}
-    ${UI.panel('Таблица: дни × агенты', LX.table(['День', ...agents.map(a => '#' + a), '#Всего', '#Заказов'], days.slice().reverse().map(d => { const D = onDay(d), m = new Map(LX.sumBy(D, 'agent')); return `<tr><td>${UI.dateRu(d)}</td>${agents.map(a => `<td class="n">${m.get(a) ? f(m.get(a)) : '<span class="mut">—</span>'}</td>`).join('')}<td class="n"><b>${f(sum(D))}</b></td><td class="n">${D.length}</td></tr>`; }), { max: '420px' }), { cls: 'w12' })}
+    ${UI.panel(`${Q ? perCap + ' — по всем заказам' : isAll ? 'Все заказы' : 'Заказы ' + perLbl} (${shown.length}) · ${$$(sum(shown))}${retSum > 0.005 ? ` − возвраты ${$$(retSum)} = фактически ${$$(sum(shown) - retSum)}` : ''}`, shown.length ? LX.table(['Накладная', 'Клиент / агент', '#Сумма', 'Что входит', 'Когда оплатить', 'Напоминание', ''], shown.slice(0, LX.ORD_MAX).map(o => { const r = IL ? INVO.rowOf(o, IL) : null, c = r ? r.x : {}, on = typeof INST !== 'undefined' && INST.cfg().on, pl = r ? INVO.planOf(r) : [], agreed = !!(c.plan || c.days); return `<tr data-oid="${esc(o.id)}" style="cursor:pointer"><td><b>№${esc(o.id)}</b><br><small class="mut">${multiDay ? esc(UI.dm(o.date)) + ' · ' : ''}${esc(o.time || '—')}</small></td><td>${LX.cl(o.client)}<br><small class="mut">${esc(o.agent)}</small></td><td class="n"><b>${f(o.sum)}</b>${r && r.disc > 0.05 ? `<br><small class="mut">скидка ${Math.round(r.disc * 10) / 10}%</small>` : ''}</td><td><small>${what(o)}</small></td><td style="white-space:nowrap">${pl.length ? pl.map(p => `${UI.dm(p.d)} · $${f(p.s)}`).join('<br>') : '—'}<br><small class="${agreed ? 'pos' : 'mut'}">${agreed ? '🤝 как договорились' : 'стандартный график'}</small></td><td><small>${on ? (pl.length ? '🔔 ' + pl.slice(0, 4).map(p => p.d > t0 ? `${UI.dm(INVO.addDays(p.d, -1))} и ${UI.dm(p.d)}` : '—').join('<br>🔔 ') + (pl.length > 4 ? '<br>…' : '') : '—') : '<span class="neg">выключены</span>'}</small></td><td><button class="btn gray sm" data-ocard="${esc(o.id)}" type="button">Открыть</button></td></tr>`; }), { max: '560px' }) : X?.busy ? '<p class="mut">⏳ Загружаю из LINKO…</p>' : Q ? `<p class="mut">По «${esc(Q)}» ничего не найдено. Номер накладной — цифрами (например 20145), клиента — частью имени.</p>` : '<p class="mut">Заказов за этот период нет.</p>', { cls: 'w12', sub: 'Нажмите на заказ: состав, срок оплаты, напоминания, «Договор» (печать и картинка)' + (shown.length > LX.ORD_MAX ? ` · показаны последние ${f(LX.ORD_MAX)} из ${f(shown.length)} — все есть в «⬇ Excel», или выберите период короче` : '') })}
+    ${retShown.length ? UI.panel(`Возвраты ${perLbl} (${retShown.length}) · ${$$(retSum)}`, LX.table(['Дата', 'Клиент', 'Агент', '#Сумма', 'Причина'], retShown.map(r => `<tr><td>${UI.dateRu(r.date)}</td><td>${LX.cl(r.client)}</td><td>${esc(r.agent)}</td><td class="n"><b class="neg">−${f(r.sum)}</b></td><td><small class="mut">${esc(r.reason || '')}</small></td></tr>`), { max: '360px' }), { cls: 'w12', sub: 'Возврат вычитается в тот день, когда его оформили в LINKO' }) : ''}
+    ${UI.panel('Таблица: дни × агенты', LX.table(['День', ...agents.map(a => '#' + a), '#Заказано', '#Возвраты', '#Фактически', '#Заказов'], [...new Set(days.concat(R.map(r => r.date)))].sort().reverse().map(d => { const D = onDay(d), m = new Map(LX.sumBy(D, 'agent')), rt = retIn(d, d); return `<tr><td>${UI.dateRu(d)}</td>${agents.map(a => `<td class="n">${m.get(a) ? f(m.get(a)) : '<span class="mut">—</span>'}</td>`).join('')}<td class="n">${f(sum(D))}</td><td class="n">${rt > 0.005 ? `<span class="neg">−${f(rt)}</span>` : '<span class="mut">—</span>'}</td><td class="n"><b>${f(sum(D) - rt)}</b></td><td class="n">${D.length}</td></tr>`; }), { max: '420px' }), { cls: 'w12', sub: 'По агентам — заказано; «Фактически» = заказано − возвраты' })}
     </div>`;
   LX.bindAgent(body);
   const setPer = (from, to, mode) => { LX.ordPer = mode ? { mode } : { from, to }; LX.ordQ = ''; if (LX.ordX?.err) LX.ordX = null; EXT_PAGES.lxday(el); }; // a failed LINKO load is tried again on the next click
@@ -437,7 +446,7 @@ EXT_PAGES.lxage = async el => {
   const lastPayBy = new Map(); for (const p of M.payments) if (p.client && p.date && (!lastPayBy.has(p.client) || p.date > lastPayBy.get(p.client))) lastPayBy.set(p.client, p.date);
   const repBy = new Map((rep?.clients || []).map(c => [c.name, c]));
   const promBy = new Map(); if (rep && typeof NOTES !== 'undefined') for (const p of NOTES.promises(rep)) if (p.status !== 'kept') promBy.set(p.client, p);
-  const openBy = new Map(); for (const o of M.ords) if (o.client && !o.paid && !/cancel|reject|return|отмен|отклон|возвр/i.test(String(o.status))) { if (!openBy.has(o.client)) openBy.set(o.client, []); openBy.get(o.client).push(o); }
+  const openBy = new Map(); for (const o of M.ords) if (o.client && !o.paid && !LX.dead(o.status) && !/return|возвр/i.test(String(o.status))) { if (!openBy.has(o.client)) openBy.set(o.client, []); openBy.get(o.client).push(o); }
   for (const l of openBy.values()) l.sort((a, b) => a.date.localeCompare(b.date));
   const ex = LX.agedEx(), tgc = CRMLocal.ext().tg || {};
   const all = rows.map(r => {

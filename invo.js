@@ -20,7 +20,7 @@ const INVO = {
   },
   money: v => '$' + UI.fmt0(Math.round((v || 0) * 100) / 100),
   money2: v => '$' + (Math.round((v || 0) * 100) / 100).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-  closed: s => /cancel|reject|отмен|отклон/i.test(String(s || '')),
+  closed: s => LX.dead(s),
   usd: cur => !cur || /usd|\$|долл/i.test(cur),
   day: d => String(d || '').slice(0, 10),
   addDays(d, n) { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); },

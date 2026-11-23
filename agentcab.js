@@ -160,7 +160,7 @@ const AC = {
     const r2 = v => Math.round((Number(v) || 0) * 100) / 100, M = LX.model(), H = AC.hist(), out = {};
     const norm = new Map(clients.map(c => [LX.norm(c.name), c.name])), of = n => norm.get(LX.norm(n));
     const ords = new Map(), pays = new Map(), lines = new Map(), rets = new Map(), push = (mp, n, v) => { const k = of(n); if (k) (mp.get(k) || mp.set(k, []).get(k)).push(v); };
-    for (const o of M.ords) if (!/cancel|reject|отмен|отклон/i.test(String(o.status))) { const s = r2(o.sum - o.ret); if (s > 0.005) push(ords, o.client, { id: String(o.id), d: o.date, s }); }
+    for (const o of M.ords) if (!LX.dead(o.status)) { const s = r2(o.sum - o.ret); if (s > 0.005) push(ords, o.client, { id: String(o.id), d: o.date, s }); }
     for (const c of st?.clients || []) for (const o of c.orders || []) push(ords, c.name, { id: String(o.id), d: o.d, s: o.s, old: 1 });
     for (const p of M.payments) push(pays, p.client, { d: p.date, t: p.time || '', s: r2(p.amount), how: p.bal ? 'карта / банк' : String(p.ptype || p.type || ''), by: p.courier || p.by || '' });
     for (const l of M.lines) if (l.qty - l.ret > 0.0001) push(lines, l.client, { d: l.date, o: String(l.order), p: l.product, b: l.brand || '', q: Math.round((l.qty - l.ret) * 100) / 100, s: r2(l.sum), g: l.bonus ? 1 : 0 });

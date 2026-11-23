@@ -28,7 +28,7 @@ const TALK = {
       if (g.kind === 'pay' || g.kind === 'sell') {
         const M = LX.model();
         const sum = g.kind === 'pay' ? M.payments.filter(p => p.agent === agent && TALK.inRange(p.date, from, end)).reduce((s, p) => s + p.amount, 0)
-          : M.ords.filter(o => o.agent === agent && TALK.inRange(o.date, from, end) && !/cancel|reject|return|отмен|отклон|возвр/i.test(String(o.status))).reduce((s, o) => s + o.sum, 0);
+          : M.ords.filter(o => o.agent === agent && TALK.inRange(o.date, from, end) && !LX.dead(o.status) && !/return|возвр/i.test(String(o.status))).reduce((s, o) => s + o.sum, 0);
         return fin(sum, g.target, `$${f(sum)} из $${f(g.target)}`);
       }
       if (g.kind === 'new') { const n = NP.model()?.list.filter(x => x.agent === agent && x.status === 'ok' && TALK.inRange(x.metAt, from, end)).length || 0; return fin(n, g.target, `${n} из ${g.target}`); }

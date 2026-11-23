@@ -48,7 +48,7 @@ const CARD = {
     if (typeof LX === 'undefined' || !LX.has()) return ctx;
     const same = x => LX.norm(x) === ctx.k, map = new Map();
     for (const o of LX.model().ords) {
-      if (!same(o.client) || /cancel|reject|отмен|отклон/i.test(String(o.status))) continue;
+      if (!same(o.client) || LX.dead(o.status)) continue;
       const s = CARD.r2(o.sum - o.ret); if (s > 0.005) map.set(String(o.id), { id: String(o.id), d: o.date, s });
     }
     // заказы старше периода, на которых ещё лежит долг, — из расчёта автозагрузки (75 дней)

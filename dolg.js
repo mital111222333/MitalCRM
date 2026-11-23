@@ -310,7 +310,7 @@ DOLG.grid = (wrap, body, D, list, got, left, re, exL) => {
 DOLG.orders = D => {
   const out = new Map(), add = (n, d, s) => { const a = out.get(n) || []; const x = a.find(y => y.d === d); if (x) x.s += s; else a.push({ d, s }); out.set(n, a); };
   let lx = [];
-  try { if (typeof LX !== 'undefined' && LX.has()) lx = LX.model().ords.filter(o => o.date >= D.from && o.date <= D.end && o.client && !/cancel|отмен/i.test(String(o.status))); } catch { lx = []; }
+  try { if (typeof LX !== 'undefined' && LX.has()) lx = LX.model().ords.filter(o => o.date >= D.from && o.date <= D.end && o.client && !LX.dead(o.status)); } catch { lx = []; }
   if (lx.length) for (const o of lx) add(o.client, o.date, o.fact || o.sum);
   else {
     const ups = (CRMLocal.engine.getState().ag.uploads || []).filter(u => u.period_from === D.from)

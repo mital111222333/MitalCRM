@@ -843,7 +843,7 @@ function stop_(data) {
   const P = PropertiesService.getScriptProperties(), seen = JSON.parse(P.getProperty('stopSeen') || '[]'), first = !P.getProperty('stopSeen');
   const fresh = [];
   data.orders.forEach(o => {
-    if (!o.id || seen.indexOf(o.id) >= 0 || /cancel|reject|return|отмен|отклон|возвр/i.test(String(o.status))) return;
+    if (!o.id || seen.indexOf(o.id) >= 0 || dead_(o.status) || /return|возвр/i.test(String(o.status))) return;
     const k = norm(o['client.name']), x = own[k] || {}, d = debt[k]; if (!d || x.ex) return;
     const limit = x.limit != null ? x.limit : (R.limit || 0), why = [];
     if (d.old >= (R.minOld || 0) && d.old > 0.005) why.push('долг ' + (R.ageLabel || 'старый') + ': $' + Math.round(d.old));
@@ -996,9 +996,11 @@ function instDay_(d, n) { return Utilities.formatDate(new Date(Date.parse(d + 'T
 function instNorm_(s) { return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim(); }
 function instR2_(v) { return Math.round(v * 100) / 100; }
 function instUsd_(cur) { return !cur || /usd|\$|долл/i.test(cur); }
+// LINKO order status: 1 — new, 3 — shipped, 4 — cancelled (a number in the API)
+function dead_(s) { const t = String(s == null ? '' : s).trim().toLowerCase(); return t === '4' || /cancel|reject|отмен|отклон/.test(t); }
 // a LINKO order (picked or whole) → { id, d, c, cid, a, s, cur }; cancelled / fully returned → null
 function instOrder_(o) {
-  if (!o || o.id == null || /cancel|reject|отмен|отклон/i.test(String(o.status))) return null;
+  if (!o || o.id == null || dead_(get2_(o, 'status'))) return null;
   const s = n_(get2_(o, 'total_price')) - n_(get2_(o, 'total_return_price'));
   if (!(s > 0.005)) return null;
   return { id: o.id, d: String(get2_(o, 'created_date') || '').slice(0, 10), c: String(get2_(o, 'client.name') || ''), cid: get2_(o, 'client.id') || null,

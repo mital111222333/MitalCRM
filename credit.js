@@ -11,7 +11,7 @@ const CR = {
   cfg() { const x = CRMLocal.ext(); return (x.credit ||= { limit: 0, age: 2, minOld: 5, clients: {} }); },
   // «старше 60 дн.» for the age choice i (1..3): the upper bound of the LINKO bucket before it
   ageText(i) { const c = (LX.d('debtcfg')[0] || {}).config || {}, p = [c.first_debt_period, c.second_debt_period, c.third_debt_period].map(Number)[i - 1]; return p > 0 ? `старше ${p} дн.` : ['старше 1-го срока', 'старше 2-го срока', 'старше 3-го срока'][i - 1]; },
-  closed: s => /cancel|reject|return|отмен|отклон|возвр/i.test(String(s)),
+  closed: s => LX.dead(s) || /return|возвр/i.test(String(s)),
 
   // status of every debtor from LINKO «Должники по срокам» (buckets already capped by the real balance in LX.aging)
   model() {
