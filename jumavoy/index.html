@@ -34,6 +34,7 @@
   button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
   svg { width: 1em; height: 1em; display: block; }
   .hidden { display: none !important; }
+  body.tg #logout { display: none !important; }
 
   /* the faint colour that sits low behind everything and wakes up when JUMAVOY listens or answers */
   .aura { position: fixed; inset: auto -30% -40% -30%; height: 70%; pointer-events: none; z-index: 0;
@@ -417,7 +418,7 @@
 </div>
 
 <script>
-const WEB_VERSION = '2026.11.23-7';
+const WEB_VERSION = '2026.11.23-8';
 const API = 'https://oxchgcfyzszemqlvdjjr.supabase.co/functions/v1/ai-bot/app';
 const $ = id => document.getElementById(id);
 const store = {
@@ -441,6 +442,17 @@ async function withLock(name, fn) {
 }
 let attached = null; // a file waiting to be sent: { file, url }
 const params = new URLSearchParams(location.search);
+// ── inside Telegram: the «JUMAVOY» button next to the message field opens this page as a Mini App. Telegram passes the
+// signed initData (who opened it) in the #hash — the server checks it (x-tg-init), so no personal link is needed there ──
+const TG_INIT = (() => {
+  const read = h => { try { return new URLSearchParams(String(h || '').replace(/^#/, '')).get('tgWebAppData') || ''; } catch { return ''; } };
+  let v = read(location.hash);
+  if (!v) try { v = JSON.parse(sessionStorage.getItem('__telegram__initParams') || '{}').tgWebAppData || ''; } catch {} // a reload
+  return v;
+})();
+const TG_USER = (() => { try { return String(JSON.parse(new URLSearchParams(TG_INIT).get('user') || '{}').id || ''); } catch { return ''; } })();
+const TG = !!(TG_INIT && TG_USER);
+const TGW = () => (TG && window.Telegram && window.Telegram.WebApp) || null;
 const ASSIST = params.has('assist');            // opened by the Android assistant gesture / app → listen at once
 const N = window.JumavoyNative || null;         // the Android app (Voice.java); null in a browser
 const D = window.JumavoyDevice || null;         // alarm, timer, calendar, call, SMS, route, apps (Device.java)
@@ -453,7 +465,13 @@ const ICON = {
   mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21"/></svg>',
   minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 12h12"/></svg>',
 };
-const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch {} };
+const buzz = ms => {
+  try {
+    const H = TGW()?.HapticFeedback; // Telegram's own haptics (navigator.vibrate is not always there in its window)
+    if (H) { if (ms >= 25) H.notificationOccurred('warning'); else H.impactOccurred(ms >= 12 ? 'medium' : 'light'); return; }
+    navigator.vibrate && navigator.vibrate(ms);
+  } catch {}
+};
 const online = () => { try { if (N && N.isOnline) return !!N.isOnline(); } catch {} return navigator.onLine !== false; };
 // 1 день, 2 дня, 5 дней, 11 дней, 21 день, 22 дня
 const plural = (k, one, few, many) => { const a = Math.abs(k) % 100, b = a % 10; return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many; };
@@ -466,7 +484,8 @@ function takeLink(s) {
   store.set('chat', m[1]); store.set('key', m[2]); return true;
 }
 if (takeLink(location.hash)) history.replaceState(null, '', location.pathname + location.search);
-const creds = () => ({ chat: store.get('chat', ''), key: store.get('key', '') });
+const creds = () => TG ? { chat: TG_USER, key: 'tg' } : { chat: store.get('chat', ''), key: store.get('key', '') };
+const authHeaders = () => { if (TG) return { 'x-tg-init': TG_INIT }; const c = creds(); return { 'x-app-chat': c.chat, 'x-app-key': c.key }; };
 
 function showApp(on) {
   $('setup').classList.toggle('hidden', on);
@@ -568,9 +587,9 @@ function setState(s, mode) {
 // dies in the middle of an answer used to leave the app «Думаю…» forever, with every next question ignored
 const tooLong = ms => new Error('JUMAVOY не ответил за ' + Math.round(ms / 1000) + ' с. Спросите ещё раз.');
 async function api(body, timeout = 90000, keep = false) {
-  const c = creds(), ac = new AbortController(), t = setTimeout(() => ac.abort(), timeout);
+  const ac = new AbortController(), t = setTimeout(() => ac.abort(), timeout);
   let r;
-  try { r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': c.chat, 'x-app-key': c.key }, body: JSON.stringify(body), signal: ac.signal }); }
+  try { r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() }, body: JSON.stringify(body), signal: ac.signal }); }
   catch (e) {
     clearTimeout(t);
     if (e.name === 'AbortError') throw tooLong(timeout);
@@ -642,7 +661,7 @@ async function ask(body, shown, voiced) {
     th.remove();
     if (e.net) { busy = false; setState('готов'); return queueQ(body, meText, voiced || !!body.audio, me); }
     note(e.message, 'err');
-    if (e.auth) { store.del('key'); setTimeout(() => showApp(false), 1500); }
+    if (e.auth && !TG) { store.del('key'); setTimeout(() => showApp(false), 1500); }
   } finally { if (busy) { busy = false; setState('готов'); } }
 }
 function afterAnswer(j) {
@@ -1067,7 +1086,7 @@ function sendFile(text) {
   if (!online()) { attached = { file, url }; paintAtt(); note('Файлы отправляются только с интернетом. Файл остался прикреплённым — отправьте, когда связь появится.', 'err'); return; }
   busy = true; setState('отправляю', 'think');
   bubble({ who: 'me', text, file: { name: file.name, kind: fileKind(file) }, img: url });
-  const th = note('Загружаю файл…', 'thinking'), t0 = performance.now(), c = creds();
+  const th = note('Загружаю файл…', 'thinking'), t0 = performance.now();
   const fd = new FormData(); fd.append('json', JSON.stringify({ text, stream: true })); fd.append('file', file, file.name);
   const x = new XMLHttpRequest(); let seen = 0, fin = null;
   const lines = () => {
@@ -1089,7 +1108,7 @@ function sendFile(text) {
     bubble({ who: 'bot', text: j.text || '…', ms: Math.round(performance.now() - t0) }); buzz(8);
     afterAnswer(j);
   };
-  x.open('POST', API); x.setRequestHeader('x-app-chat', c.chat); x.setRequestHeader('x-app-key', c.key); x.timeout = 180000;
+  x.open('POST', API); for (const [h, v] of Object.entries(authHeaders())) x.setRequestHeader(h, v); x.timeout = 180000;
   x.upload.onprogress = e => { if (e.lengthComputable) th.textContent = `Загружаю файл… ${Math.round(e.loaded / e.total * 100)}%`; };
   x.onprogress = lines;
   x.onload = () => end(x.status === 401 ? 'Нет доступа — получите новую ссылку в боте: /app' : '');
@@ -1507,6 +1526,37 @@ function start() {
   if (ASSIST || autoListen) setTimeout(() => listen(), 250);
   setTimeout(flush, 1500);
 }
+// ── Telegram: black like the app, full screen, no swipe-to-close while scrolling the chat, links open outside ──
+function tgSetup() {
+  if (!TG) return;
+  document.body.classList.add('tg');
+  const s = document.createElement('script'); s.src = 'https://telegram.org/js/telegram-web-app.js?59'; s.async = true;
+  s.onload = () => {
+    const W = TGW(); if (!W) return;
+    const at = v => { try { return W.isVersionAtLeast(v); } catch { return false; } };
+    const tryIt = f => { try { f(); } catch {} };
+    tryIt(() => W.ready()); tryIt(() => W.expand());
+    tryIt(() => W.setHeaderColor('#000000')); tryIt(() => W.setBackgroundColor('#000000'));
+    if (at('7.10')) tryIt(() => W.setBottomBarColor('#000000'));
+    if (at('7.7')) tryIt(() => W.disableVerticalSwipes());
+    // Telegram's own bars and its ✕ / ⋯ buttons at the top: the page moves below them (the same --sat/--sab as the Android app)
+    const insets = () => {
+      const a = W.safeAreaInset || {}, b = W.contentSafeAreaInset || {}, r = document.documentElement.style;
+      r.setProperty('--sat', ((a.top || 0) + (b.top || 0)) + 'px'); r.setProperty('--sab', ((a.bottom || 0) + (b.bottom || 0)) + 'px');
+    };
+    insets();
+    for (const ev of ['safeAreaChanged', 'contentSafeAreaChanged', 'fullscreenChanged', 'viewportChanged']) tryIt(() => W.onEvent(ev, insets));
+    if (at('8.0') && /^(android|ios)$/.test(W.platform)) tryIt(() => W.requestFullscreen());
+  };
+  document.head.append(s);
+  document.addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('a[href^="http"]'), W = TGW();
+    if (!a || !W) return;
+    e.preventDefault();
+    try { /^https:\/\/t\.me\//.test(a.href) ? W.openTelegramLink(a.href) : W.openLink(a.href); } catch { window.open(a.href, '_blank'); }
+  });
+}
+tgSetup();
 if (creds().key) { showApp(true); start(); } else showApp(false);
 // the Android app calls this when the assistant gesture opens an already running app
 window.jumavoyAssist = () => { closeSheets(); if (!rec && !nativeOn) listen(); };

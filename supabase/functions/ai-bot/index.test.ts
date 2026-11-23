@@ -1272,7 +1272,7 @@ D.test('a wrong skill name goes back to the AI; voice is transcribed without the
   const ac = tr.generationConfig.audioTranscriptionConfig;
   assert(ac.languageCodes.includes('uz-UZ') && ac.languageCodes.includes('ru-RU'), 'Uzbek and Russian hints: ' + JSON.stringify(ac.languageCodes));
   assert(ac.customVocabulary.includes('Golden Booster') && ac.customVocabulary.includes('Adxamjon Umarov') && ac.customVocabulary.includes('Fozilxon Fargona'), 'vocabulary: products, agents, active clients: ' + ac.customVocabulary.slice(-8).join(', '));
-  assert(sentTexts().includes('🎤 «Golden Booster narxlarini yubor»\n\n⏳'), 'what was heard is shown at once, before the answer');
+  assert(sentTexts().includes('🎤 «Golden Booster narxlarini yubor»\n\n💭 Думаю…'), 'what was heard is shown at once, before the answer');
   const lastUser = JSON.stringify(main.contents.at(-1));
   assert(lastUser.includes('расшифровка) Golden Booster narxlarini yubor') && !lastUser.includes('inlineData'), 'the AI answers the transcribed text: ' + lastUser.slice(0, 200));
   assert(sentTexts().some(t => t.startsWith('🎤 «Golden Booster narxlarini yubor»\n\nMana narxlar.')), 'heard line from the transcription, the model one removed');
@@ -1873,8 +1873,10 @@ D.test('audit 23.11 Telegram: Uzbek speech model with fallbacks, dead models ski
     const main = GEM_LOG.slice(g0).find((b: any) => b.tools);
     assert(JSON.stringify(main.contents.at(-1)).includes('расшифровка) Fozilxon qarzi qancha?'), 'wake word cut, the question goes on: ' + JSON.stringify(main.contents.at(-1)).slice(0, 160));
     // one message: «🎤 «…» ⏳» is sent at once and then edited into the answer
-    const echo = SENT.filter(x => x.method === 'sendMessage').at(-1)!, ed = SENT.filter(x => x.method === 'editMessageText').at(-1)!;
-    assert(echo.body.text === '🎤 «Jumavoy, Fozilxon qarzi qancha?»\n\n⏳', 'echo first: ' + echo.body.text);
+    // «🎧 Распознаю…» goes at once, becomes «🎤 «…» 💭 Думаю…» when written down, then the answer itself
+    const echo = SENT.filter(x => x.method === 'sendMessage').at(-1)!, eds = SENT.filter(x => x.method === 'editMessageText'), ed = eds.at(-1)!;
+    assert(echo.body.text === '🎧 Распознаю…', 'placeholder first: ' + echo.body.text);
+    assert(eds.some(x => x.body.text === '🎤 «Jumavoy, Fozilxon qarzi qancha?»\n\n💭 Думаю…'), 'what was heard shown at once: ' + eds.map(x => x.body.text).join(' | '));
     assert(ed && ed.body.text.startsWith('🎤 «Jumavoy, Fozilxon qarzi qancha?»\n\nFozilxon Fargona qarzi $800.'), 'answer edited into the same message: ' + ed?.body.text);
     eq(M.cleanHeard('o‘g‘il  to’lov  `ok`'), "o'g'il to'lov 'ok'", 'apostrophes normalised');
 
@@ -1921,4 +1923,56 @@ D.test('audit 23.11 Telegram: Uzbek speech model with fallbacks, dead models ski
     eq(last.contents.length, 21, '10 pairs + the new question');
     assert(JSON.stringify(last.systemInstruction).includes('ХАРАКТЕР (как Джарвис'), 'the character is in the prompt');
   } finally { restore(); GEM = () => say('ok'); }
+});
+
+D.test('Telegram like the app: the JUMAVOY button (Mini App) signs in by initData, quick buttons without AI, «💭 Думаю…» becomes the answer', async () => {
+  const enc = new TextEncoder();
+  const hm = async (key: Uint8Array<ArrayBuffer>, data: string) => new Uint8Array(await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), enc.encode(data)));
+  const sign = async (user: number) => {
+    const p = new URLSearchParams({ auth_date: String(Math.floor(Date.now() / 1000)), query_id: 'Q', user: JSON.stringify({ id: user, first_name: 'S' }) });
+    const dcs = [...p.entries()].sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join('\n');
+    p.set('hash', [...await hm(await hm(enc.encode('WebAppData'), 'T'), dcs)].map(x => x.toString(16).padStart(2, '0')).join(''));
+    return p.toString();
+  };
+  const app = (init: string, body: any) => M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-tg-init': init }, body: JSON.stringify(body) }));
+  try {
+    // 1) the app page opened inside Telegram: initData instead of the personal link; a stranger or a forged one — 401
+    GEM = () => say('Привет, Саидбонур!');
+    const r = await app(await sign(111), { text: 'привет' }); const j = await r.json();
+    eq([r.status, j.text?.startsWith('Привет, Саидбонур!')], [200, true], 'the owner is answered from inside Telegram: ' + JSON.stringify(j));
+    eq((await app(await sign(999), { text: 'привет' })).status, 401, 'a stranger is refused');
+    eq((await app((await sign(111)).replace('query_id=Q', 'query_id=X'), { text: 'привет' })).status, 401, 'a changed initData is refused');
+    const pre = await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'OPTIONS' }));
+    assert(/x-tg-init/.test(pre.headers.get('Access-Control-Allow-Headers') || ''), 'CORS lets the header through');
+
+    // 2) /start: the JUMAVOY button next to the field (web_app) and the quick buttons under it
+    SENT.length = 0;
+    await tgPost({ text: '/start' });
+    const menu = SENT.find(x => x.method === 'setChatMenuButton');
+    eq([menu?.body.chat_id, menu?.body.menu_button?.type, menu?.body.menu_button?.web_app?.url], [111, 'web_app', M.APP_URL()], 'the menu button opens the app');
+    const kb = SENT.find(x => x.method === 'sendMessage')?.body.reply_markup;
+    eq(kb?.keyboard?.[0]?.map((b: any) => b.text), Object.keys(M.QUICK_BTN), 'the quick buttons under the field');
+    assert(kb.is_persistent && kb.resize_keyboard, 'small and always there');
+
+    // 3) a quick button is a command: no Gemini request
+    const g0 = GEM_LOG.length;
+    await tgPost({ text: '📈 План' });
+    eq(GEM_LOG.length, g0, 'no AI for a quick button');
+    assert(lastText().length > 10, 'answered: ' + lastText());
+
+    // 4) /app: a button that opens the app inside Telegram
+    SENT.length = 0;
+    await tgPost({ text: '/app' });
+    eq(SENT.find(x => x.method === 'sendMessage')?.body.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url, M.APP_URL(), '/app has the open-in-Telegram button');
+
+    // 5) a question: «💭 Думаю…» at once, then that same message becomes the answer (no second message)
+    TG_IDS = true; SENT.length = 0;
+    GEM = () => say('Всё хорошо, план идёт.');
+    await tgPost({ text: 'как дела с планом в целом?' });
+    const sends = SENT.filter(x => x.method === 'sendMessage'), eds = SENT.filter(x => x.method === 'editMessageText');
+    eq(sends.map(x => x.body.text), ['💭 Думаю…'], 'only the waiting message is sent');
+    assert(eds.at(-1)!.body.text.startsWith('Всё хорошо, план идёт.') && eds.at(-1)!.body.message_id === SENT.indexOf(sends[0]) + 1, 'it becomes the answer: ' + eds.map(x => x.body.text).join(' | '));
+    eq(M.stageText('', 'Смотрю прайс'), '⏳ Смотрю прайс…', 'a stage line');
+    eq(M.stageText('🎤 «x»', 'Думаю'), '🎤 «x»\n\n💭 Думаю…', 'a stage under what was heard');
+  } finally { TG_IDS = false; GEM = () => say('ok'); }
 });
