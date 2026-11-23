@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="uz.mital.jumavoy.Assistant$Sessions"
+    android:recognitionService="uz.mital.jumavoy.Recognizer"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true" />

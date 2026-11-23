@@ -44,5 +44,14 @@
         <data android:mimeType="text/plain" />
       </intent-filter>
     </activity>
+    <!-- JUMAVOY as a full digital assistant (Assistant.java) — Android keeps it as the default more reliably -->
+    <service android:name=".Assistant" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION">
+      <meta-data android:name="android.voice_interaction" android:resource="@xml/assistant" />
+      <intent-filter><action android:name="android.service.voice.VoiceInteractionService" /></intent-filter>
+    </service>
+    <service android:name=".Assistant$Sessions" android:exported="true" android:permission="android.permission.BIND_VOICE_INTERACTION" />
+    <service android:name=".Recognizer" android:exported="true">
+      <intent-filter><action android:name="android.speech.RecognitionService" /></intent-filter>
+    </service>
   </application>
 </manifest>

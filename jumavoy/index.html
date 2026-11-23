@@ -173,6 +173,14 @@
   .setup .err { max-width: 400px; margin-top: 14px; }
   .setup .err:empty { display: none; }
 
+  /* JUMAVOY is no longer the phone's assistant (Google switched it back to Gemini) */
+  .warn { position: relative; z-index: 4; display: flex; align-items: center; gap: 12px; margin: 6px 16px 0; padding: 12px 12px 12px 14px; border-radius: 18px;
+    background: var(--glass); -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.12); font-size: 14px; line-height: 1.3; color: var(--text2); }
+  .warn .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--siri); }
+  .warn span { flex: 1; }
+  .warn button { flex: none; height: 32px; padding: 0 14px; border-radius: 16px; border: 0; background: var(--blue); color: #fff; font-size: 14px; font-weight: 600; }
+  .warn button.x { width: 32px; padding: 0; background: var(--fill); color: var(--text2); font-weight: 400; }
+
   @media (prefers-reduced-motion: reduce) {
     .edge .spin, .orb i, .thinking, body[data-mode="speak"] .orb { animation: none !important; }
     .new, .menu { animation: none; }
@@ -206,6 +214,10 @@
   <button class="item danger" id="logout" role="menuitem"><span>Отключить приложение</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg></button>
 </div>
 
+<div class="warn hidden" id="assistWarn" role="status">
+  <i class="dot"></i><span>По кнопке питания сейчас открывается Gemini, а не JUMAVOY.</span>
+  <button id="assistFix">Вернуть</button><button class="x" id="assistLater" aria-label="Скрыть">✕</button>
+</div>
 <main id="log" class="hidden" aria-live="polite"></main>
 
 <footer id="foot" class="hidden">
@@ -261,6 +273,7 @@ const creds = () => ({ chat: store.get('chat', ''), key: store.get('key', '') })
 
 function showApp(on) {
   $('setup').classList.toggle('hidden', on);
+  if (!on) $('assistWarn').classList.add('hidden');
   for (const id of ['head', 'log', 'foot']) $(id).classList.toggle('hidden', !on);
 }
 $('linkBtn').onclick = () => {
@@ -538,12 +551,23 @@ $('logout').onclick = () => {
   store.del('key'); store.del('chat'); location.reload();
 };
 
+// ── is JUMAVOY still the phone's assistant? Google sometimes switches the assistant back to Gemini by itself ──
+let warnLater = false;
+function checkAssistant() {
+  const bad = !!(N && N.isAssistant && !N.isAssistant()) && !warnLater && !!creds().key;
+  $('assistWarn').classList.toggle('hidden', !bad);
+}
+$('assistFix').onclick = () => { if (N && N.openAssistantSettings) N.openAssistantSettings(); };
+$('assistLater').onclick = () => { warnLater = true; checkAssistant(); };
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAssistant(); });
+
 // ── start ──
 function start() {
   log.innerHTML = ''; hint.textContent = HINT;
   for (const m of history_.slice(-30)) bubble(m, false);
   if (!history_.length) greet();
   if (ASSIST || autoListen) setTimeout(listen, 250);
+  checkAssistant();
 }
 if (creds().key) { showApp(true); start(); } else showApp(false);
 // the Android app calls this when the assistant gesture opens an already running app

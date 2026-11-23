@@ -7,6 +7,8 @@ import android.content.Intent;
 import android.os.Build;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.app.role.RoleManager;
+import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -56,6 +58,22 @@ public class Voice {
   void js(String fn, String arg) {
     String a = arg == null ? "" : JSONObject.quote(arg);
     act.runOnUiThread(() -> web.evaluateJavascript("window.jvNative && window.jvNative." + fn + " && window.jvNative." + fn + "(" + a + ")", null));
+  }
+
+  // is JUMAVOY still the phone's digital assistant? (Google sometimes switches it back to Gemini by itself)
+  @JavascriptInterface public boolean isAssistant() {
+    if (Build.VERSION.SDK_INT < 29) return true;
+    RoleManager rm = act.getSystemService(RoleManager.class);
+    return rm == null || rm.isRoleHeld(RoleManager.ROLE_ASSISTANT);
+  }
+
+  // the «Default apps» screen with «Digital assistant app» (the assistant role cannot be asked for from an app)
+  @JavascriptInterface public void openAssistantSettings() {
+    act.runOnUiThread(() -> {
+      for (String a : new String[] { Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS, Settings.ACTION_VOICE_INPUT_SETTINGS, Settings.ACTION_SETTINGS }) {
+        try { act.startActivity(new Intent(a)); return; } catch (Exception ignored) { }
+      }
+    });
   }
 
   @JavascriptInterface public boolean canListen() { return SpeechRecognizer.isRecognitionAvailable(act); }
