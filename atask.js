@@ -91,61 +91,99 @@ const ATK = {
   setInterval(() => { if (document.visibilityState === 'visible' || (typeof AC !== 'undefined' && AC.office())) run(); }, 5 * 60000);
 })();
 
-EXT_PAGES.atk = async el => {
-  await CRMLocal.ready;
-  const d = await REP.load(), f = UI.fmt0, t0 = UI.localDate(Date.now());
-  const names = d.empty ? [] : d.agents.map(a => a.agent).filter(n => n !== 'Без агента');
-  const L = ATK.all().slice().sort((a, b) => b.id - a.id);
-  const cnt = k => L.filter(t => t.status === k).length;
-  const list = L.filter(t => (ATK.view === 'all' || t.status === ATK.view) && (!ATK.agent || t.agent === ATK.agent));
-  const marks = ATK.marks(), clientDone = (d.tasks || []).filter(t => marks[t.id] && t.agent_done && (marks[t.id].at || '').slice(0, 10) >= UI.localDate(Date.now() - 7 * 864e5));
-  const when = v => new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-  el.innerHTML = `<div class="page-head"><div><h2>Задания агентам</h2><div class="sub">Агент видит задания в своём кабинете в Telegram и отмечает «Выполнено» с комментарием и фото. Вам сразу приходит сообщение, а здесь задание ждёт проверки.</div></div>
-    <div class="actions"><button class="btn gray" id="atPull">Проверить отметки</button></div></div>
-    <div class="kpis">${UI.tile('Ждут проверки', f(cnt('done')), { sub: 'агент отметил «Выполнено»', tone: cnt('done') ? 'warn' : '' })}${UI.tile('В работе', f(cnt('open')), { sub: `просрочено ${f(L.filter(t => t.status === 'open' && t.due && t.due < t0).length)}` })}${UI.tile('Возвращено', f(cnt('returned')), { sub: 'на доработку' })}${UI.tile('Принято', f(cnt('closed')), { sub: 'всего', tone: 'good' })}</div>
-    ${UI.panel('Новое задание', `<div class="form">
-      <label>Кому<select id="atWho" multiple size="${Math.min(6, Math.max(3, names.length))}">${names.map(n => `<option>${esc(n)}</option>`).join('')}</select><small class="mut">Ctrl или долгое нажатие — несколько</small></label>
-      <label>Тип<select id="atKind"><option value="academy">🎓 Урок академии</option><option value="task">Задание</option></select></label>
-      <label>Что сделать<input id="atTitle" maxlength="150" placeholder="например: Урок 2 — работа с возражениями"></label>
-      <label>Срок<input id="atDue" type="date" value="${UI.localDate(Date.now() + 3 * 864e5)}"></label>
-      <label style="grid-column:1/-1">Подробнее (необязательно)<input id="atText" maxlength="500" placeholder="что именно и как отчитаться"></label>
-      <label style="grid-column:1/-1">Ссылка (необязательно)<input id="atLink" type="url" value="${ATK.ACADEMY}" placeholder="https://…"></label></div>
-      <small id="atErr" class="neg" role="alert"></small><div class="bar"><span class="spacer"></span><button class="btn" id="atAdd">Дать задание и сообщить в Telegram</button></div>`, { cls: 'w12', sub: 'Агенту сразу придёт сообщение с кнопкой «Открыть задания».' })}
-    <div class="bar"><select id="atV" aria-label="Статус">${[['done', `Ждут проверки (${cnt('done')})`], ['open', `В работе (${cnt('open')})`], ['returned', `Возвращено (${cnt('returned')})`], ['closed', `Принято (${cnt('closed')})`], ['all', 'Все']].map(([k, n]) => `<option value="${k}" ${ATK.view === k ? 'selected' : ''}>${n}</option>`).join('')}</select>
-      <select id="atA" aria-label="Агент"><option value="">Все агенты</option>${names.map(n => `<option ${n === ATK.agent ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div>
-    ${UI.panel('Задания', list.length ? `<ul class="notes">${list.map(t => `<li><div>${UI.pill(...ATK.ST[t.status])} <b>${t.kind === 'academy' ? '🎓 ' : ''}${esc(t.title)}</b> — ${LX.ag(t.agent)} <span class="mut">· до ${UI.dateRu(t.due)}${t.status === 'open' && t.due && t.due < t0 ? ' · <b class="neg">просрочено</b>' : ''}</span></div>
-      ${t.text ? `<div class="mut">${esc(t.text)}</div>` : ''}
-      ${t.done ? `<div>💬 ${esc(t.done.comment || 'без комментария')} <span class="mut">· ${when(t.done.at)}</span>${t.done.photo ? ` · <a href="#" data-ph="${esc(t.done.photo)}">📷 фото</a>` : ''}</div>` : ''}
-      ${t.back ? `<div class="neg">↩ ${esc(t.back.comment)}</div>` : ''}
-      <div class="needs-edit">${t.status === 'done' ? `<button class="btn sm" data-ok="${t.id}">✓ Принять</button> <button class="btn gray sm" data-back="${t.id}">↩ Вернуть</button> ` : ''}${t.status !== 'closed' ? `<button class="btn gray sm" data-del="${t.id}">Удалить</button>` : ''}</div></li>`).join('')}</ul>` : '<p class="mut">Пусто.</p>', { cls: 'w12' })}
-    ${clientDone.length ? UI.panel('Задания по клиентам, отмеченные агентами (7 дней)', `<ul class="notes">${clientDone.map(t => `<li><div>${UI.pill('good', '✓ агент выполнил')} <b>${esc(t.kind)}</b> — ${LX.cl(t.client)} · ${LX.ag(t.agent)}</div><div>💬 ${esc(marks[t.id].comment || 'без комментария')}${marks[t.id].photo ? ` · <a href="#" data-ph="${esc(marks[t.id].photo)}">📷 фото</a>` : ''}</div></li>`).join('')}</ul>`, { cls: 'w12', sub: 'Задания по клиентам дают «Спящие клиенты», ИИ-ассистент и карточка клиента; агент отмечает их в своём кабинете.' }) : ''}`;
-  const re = () => EXT_PAGES.atk(el), save = () => { CRMLocal.touch(); if (typeof AC !== 'undefined') AC.publish({ force: true }).catch(() => {}); };
-  $('#atV', el).onchange = e => { ATK.view = e.target.value; re(); };
-  $('#atA', el).onchange = e => { ATK.agent = e.target.value; re(); };
-  $('#atKind', el).onchange = e => { const l = $('#atLink', el); if (e.target.value === 'academy' && !l.value) l.value = ATK.ACADEMY; if (e.target.value === 'task' && l.value === ATK.ACADEMY) l.value = ''; };
-  $('#atPull', el).onclick = async () => { try { const n = await ATK.pull(); toast(n ? `Новые отметки: ${n}` : 'Новых отметок нет'); if (n) { save(); re(); } } catch (e) { toast(e.message); } };
-  $('#atAdd', el).onclick = async () => {
-    const who = [...$('#atWho', el).selectedOptions].map(o => o.value), title = $('#atTitle', el).value.trim(), due = $('#atDue', el).value, link = $('#atLink', el).value.trim(), err = $('#atErr', el);
-    if (!who.length) return (err.textContent = 'Выберите агента');
-    if (!title) return (err.textContent = 'Напишите, что сделать');
+// ---------- the page: tabs «Проверить» / «В работе» / «Принято» / «Все», agent chips, task cards, «+ Новое задание» in a window ----------
+ATK.due = (d, t0) => { if (!d) return ['', 'без срока']; const n = Math.round((Date.parse(d) - Date.parse(t0)) / 864e5); return n < 0 ? ['wk-neg', `просрочено ${-n} дн.`] : n === 0 ? ['wk-neg', 'срок сегодня'] : n === 1 ? ['', 'срок завтра'] : ['', `срок ${UI.dm(d)} · через ${n} дн.`]; };
+ATK.newTask = (names, t0, onDone) => {
+  const plus = n => UI.localDate(Date.now() + n * 864e5), pick = new Set(ATK.agent ? [ATK.agent] : []);
+  const m = modal(`<h3>Новое задание</h3><div class="wk-form">
+    <label>Кому <span class="chips" id="ntWho"><button type="button" class="wk-chip" data-all>Всем агентам</button>${names.map(n => `<button type="button" class="wk-chip${pick.has(n) ? ' on' : ''}" data-who="${esc(n)}">${esc(n)}</button>`).join('')}</span></label>
+    <label>Тип <span class="chips"><button type="button" class="wk-chip on" data-kind="task">📋 Задание</button><button type="button" class="wk-chip" data-kind="academy">🎓 Урок академии</button></span></label>
+    <label>Что сделать<input id="ntTitle" maxlength="150" placeholder="например: собрать долг у 3 клиентов из списка" autocomplete="off"></label>
+    <label>Срок <span class="chips">${[[0, 'Сегодня'], [1, 'Завтра'], [3, '3 дня'], [7, 'Неделя']].map(([n, t]) => `<button type="button" class="wk-chip${n === 3 ? ' on' : ''}" data-due="${plus(n)}">${t}</button>`).join('')}<input id="ntDue" type="date" value="${plus(3)}" min="${t0}" style="width:auto"></span></label>
+    <label><span>Подробнее <span class="mut" style="font-weight:400">(необязательно)</span></span><textarea id="ntText" maxlength="500" rows="3" placeholder="что именно сделать и как отчитаться (фото, комментарий)"></textarea></label>
+    <label id="ntLinkW" hidden>Ссылка на урок<input id="ntLink" type="url" value="${ATK.ACADEMY}" placeholder="https://…"></label>
+    <small id="ntErr" class="neg" role="alert"></small></div>
+    <div class="bar"><button class="btn gray" id="ntX" type="button">Отмена</button><span class="spacer"></span><button class="btn" id="ntOk" type="button">Дать задание</button></div>`);
+  const $m = s => m.el.querySelector(s); let kind = 'task';
+  const paint = () => { m.el.querySelectorAll('[data-who]').forEach(b => b.classList.toggle('on', pick.has(b.dataset.who))); $m('[data-all]').classList.toggle('on', names.length > 0 && pick.size === names.length); $m('#ntOk').textContent = pick.size > 1 ? `Дать задание ${pick.size} агентам` : 'Дать задание'; };
+  m.el.querySelectorAll('[data-who]').forEach(b => b.onclick = () => { pick.has(b.dataset.who) ? pick.delete(b.dataset.who) : pick.add(b.dataset.who); paint(); });
+  $m('[data-all]').onclick = () => { if (pick.size === names.length) pick.clear(); else names.forEach(n => pick.add(n)); paint(); };
+  m.el.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => { kind = b.dataset.kind; m.el.querySelectorAll('[data-kind]').forEach(x => x.classList.toggle('on', x === b)); $m('#ntLinkW').hidden = kind !== 'academy'; });
+  m.el.querySelectorAll('[data-due]').forEach(b => b.onclick = () => { $m('#ntDue').value = b.dataset.due; m.el.querySelectorAll('[data-due]').forEach(x => x.classList.toggle('on', x === b)); });
+  $m('#ntDue').oninput = () => m.el.querySelectorAll('[data-due]').forEach(x => x.classList.toggle('on', x.dataset.due === $m('#ntDue').value));
+  $m('#ntX').onclick = m.close; paint(); setTimeout(() => $m('#ntTitle').focus(), 50);
+  $m('#ntOk').onclick = async () => {
+    const who = names.filter(n => pick.has(n)), title = $m('#ntTitle').value.trim(), due = $m('#ntDue').value, link = kind === 'academy' ? $m('#ntLink').value.trim() : '', text = $m('#ntText').value.trim(), err = $m('#ntErr');
+    if (!who.length) return (err.textContent = 'Выберите, кому — хотя бы одного агента');
+    if (!title) { err.textContent = 'Напишите, что сделать'; return $m('#ntTitle').focus(); }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || due < t0) return (err.textContent = 'Срок: сегодня или позже');
     if (link && !/^https:\/\//.test(link)) return (err.textContent = 'Ссылка должна начинаться с https://');
-    const kind = $('#atKind', el).value, text = $('#atText', el).value.trim();
-    let id = ATK.all().reduce((m, t) => Math.max(m, t.id || 0), 0), sent = 0;
+    $m('#ntOk').disabled = true;
+    let id = ATK.all().reduce((x, t) => Math.max(x, t.id || 0), 0), sent = 0;
     for (const agent of who) {
       ATK.all().push({ id: ++id, agent, kind, title: title.slice(0, 150), text: text.slice(0, 500), link, due, created: new Date().toISOString(), status: 'open', done: null, back: null });
-      try { if (await ATK.notify(agent, `🆕 <b>Новое задание</b>\n${kind === 'academy' ? '🎓 ' : ''}${esc(title)}${text ? '\n' + esc(text) : ''}\nСрок: ${UI.dateRu(due)}`)) sent++; } catch (e) { toast(e.message); }
+      try { if (await ATK.notify(agent, `🆕 <b>Новое задание</b>\n${kind === 'academy' ? '🎓 ' : ''}${esc(title)}${text ? '\n' + esc(text) : ''}\nСрок: ${UI.dateRu(due)}`)) sent++; } catch { /* Telegram not reachable */ }
     }
-    save(); toast(`Задание дано: ${who.length} агентам${sent < who.length ? ` · в Telegram ушло ${sent}` : ''}`); re();
+    m.close(); toast(`Задание дано: ${who.length} ${UI.plural(who.length, 'агенту', 'агентам', 'агентам')}${sent < who.length ? ` · в Telegram ушло ${sent} — у остальных Telegram не подключён` : ' · сообщили в Telegram'}`); onDone();
   };
-  el.querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => {
-    const t = ATK.all().find(x => x.id === +b.dataset.ok); t.status = 'closed'; t.closedAt = new Date().toISOString(); save();
-    try { await ATK.notify(t.agent, `✓ Задание принято: <b>${esc(t.title)}</b>`); } catch { /* Telegram not reachable */ } re();
+};
+
+EXT_PAGES.atk = async el => {
+  await CRMLocal.ready;
+  const d = await REP.load(), t0 = UI.localDate(Date.now());
+  const names = d.empty ? [] : d.agents.map(a => a.agent).filter(n => n !== 'Без агента');
+  const L = ATK.all().slice().sort((a, b) => b.id - a.id), mineA = t => !ATK.agent || t.agent === ATK.agent;
+  const G = { done: t => t.status === 'done', work: t => t.status === 'open' || t.status === 'returned', closed: t => t.status === 'closed', all: () => true };
+  const late = t => (t.status === 'open' || t.status === 'returned') && t.due && t.due < t0;
+  const n = k => L.filter(t => mineA(t) && G[k](t)).length;
+  if (!ATK._v) ATK._v = n('done') ? 'done' : 'work';
+  const v = G[ATK._v] ? ATK._v : 'work';
+  // to check first, then overdue, then by due date
+  const list = L.filter(t => mineA(t) && G[v](t)).sort((a, b) => (b.status === 'done') - (a.status === 'done') || late(b) - late(a) || (v === 'closed' ? String(b.closedAt || '').localeCompare(String(a.closedAt || '')) : String(a.due || '9').localeCompare(String(b.due || '9'))));
+  const marks = ATK.marks(), clientDone = (d.tasks || []).filter(t => marks[t.id] && t.agent_done && (marks[t.id].at || '').slice(0, 10) >= UI.localDate(Date.now() - 7 * 864e5) && mineA(t));
+  const when = x => new Date(x).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const active = a => L.filter(t => t.agent === a && t.status !== 'closed').length;
+  const card = t => { const [dc, dt] = ATK.due(t.due, t0), st = ATK.ST[t.status];
+    return `<div class="wk-item ${t.status === 'done' ? 'need' : t.status === 'closed' ? 'done' : late(t) || t.status === 'returned' ? 'late' : ''}" data-t="${t.id}">
+      <div class="h"><div><div class="nm">${t.kind === 'academy' ? '🎓 ' : ''}${esc(t.title)}</div><small>${LX.ag(t.agent)} · <span class="${t.status === 'closed' ? '' : dc}">${t.status === 'closed' ? 'принято ' + (t.closedAt ? UI.dm(t.closedAt.slice(0, 10)) : '') : dt}</span> · дано ${UI.dm(String(t.created || '').slice(0, 10))}</small></div>
+        <div class="num">${UI.pill(st[0], st[1])}</div></div>
+      ${t.text ? `<div class="txt">${esc(t.text)}</div>` : ''}${t.link ? `<div class="row2"><a href="${esc(t.link)}" target="_blank" rel="noopener">🔗 ${t.kind === 'academy' ? 'Урок' : 'Ссылка'}</a></div>` : ''}
+      ${t.done ? `<div class="rep">💬 ${esc(t.done.comment || 'без комментария')} <span class="mut">· ${when(t.done.at)}</span>${t.done.photo ? ` · <a href="#" data-ph="${esc(t.done.photo)}">📷 фото</a>` : ''}</div>` : ''}
+      ${t.back ? `<div class="back">↩ Вы вернули: ${esc(t.back.comment)} <span class="mut">· ${when(t.back.at)}</span></div>` : ''}
+      <div class="row2 needs-edit">${t.status === 'done' ? `<button class="btn sm" data-ok="${t.id}">✓ Принять</button><button class="btn gray sm" data-back="${t.id}">↩ Вернуть на доработку</button>` : ''}
+        ${t.status === 'open' || t.status === 'returned' ? `<button class="btn gray sm" data-nudge="${t.id}">🔔 Напомнить</button>` : ''}
+        <span class="spacer"></span>${t.status !== 'closed' ? `<button class="btn gray sm" data-del="${t.id}" title="Удалить задание">🗑</button>` : ''}</div>
+      <div class="wk-form" data-bf="${t.id}" hidden style="margin-top:10px"><textarea maxlength="500" rows="2" placeholder="Что доделать? Агент получит это в Telegram"></textarea><div class="row2"><button class="btn gray sm" data-bx>Отмена</button><button class="btn sm" data-bs="${t.id}">Отправить агенту</button></div></div>
+    </div>`; };
+  const tabs = [['done', 'Проверить', n('done'), true], ['work', 'В работе', n('work')], ['closed', 'Принято', n('closed')], ['all', 'Все', 0]];
+  el.innerHTML = `<div class="page-head"><div><h2>Задания агентам</h2><div class="sub">Агент получает задание в Telegram, отмечает «Выполнено» с комментарием и фото — вы проверяете здесь.</div></div>
+    <div class="actions"><button class="btn gray" id="atPull">🔄 Проверить</button><button class="btn needs-edit" id="atNew">+ Новое задание</button></div></div>
+    <div class="wk-seg" role="tablist">${tabs.map(([k, t, c, hot]) => `<button type="button" role="tab" data-v="${k}" class="${v === k ? 'on' : ''}" aria-selected="${v === k}">${t}${c ? ` <span class="wk-badge${hot ? '' : ' soft'}">${c}</span>` : ''}</button>`).join('')}</div>
+    ${names.length ? `<div class="wk-tools"><button type="button" class="wk-chip${!ATK.agent ? ' on' : ''}" data-a="">Все агенты</button>${names.map(a => `<button type="button" class="wk-chip${ATK.agent === a ? ' on' : ''}" data-a="${esc(a)}">${esc(a)}${active(a) ? ` <span class="wk-badge soft">${active(a)}</span>` : ''}</button>`).join('')}</div>` : ''}
+    ${v === 'work' && list.some(late) ? `<div class="wk-banner bad">⏰ Просрочено: <b>${list.filter(late).length}</b> — нажмите «🔔 Напомнить», агенту придёт сообщение.</div>` : ''}
+    ${v === 'done' && list.length > 1 ? `<div class="wk-tools needs-edit"><span class="mut">Ждут проверки: ${list.length}</span><span class="spacer"></span><button class="btn gray sm" id="atOkAll">✓ Принять все (${list.length})</button></div>` : ''}
+    ${list.length ? `<div class="wk-list">${list.map(card).join('')}</div>` : `<div class="wk-empty"><b>${v === 'done' ? '✓ Проверять нечего' : v === 'work' ? 'Активных заданий нет' : 'Пусто'}</b>${v === 'done' ? 'Когда агент отметит «Выполнено», задание появится здесь.' : '<button class="btn needs-edit" data-new style="margin-top:10px">+ Дать задание</button>'}</div>`}
+    ${v === 'done' && clientDone.length ? `<h3 style="margin:20px 4px 8px">Задания по клиентам — отметки агентов за 7 дней</h3><div class="wk-list">${clientDone.map(t => `<div class="wk-item done"><div class="h"><div><div class="nm">${esc(t.kind)} — ${LX.cl(t.client)}</div><small>${LX.ag(t.agent)}${t.text ? ' · ' + esc(t.text) : ''}</small></div><div class="num">${UI.pill('good', '✓ агент выполнил')}</div></div><div class="rep">💬 ${esc(marks[t.id].comment || 'без комментария')}${marks[t.id].photo ? ` · <a href="#" data-ph="${esc(marks[t.id].photo)}">📷 фото</a>` : ''}</div></div>`).join('')}</div><p class="mut" style="margin:8px 4px">Задания по клиентам — во вкладке «Задания по клиентам» выше.</p>` : ''}`;
+  const re = () => EXT_PAGES.atk(el), save = () => { CRMLocal.touch(); if (typeof AC !== 'undefined') AC.publish({ force: true }).catch(() => {}); };
+  const byId = id => ATK.all().find(x => x.id === +id);
+  el.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { ATK._v = b.dataset.v; re(); });
+  el.querySelectorAll('[data-a]').forEach(b => b.onclick = () => { ATK.agent = b.dataset.a; re(); });
+  el.querySelectorAll('#atNew, [data-new]').forEach(b => b.onclick = () => ATK.newTask(names, t0, () => { save(); ATK._v = 'work'; re(); }));
+  $('#atPull', el).onclick = async () => { try { const k = await ATK.pull(); toast(k ? `Новые отметки: ${k}` : 'Новых отметок нет'); if (k) { save(); ATK._v = 'done'; re(); } } catch (e) { toast(e.message); } };
+  const accept = async t => { t.status = 'closed'; t.closedAt = new Date().toISOString(); try { await ATK.notify(t.agent, `✓ Задание принято: <b>${esc(t.title)}</b>`); } catch { /* Telegram not reachable */ } };
+  el.querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => { b.disabled = true; await accept(byId(b.dataset.ok)); save(); toast('✓ Принято'); re(); });
+  { const all = $('#atOkAll', el); if (all) all.onclick = async () => { if (!confirm(`Принять все ${list.length} заданий? Каждому агенту придёт «Задание принято».`)) return; all.disabled = true; for (const t of list) await accept(t); save(); toast(`✓ Принято: ${list.length}`); re(); }; }
+  el.querySelectorAll('[data-back]').forEach(b => b.onclick = () => { const f = el.querySelector(`[data-bf="${b.dataset.back}"]`); f.hidden = false; f.querySelector('textarea').focus(); });
+  el.querySelectorAll('[data-bx]').forEach(b => b.onclick = () => { b.closest('[data-bf]').hidden = true; });
+  el.querySelectorAll('[data-bs]').forEach(b => b.onclick = async () => {
+    const t = byId(b.dataset.bs), why = b.closest('[data-bf]').querySelector('textarea').value.trim(); if (!why) return toast('Напишите, что доделать');
+    b.disabled = true; t.status = 'returned'; t.back = { at: new Date().toISOString(), comment: why.slice(0, 500) }; save();
+    try { await ATK.notify(t.agent, `↩ <b>Задание возвращено</b>: ${esc(t.title)}\n${esc(why)}`); } catch (e) { toast(e.message); } toast('↩ Возвращено агенту'); re();
   });
-  el.querySelectorAll('[data-back]').forEach(b => b.onclick = async () => {
-    const t = ATK.all().find(x => x.id === +b.dataset.back), why = prompt('Что доделать? Агент получит это сообщение.', ''); if (!why || !why.trim()) return;
-    t.status = 'returned'; t.back = { at: new Date().toISOString(), comment: why.trim().slice(0, 500) }; save();
-    try { await ATK.notify(t.agent, `↩ <b>Задание возвращено</b>: ${esc(t.title)}\n${esc(why.trim())}`); } catch (e) { toast(e.message); } re();
+  el.querySelectorAll('[data-nudge]').forEach(b => b.onclick = async () => {
+    const t = byId(b.dataset.nudge), dt = ATK.due(t.due, t0)[1].replace(/\.$/, ''); b.disabled = true;
+    try { const ok = await ATK.notify(t.agent, `🔔 <b>Напоминание</b>: ${t.kind === 'academy' ? '🎓 ' : ''}${esc(t.title)}\n${dt.charAt(0).toUpperCase() + dt.slice(1)}. Когда сделаете — отметьте «Выполнено» в кабинете.`); t.nudged = new Date().toISOString(); save(); toast(ok ? '🔔 Напомнили в Telegram' : 'У агента не подключён Telegram — позвоните'); } catch (e) { toast(e.message); }
+    b.textContent = '🔔 Напомнили';
   });
   el.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { if (!confirm('Удалить задание?')) return; CRMLocal.ext().atasks = ATK.all().filter(x => x.id !== +b.dataset.del); save(); re(); });
   el.querySelectorAll('[data-ph]').forEach(a => a.onclick = async e => { e.preventDefault(); try { const url = await ATK.photo(a.dataset.ph); const m = modal(`<img src="${url}" alt="Фото агента" style="max-width:100%;border-radius:8px"><div class="bar"><span class="spacer"></span><button class="btn gray" id="phX">Закрыть</button></div>`); $('#phX', m.el).onclick = () => { URL.revokeObjectURL(url); m.close(); }; } catch (err) { toast(err.message); } });

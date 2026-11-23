@@ -176,133 +176,230 @@ INBOX_HANDLERS.whmove = m => {
   c.moves = c.moves.slice(-300); return true;
 };
 
+// ---------- the page: four tabs — «Сверка» (today's warehouses + the chosen count with decisions), «История», «Приход / отгрузка», «Настройки» ----------
+WC.SHORT = { fix: '✓ Ошибка учёта', found: '🔎 Пересорт', known: '📌 Постоянная', dmg: '🗑 Брак', charge: '💸 Удержать' };
+WC.TONE = { fix: 'good', found: 'good', known: '', dmg: 'warn', charge: 'bad' };
+// state of one count: [tone, text]
+WC.state = (s, v) => s.status === 'recount' ? ['warn', '↻ ждём пересчёт'] : s.result === 'final' && s.status !== 'ok' ? ['bad', '🔒 зафиксировано — нужны решения'] : !v.diff.length ? ['good', '✓ сходится'] : s.status === 'ok' ? ['good', '✓ принято'] : ['bad', 'ждёт решения'];
+WC.tab = WC.tab || 'now'; WC.f = WC.f || 'diff'; WC.q = WC.q || ''; WC.draft = WC.draft || {};
+
 EXT_PAGES.wcount = async el => {
   await CRMLocal.ready;
-  WC._dmg = {}; // брак per count, recomputed on every draw
-  const c = WC.cfg(), f = UI.fmt0, t0 = UI.localDate(Date.now()), $$ = v => '$' + f(v), late = new Date().toTimeString().slice(0, 5) >= (c.deadline || '10:00');
+  WC._dmg = {};
+  const c = WC.cfg(), f = UI.fmt0, t0 = UI.localDate(Date.now()), $$ = v => '$' + f(v), dl = c.deadline || '10:00', late = new Date().toTimeString().slice(0, 5) >= dl;
   let whs = []; try { whs = (await CRMLocal.request('GET', '/api/wh/warehouses')).map(w => w.name); } catch { /* none */ }
   const tg = CRMLocal.ext().tg || {}, chats = { ...(tg.seen || {}) }; for (const v of Object.values(tg.chats || {})) if (v?.id) chats[v.id] = v;
   const stores = Object.entries(c.stores);
-  // once per session: refresh the store keepers' cabinets and stores.json (reminder time, button address) without waiting for a change
   if (!WC._pub && stores.length) { WC._pub = true; WC.publish().catch(() => { WC._pub = false; }); }
+  // every store keeper: the Telegram ones from the settings + those with a CRM login who sent counts in the last 2 weeks
+  const keepers = stores.map(([who, s]) => ({ who, name: s.name, wh: s.wh }));
+  const since = UI.localDate(Date.now() - 14 * 864e5);
+  for (const s of c.subs) if (s.day >= since && !keepers.some(k => k.who === s.who)) keepers.push({ who: s.who, name: s.name, wh: s.warehouse });
   const todayOf = who => c.subs.filter(s => s.who === who && s.day === t0 && !s.partial).at(-1);
-  if (!WC.sel || !c.subs.some(s => s.id === WC.sel)) WC.sel = (c.subs.filter(s => s.day === t0).at(-1) || c.subs.at(-1))?.id || null;
+  const waiting = c.subs.filter(s => s.day >= since && !s.partial && s.status !== 'ok' && s.status !== 'recount' && WC.view(s).diff.length);
+  // which count is open: the chosen one, else the first of today that needs a decision, else the newest
+  if (!WC.sel || !c.subs.some(s => s.id === WC.sel)) WC.sel = (waiting.filter(s => s.day === t0)[0] || c.subs.filter(s => s.day === t0).at(-1) || c.subs.at(-1))?.id || null;
   const sub = c.subs.find(s => s.id === WC.sel), V = sub ? WC.view(sub) : null;
-  const days = [...new Set(c.subs.map(s => s.day))].sort().reverse().slice(0, 14);
-  const freq = new Map(); for (const s of c.subs.filter(x => days.includes(x.day))) for (const i of WC.view(s).diff) { const k = s.warehouse + '|' + i.art, e = freq.get(k) || freq.set(k, { wh: s.warehouse, art: i.art, name: i.name, n: 0, sum: 0, ds: {} }).get(k); e.n++; e.sum += i.d; e.ds[i.d] = (e.ds[i.d] || 0) + 1; }
-  const often = [...freq.values()].filter(e => e.n >= 2).map(e => { const [d, n] = Object.entries(e.ds).sort((a, b) => b[1] - a[1])[0]; return { ...e, mode: Number(d), modeN: n }; }).sort((a, b) => b.n - a.n);
-  const knownAll = Object.entries(c.known || {}).flatMap(([wh, m]) => Object.entries(m || {}).map(([art, k]) => ({ wh, art, ...k })));
-  const hist = c.subs.filter(s => !WC.hw || s.warehouse === WC.hw).slice().reverse();
-  const tiles = stores.length ? stores.map(([who, s]) => { const t = todayOf(who), v = t ? WC.view(t) : null; return UI.tile(esc(s.wh), t ? (v.diff.length ? `${v.diff.length} расх.` : '✓ сходится') : '✕ нет', { sub: t ? `сегодня в ${WC.hm(t.at)} · ${esc(s.name)}${t.status === 'recount' ? ' · ждём пересчёт' : t.result === 'final' ? ' · 🔒 зафиксировано' : t.status === 'ok' ? ' · принято' : t.result === 'ok' && t.round === 2 ? ' · сошлось после пересчёта' : ''}${c.again?.[who] && c.again[who] > t.at ? ' · 🔁 просим сверить ещё раз' : ''}` : `сегодня не прислана · ${esc(s.name)}`, tone: !t ? (late ? 'bad' : 'warn') : v.diff.length ? 'warn' : 'good' }); }).join('') : UI.tile('Завскладов нет', '—', { sub: 'добавьте ниже' });
-  el.innerHTML = `<div class="page-head"><div><h2>Сверка складов</h2><div class="sub">Завсклады каждое утро до ${esc(c.deadline || '10:00')} пересчитывают ${c.mode === 'short' ? 'товары (короткая сверка, полная — ' + WC.DOW[c.fullDay || 1] + ')' : 'все товары'} в своём кабинете в Telegram — вслепую, не видя цифр LINKO. Здесь — только расхождения с «Всего» в LINKO на момент начала сверки.</div></div>
-    <div class="actions"><button class="btn gray" id="wcPull">Проверить сверки</button></div></div>
-    <div class="kpis">${tiles}</div>
-    ${sub ? UI.panel(`${esc(sub.warehouse)} · ${UI.dateRu(sub.day)} ${WC.hm(sub.at)} · ${esc(sub.name)}`, `
-      <div class="bar"><label class="mut">Сверка <select id="wcSel">${c.subs.slice().reverse().slice(0, 60).map(s => `<option value="${esc(s.id)}" ${s.id === sub.id ? 'selected' : ''}>${UI.dateRu(s.day)} · ${esc(s.warehouse)}${s.partial ? ' (пересчёт)' : s.again ? ' (повторная)' : ''}</option>`).join('')}</select></label>
-        <span class="mut">${sub.short ? `<b>короткая сверка</b> (${f(sub.items.length)} из ${f(sub.total_items)}) · ` : ''}посчитано позиций: ${f(sub.items.length)} · расхождений: <b>${f(V.diff.length)}</b> · недостача ${$$(V.shortSum)} · излишек ${$$(V.plusSum)}${sub.start_at ? '' : ' · ⚠ начало сверки не зафиксировано — сравнение с остатком на момент отправки'}</span></div>
-      ${sub.status === 'recount' ? `<p class="mut">↻ <b>Завскладу автоматически отправлены названия ${f(sub.recount.length)} поз. на пересчёт</b> (без цифр). Ждём вторую попытку — решения выберете после неё.</p>` : sub.result === 'final' ? '<p class="neg"><b>🔒 Пересчёт не сошёлся — расхождение зафиксировано окончательно.</b> Завсклад получил список названий, больше в этот день он сверку не отправляет.</p>' : sub.result === 'ok' && sub.round === 2 ? '<p class="pos"><b>✅ После пересчёта всё сошлось</b> — завсклад получил «склад в порядке».</p>' : ''}
-      ${sub.comment ? `<p>💬 ${esc(sub.comment)}</p>` : ''}${sub.photo ? `<p><a href="#" data-ph="${esc(sub.photo)}">📷 фото со склада</a></p>` : ''}
-      ${V.diff.length ? LX.table(['Товар', '#По LINKO', '#Факт', '#Разница', '#В $', 'Решение'], V.diff.sort((a, b) => a.dd * (a.cost || 1) - b.dd * (b.cost || 1)).map(i => { const dm = (WC._dmg ||= {})[sub.id] ||= WC.dmgFor(sub.warehouse, sub.at), dmi = dm[i.art] || [], d = (sub.dec || {})[i.art] || {}, auto = i.dd < 0 && i.cost ? Math.round(-i.dd * i.cost * 100) / 100 : ''; return `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}${dmi.length ? ` · <b class="neg">🗑 брак ${dmi.map(x => f(x.qty) + ' шт ' + UI.dateRu(UI.localDate(Date.parse(x.at))) + (x.why ? ' (' + esc(x.why) + ')' : '')).join(', ')}</b>` : ''}${i.k ? ` · 📌 обычно ${i.k > 0 ? '+' : ''}${f(i.k)}, сегодня ${i.d > 0 ? '+' : ''}${f(i.d)}` : ''}</small></td><td class="n">${f(i.linko)}</td><td class="n"><b>${f(i.fact)}</b></td><td class="n ${i.dd < 0 ? 'neg' : 'pos'}"><b>${i.dd > 0 ? '+' : ''}${f(i.dd)}</b></td><td class="n">${i.cost ? (i.dd < 0 ? '−' : '+') + $$(Math.abs(i.dd) * i.cost) : '—'}</td><td><select data-dec="${esc(i.art)}" aria-label="Решение"><option value="">— выберите —</option>${Object.entries(WC.DEC).filter(([k]) => k !== 'recount' && (k !== 'charge' || i.dd < 0) && (k !== 'dmg' || i.dd < 0)).map(([k, t]) => `<option value="${k}" ${d.k === k ? 'selected' : ''}>${t}</option>`).join('')}</select>${i.dd < 0 ? `<label class="mut" data-sumw="${esc(i.art)}" style="display:${d.k === 'charge' ? 'flex' : 'none'};gap:6px;align-items:center;margin-top:4px">сумма, $ <input type="number" min="0" step="0.01" data-sum="${esc(i.art)}" value="${d.k === 'charge' ? d.sum : auto}" placeholder="${auto ? '' : 'укажите'}" style="width:90px"></label>` : ''}</td></tr>`; })) : `<p class="pos" style="font-size:18px"><b>✓ Всё сходится с LINKO: недостача 0 · излишек 0</b></p>${V.known.length ? `<p class="mut">📌 Учтены постоянные разницы (${V.known.length}): ${V.known.slice(0, 8).map(i => `${esc(i.name)} ${i.k > 0 ? '+' : ''}${f(i.k)}`).join(', ')}${V.known.length > 8 ? ' …' : ''}</p>` : ''}`}
-      ${V.diff.length && V.known.length ? `<p class="mut">📌 Ещё учтены постоянные разницы, они сошлись: ${V.known.length} поз.</p>` : ''}
-      ${V.charged ? `<p><b>💸 Удержание с завсклада по этой сверке: ${$$(V.charged)}</b></p>` : ''}
-      ${V.moved.length ? `<details><summary class="mut">Сошлось с LINKO после отгрузки во время сверки (${V.moved.length})</summary><ul>${V.moved.map(i => `<li>${esc(i.name)}: на начало ${f(i.linko)}, после отгрузки ${f(i.now)}, факт ${f(i.fact)}</li>`).join('')}</ul></details>` : ''}
-      <details id="wcAll" ${WC.showAll ? 'open' : ''}><summary><b>📋 Весь список, что посчитал завсклад</b> <span class="mut">(${f(V.rows.length)} поз.)</span></summary>${LX.table(['Товар', '#По LINKO', '#Факт', '#Разница', 'Итог'], V.rows.slice().sort((a, b) => (a.dd === 0) - (b.dd === 0) || String(a.name).localeCompare(String(b.name))).map(i => `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td class="n">${f(i.linko)}</td><td class="n"><b>${f(i.fact)}</b></td><td class="n ${i.d < 0 ? 'neg' : i.d > 0 ? 'pos' : ''}">${i.d ? (i.d > 0 ? '+' : '') + f(i.d) : '0'}</td><td>${i.moved ? 'ℹ отгрузка во время сверки' : !i.dd ? (i.k ? `<span class="pos">📌 как обычно (${i.k > 0 ? '+' : ''}${f(i.k)})</span>` : '<span class="pos">✓</span>') : `<span class="neg">${i.dd < 0 ? 'недостача' : 'излишек'} ${f(Math.abs(i.dd))}</span>`}</td></tr>`), { max: '420px' })}</details>
-      ${(() => { // «Сверить ещё раз»: for the latest count of this store keeper that did not match
-        const mine = c.subs.filter(s => s.who === sub.who && !s.partial), lastOne = mine.at(-1); if (!lastOne || lastOne.id !== sub.id || !V.diff.length || sub.status === 'recount') return '';
-        let streak = 0; for (let k = mine.length - 1; k >= 0 && WC.view(mine[k]).diff.length; k--) streak++;
-        const asked = c.again?.[sub.who] && c.again[sub.who] > sub.at;
-        return `<div class="bar" style="margin-top:10px;${streak >= 2 ? 'padding:10px;border-radius:10px;background:rgba(255,170,0,.12)' : ''}"><span class="${streak >= 2 ? 'neg' : 'mut'}">${streak >= 2 ? `⚠ <b>${streak} сверки подряд с расхождением.</b> ` : ''}${asked ? `🔁 Повторная сверка запрошена в ${WC.hm(c.again[sub.who])} — ждём.` : 'Не верите цифрам? Попросите завсклада пересчитать весь склад заново.'}</span><span class="spacer"></span><button class="btn ${streak >= 2 ? '' : 'gray'}" id="wcAgain">🔁 ${asked ? 'Напомнить ещё раз' : 'Сверить ещё раз'}</button></div>`; })()}
-      ${sub.status === 'recount' ? '' : `<div class="bar needs-edit" style="margin-top:10px"><span class="spacer"></span><button class="btn" id="wcOk">${sub.status === 'ok' ? '✓ Сохранить решения' : V.diff.length ? '✓ Принять с решениями' : '✓ Принять сверку'}</button></div>`}`, { cls: 'w12', sub: 'Пересчёт идёт автоматически: при расхождении завсклад получает только названия товаров (без цифр) и пересчитывает их один раз; если снова не сошлось — расхождение фиксируется. По каждому итоговому расхождению выберите решение; «Удержать» — сумма по себестоимости (можно поправить); «Постоянная разница» — товар, который каждый раз расходится на одно и то же число: дальше такая разница считается нормой. «Разница» = факт − LINKO (минус постоянная разница): минус — недостача, плюс — излишек.' }) : UI.empty('Сверок ещё нет', 'Добавьте завскладов ниже и подключите им кабинет склада в Telegram.')}
-    <div class="grid">
-    ${(() => { const whos = [...new Set(c.subs.filter(x => x.day.startsWith(t0.slice(0, 7))).map(x => x.who))]; if (!whos.length) return '';
-      const R = whos.map(w => ({ w, s: WC.stats(w), sub: c.subs.filter(x => x.who === w).at(-1) })).sort((a, b) => (a.s.rank || 99) - (b.s.rank || 99));
-      return UI.panel('🏆 Рейтинг завскладов — этот месяц', LX.table(['Место', 'Завсклад', 'Склад', '#Сверок', '#Без расхождений', '#Вовремя', '#Чисто подряд', '#Удержания'], R.map(x => `<tr><td><b>${x.s.rank === 1 ? '🥇' : x.s.rank === 2 ? '🥈' : x.s.rank === 3 ? '🥉' : x.s.rank || '—'}</b></td><td>${esc(x.sub?.name || x.w)}</td><td>${esc(x.sub?.warehouse || '')}</td><td class="n">${f(x.s.month.cnt)}</td><td class="n ${x.s.month.clean === x.s.month.cnt ? 'pos' : ''}"><b>${f(x.s.month.clean)}</b> <small class="mut">${x.s.month.cnt ? Math.round(x.s.month.clean / x.s.month.cnt * 100) + '%' : ''}</small></td><td class="n">${f(x.s.month.onTime)}</td><td class="n">${f(x.s.streak)} <small class="mut">лучший ${f(x.s.best)}</small></td><td class="n">${x.s.month.charged ? $$(x.s.month.charged) : '—'}</td></tr>`)), { cls: 'w12', sub: `Каждый завсклад видит свою строку в кабинете («Мой рейтинг»). Вовремя — до ${esc(c.deadline || '10:00')}.` }); })()}
-    ${(() => { const M = (c.moves || []).filter(x => !WC.hw || x.warehouse === WC.hw).slice().reverse(); if (!M.length) return '';
-      return UI.panel('🚚 Приход и отгрузка от завскладов', LX.table(['Когда', 'Склад · завсклад', 'Что', 'Товары', ''], M.slice(0, 60).map(x => `<tr${x.ok ? ' style="opacity:.6"' : ''}><td>${UI.dateRu(UI.localDate(Date.parse(x.at)))} <small class="mut">${WC.hm(x.at)}</small></td><td>${esc(x.warehouse)}<br><small class="mut">${esc(x.name)}</small></td><td><b>${WC.MOVE[x.type] || esc(x.type)}</b>${x.party ? `<br><small>${esc(x.party)}</small>` : ''}</td><td>${x.items.slice(0, 12).map(i => `${esc(i.name)}: <b>${f(i.qty)}</b>${i.linko !== null && i.linko !== undefined ? ` <small class="mut">(в LINKO было ${f(i.linko)})</small>` : ''}`).join('<br>')}${x.items.length > 12 ? `<br><small class="mut">…и ещё ${x.items.length - 12}</small>` : ''}${x.comment ? `<br>💬 ${esc(x.comment)}` : ''}</td><td>${x.photo ? `<a href="#" data-ph="${esc(x.photo)}">📷 накладная</a><br>` : ''}${x.ok ? '<span class="pos">✓ проверено</span>' : `<button class="btn gray sm needs-edit" data-mok="${esc(x.id)}">✓ Проверено</button>`}</td></tr>`), { max: '520px' }), { cls: 'w12', sub: 'Что завсклад принял или отдал физически. «В LINKO было» — остаток в LINKO в ту минуту: если приход уже проведён, он там учтён. Сверьте с накладной и отметьте «Проверено».' }); })()}
-    ${days.length ? UI.panel('По дням', `<div class="tscroll"><table><thead><tr><th>День</th>${stores.map(([, s]) => `<th class="n">${esc(s.wh)}</th>`).join('')}</tr></thead><tbody>${days.map(d => `<tr><td>${UI.dateRu(d)}</td>${stores.map(([who]) => { const s = c.subs.filter(x => x.who === who && x.day === d && !x.partial).at(-1); if (!s) return '<td class="n neg">нет</td>'; const v = WC.view(s); return `<td class="n ${v.diff.length ? 'neg' : 'pos'}">${v.diff.length ? v.diff.length + ' расх.' : '✓'} <small class="mut">${WC.hm(s.at)}</small></td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`, { cls: 'w7', sub: 'Последние 14 дней: расхождения и время отправки' }) : ''}
-    ${often.length ? UI.panel('Расходятся постоянно', LX.table(['Склад', 'Товар', '#Раз за 14 дней', '#Чаще всего', ''], often.slice(0, 20).map(e => `<tr><td>${esc(e.wh)}</td><td>${esc(e.name)}</td><td class="n"><b>${e.n}</b></td><td class="n ${e.mode < 0 ? 'neg' : 'pos'}">${e.mode > 0 ? '+' : ''}${f(e.mode)} <small class="mut">×${e.modeN}</small></td><td>${e.modeN >= 2 ? `<button class="btn gray sm needs-edit" data-kn="${esc(e.wh + '|' + e.art)}" data-kd="${e.mode}" data-knm="${esc(e.name)}" title="Дальше разница ${e.mode > 0 ? '+' : ''}${e.mode} по этому товару считается нормой">📌 Учитывать</button>` : ''}</td></tr>`)), { cls: 'w5', sub: 'Товар расходится раз за разом на одно и то же число? «📌 Учитывать» — дальше эта разница считается нормой, и если всё остальное сошлось, сверка зелёная' }) : ''}
-    ${knownAll.length ? UI.panel('📌 Учитываемые постоянные разницы', LX.table(['Склад', 'Товар', '#Разница', 'С какого дня', ''], knownAll.map(k => `<tr><td>${esc(k.wh)}</td><td>${esc(k.name || k.art)}<br><small class="mut">${esc(k.art)}</small></td><td class="n ${k.d < 0 ? 'neg' : 'pos'}"><b>${k.d > 0 ? '+' : ''}${f(k.d)}</b></td><td>${k.at ? UI.dateRu(k.at.slice(0, 10)) : '—'}</td><td><button class="btn gray sm needs-edit" data-unk="${esc(k.wh + '|' + k.art)}">Больше не учитывать</button></td></tr>`)), { cls: 'w12', sub: 'Такой факт − LINKO считается «сходится»: завсклад этого не видит (сверка слепая), но и на пересчёт такие товары не уходят. Разберётесь с причиной (исправили в LINKO) — уберите.' }) : ''}
-    ${c.subs.length ? UI.panel('История сверок', `<div class="bar"><label class="mut">Склад <select id="wcHw"><option value="">все</option>${[...new Set(c.subs.map(s => s.warehouse))].sort().map(w => `<option ${w === WC.hw ? 'selected' : ''}>${esc(w)}</option>`).join('')}</select></label><span class="mut">всего: ${f(hist.length)} · нажмите строку, чтобы открыть сверку</span></div>
-      ${LX.table(['Когда', 'Склад', 'Завсклад', 'Вид', '#Позиций', '#Расх.', '#Недостача', '#Излишек', 'Итог'], hist.slice(0, WC.hn || 30).map(s => { const v = WC.view(s); return `<tr class="row" data-hs="${esc(s.id)}" style="cursor:pointer${s.id === WC.sel ? ';background:var(--brand-100, rgba(0,120,255,.08))' : ''}"><td>${UI.dateRu(s.day)} <small class="mut">${WC.hm(s.at)}</small></td><td>${esc(s.warehouse)}</td><td>${esc(s.name)}</td><td>${s.partial ? 'пересчёт' : s.again ? '🔁 повторная' : s.short ? 'короткая' : 'полная'}${s.round === 2 ? ' · 2-я попытка' : ''}</td><td class="n">${f(s.items.length)}</td><td class="n ${v.diff.length ? 'neg' : 'pos'}"><b>${v.diff.length || '✓'}</b></td><td class="n">${v.shortSum ? '−' + $$(v.shortSum) : '0'}</td><td class="n">${v.plusSum ? '+' + $$(v.plusSum) : '0'}</td><td>${s.status === 'recount' ? '↻ пересчёт' : s.result === 'final' ? '🔒 зафиксировано' : !v.diff.length ? '<span class="pos">✓ сошлось</span>' : s.status === 'ok' ? 'принято' : '<span class="neg">ждёт решения</span>'}${v.charged ? ` · 💸 ${$$(v.charged)}` : ''}</td></tr>`; }), { max: '460px' })}
-      ${hist.length > (WC.hn || 30) ? '<div class="bar"><span class="spacer"></span><button class="btn gray sm" id="wcMore">Показать ещё</button></div>' : ''}`, { cls: 'w12', sub: 'Все сверки по порядку: когда, кто, сколько расхождений и на какую сумму, чем закончилась' }) : ''}
-    ${(() => { const ch = []; for (const x of c.subs) for (const [art, d] of Object.entries(x.dec || {})) if (d.k === 'charge' && Number(d.sum) > 0) ch.push({ m: x.day.slice(0, 7), day: x.day, who: x.name, wh: x.warehouse, name: x.items.find(i => i.art === art)?.name || art, d: (x.items.find(i => i.art === art)?.fact ?? 0) - (x.items.find(i => i.art === art)?.linko ?? 0), sum: Number(d.sum) });
-      if (!ch.length) return ''; const months = [...new Set(ch.map(x => x.m))].sort().reverse().slice(0, 3), people = [...new Set(ch.map(x => x.who + ' · ' + x.wh))];
-      return UI.panel('💸 Удержания с завскладов', `<div class="tscroll"><table><thead><tr><th>Завсклад</th>${months.map(m => `<th class="n">${m.slice(5, 7)}.${m.slice(0, 4)}</th>`).join('')}</tr></thead><tbody>${people.map(p => `<tr><td>${esc(p)}</td>${months.map(m => { const t = ch.filter(x => x.who + ' · ' + x.wh === p && x.m === m).reduce((a, x) => a + x.sum, 0); return `<td class="n">${t ? '<b>' + $$(t) + '</b>' : '—'}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>
-        <details><summary class="mut">Все удержания (${ch.length})</summary>${LX.table(['День', 'Завсклад', 'Товар', '#Недостача', '#Сумма'], ch.slice().reverse().map(x => `<tr><td>${UI.dateRu(x.day)}</td><td>${esc(x.who)}</td><td>${esc(x.name)}</td><td class="n">${f(x.d)}</td><td class="n">${$$(x.sum)}</td></tr>`), { max: '320px' })}</details>`, { cls: 'w12', sub: 'Суммы из решений «Недостача — удержать с завсклада», по месяцам' }); })()}
-    ${UI.panel('Как считать', `<div class="bar"><label class="mut">Не считать (бренды или слова в названии, через запятую) <input id="wcSkip" maxlength="200" value="${esc(WC.skipList().join(', '))}" placeholder="например: MATTEX" style="width:220px"></label><span class="mut">— товары, которые больше не возим: их нет в списке завсклада, в сверке и на страницах склада</span></div>
-      <div class="bar"><label class="mut">Каждый день <select id="wcMode"><option value="full" ${c.mode !== 'short' ? 'selected' : ''}>полная сверка — все товары</option><option value="short" ${c.mode === 'short' ? 'selected' : ''}>короткая — что двигалось + случайные</option></select></label>
-        <label class="mut">Полная — в <select id="wcFull" ${c.mode === 'short' ? '' : 'disabled'}>${WC.DOW.slice(1).map((d, k) => `<option value="${k + 1}" ${Number(c.fullDay || 1) === k + 1 ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
-        <label class="mut">Случайных <input id="wcEx" type="number" min="0" max="50" value="${esc(c.extra ?? 8)}" style="width:70px" ${c.mode === 'short' ? '' : 'disabled'}></label></div>
-      <p class="mut">Короткая: в обычный день завсклад считает только товары, у которых со вчерашней сверки менялся остаток в LINKO (продажа, приход, перемещение), товары с расхождением в прошлый раз и несколько случайных — он не знает заранее, какие попадут. Раз в неделю — полная. Если двигалось больше 70 % товаров, в этот день тоже полная.</p>
-      ${(() => { const S = CRMLocal.engine.getState(), seen = new Map(); for (const [, st] of stores) { const up = (S.wh.uploads || []).filter(u => u.warehouse === st.wh).sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1))[0]; for (const r of up?.rows || []) if (!seen.has(String(r.art))) seen.set(String(r.art), { art: String(r.art), name: r.name, brand: r.brand || '' }); }
-        const L = [...seen.values()].sort((a, b) => a.brand.localeCompare(b.brand) || a.name.localeCompare(b.name)), P = c.packs || {};
-        return L.length ? `<details><summary><b>📦 Штук в коробке</b> <span class="mut">— приложение умножает коробки на это число. Проверьте; где не так — исправьте (${Object.keys(P).length ? 'исправлено ' + Object.keys(P).length : 'пока всё по названию'})</span></summary>
-          <p class="mut">Определяется по названию: 4–5 л — 4 шт, Mitanol 4 л — 5 шт, 1–1,5 л — 12 шт, 20/208 л — поштучно (1), ECO FILTER — по коду. Пусто — как по названию.</p>
-          ${LX.table(['Товар', '#По названию', '#Своё'], L.map(i => `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td class="n">${WC.packAuto(i)}</td><td class="n"><input type="number" min="1" max="500" data-pk="${esc(i.art)}" value="${P[i.art] || ''}" placeholder="—" style="width:70px"></td></tr>`), { max: '420px' })}</details>` : '<p class="mut">Штук в коробке: появится, когда будут остатки складов.</p>'; })()}`, { cls: 'w12', sub: 'Полная или короткая ежедневная сверка, коробки' })}
-    ${UI.panel('Завсклады', `<div class="bar"><label class="mut">Сверка до <input id="wcDl" type="time" value="${esc(c.deadline || '10:00')}" style="width:110px"></label><label class="mut">Напомнить в <input id="wcRm" type="time" value="${esc(c.remind || '09:00')}" style="width:110px"></label><span class="mut">— утром бот напомнит каждому завскладу провести сверку (кто уже отправил — не получит); после срока напомнит ещё раз и сообщит вам, кто не прислал. По воскресеньям — нет.</span></div>
-      ${stores.length ? LX.table(['Завсклад', 'Склад', 'Telegram', ''], stores.map(([who, s]) => `<tr><td>${esc(s.name)}</td><td>${esc(s.wh)}</td><td>${esc(chats[who]?.name || who)}${s.tgAt ? `<br><small class="mut">кабинет с ${UI.dateRu(s.tgAt.slice(0, 10))}</small>` : ''}</td><td><button class="btn sm" data-tgc="${esc(who)}">📦 ${s.tgAt ? 'Подключить заново' : 'Подключить в Telegram'}</button> <button class="btn gray sm" data-rm="${esc(who)}">Убрать</button></td></tr>`)) : '<p class="mut">Завскладов пока нет.</p>'}
-      <div class="form" style="margin-top:10px"><label>Имя<input id="wcN" maxlength="60" placeholder="например: Ахмад"></label><label>Склад<select id="wcW">${whs.map(w => `<option>${esc(w)}</option>`).join('')}</select></label>
-      <label>Его Telegram<select id="wcT"><option value="">— выберите —</option>${Object.values(chats).filter(ch => !c.stores[ch.id]).map(ch => `<option value="${esc(ch.id)}">${esc(ch.name)}</option>`).join('')}</select><small class="mut">Нет в списке? Пусть нажмёт «Старт» в боте, затем «Обновить список» в «Telegram агентам».</small></label></div>
-      <div class="bar"><span class="spacer"></span><button class="btn" id="wcAdd">Добавить завсклада</button></div>`, { cls: 'w12' })}
-    </div>`;
+  const movesNew = (c.moves || []).filter(x => !x.ok).length;
   const re = () => EXT_PAGES.wcount(el), save = async () => { CRMLocal.touch(); try { await WC.publish(); } catch (e) { toast(e.message); } try { await WC.publishSb(); } catch (e) { toast(e.message); } };
   const setKnown = (wh, art, d, name) => { c.known ||= {}; c.known[wh] ||= {}; if (d === null) { delete c.known[wh][art]; if (!Object.keys(c.known[wh]).length) delete c.known[wh]; } else c.known[wh][art] = { d, name: String(name || art).slice(0, 120), at: new Date().toISOString() }; };
-  { const d = $('#wcAll', el); if (d) d.ontoggle = () => { WC.showAll = d.open; }; }
+  const sign = v => (v > 0 ? '+' : '') + f(v);
+
+  // ---------- tab «Сверка» ----------
+  const cards = () => keepers.length ? `<div class="wk-cards">${keepers.map(k => {
+    const t = todayOf(k.who), v = t ? WC.view(t) : null, st = t ? WC.state(t, v) : null, tone = !t ? (late ? 'bad' : 'warn') : st[0];
+    const val = !t ? (late ? '✕ не прислана' : 'ждём до ' + esc(dl)) : v.diff.length ? `${v.diff.length} расх.` : '✓ сходится';
+    return `<button type="button" class="wk-card ${tone}${t && t.id === WC.sel ? ' on' : ''}" ${t ? `data-open="${esc(t.id)}"` : 'disabled'}>
+      <span class="t">${esc(k.wh)}</span><span class="v">${val}</span>
+      <span class="s">${esc(k.name)}${t ? ` · в ${WC.hm(t.at)}${WC.hm(t.at) > dl ? ' <span class="wk-neg">поздно</span>' : ''}` : ''}</span>
+      ${t ? `<span class="s">${v.shortSum ? `<span class="wk-neg">−${$$(v.shortSum)}</span> ` : ''}${v.plusSum ? `<span class="wk-pos">+${$$(v.plusSum)}</span> · ` : ''}${esc(st[1])}${c.again?.[k.who] && c.again[k.who] > t.at ? ' · 🔁 просим ещё раз' : ''}</span>` : ''}
+    </button>`; }).join('')}</div>` : UI.empty('Завскладов нет', 'Добавьте завсклада во вкладке «Настройки» и подключите ему кабинет склада в Telegram.', '<button class="btn" data-tab="set">Открыть настройки</button>');
+
+  const decidable = () => sub && sub.status !== 'recount' && V.diff.length;
+  const draft = () => (WC.draft[sub.id] ||= JSON.parse(JSON.stringify(sub.dec || {})));
+  const isDone = (i, d) => !!d && !!d.k && (d.k !== 'charge' || Number(d.sum) > 0);
+  const item = i => {
+    const dm = (WC._dmg[sub.id] ||= WC.dmgFor(sub.warehouse, sub.at)), dmi = dm[i.art] || [], d = decidable() ? draft()[i.art] : (sub.dec || {})[i.art];
+    const auto = i.dd < 0 && i.cost ? Math.round(-i.dd * i.cost * 100) / 100 : '';
+    const opts = Object.keys(WC.SHORT).filter(k => (k !== 'charge' && k !== 'dmg') || i.dd < 0);
+    return `<div class="wk-item ${decidable() ? (isDone(i, d) ? 'done' : 'need') : ''}" data-it="${esc(i.art)}">
+      <div class="h"><div><div class="nm">${esc(i.name)}</div><small>${esc(i.art)} · в LINKO <b>${f(i.linko)}</b> → посчитал <b>${f(i.fact)}</b>${i.k ? ` · 📌 обычно ${sign(i.k)}` : ''}</small>
+        ${dmi.length ? `<div class="meta wk-neg">🗑 брак за неделю: ${dmi.map(x => f(x.qty) + ' шт ' + UI.dm(UI.localDate(Date.parse(x.at))) + (x.why ? ' (' + esc(x.why) + ')' : '')).join(', ')}</div>` : ''}</div>
+        <div class="num ${i.dd < 0 ? 'wk-neg' : 'wk-pos'}"><b>${sign(i.dd)} шт</b><br><small>${i.cost ? (i.dd < 0 ? '−' : '+') + $$(Math.abs(i.dd) * i.cost) : 'цена ?'}</small></div></div>
+      ${decidable() ? `<div class="row2" role="group" aria-label="Решение">${opts.map(k => `<button type="button" class="wk-chip ${WC.TONE[k]}${d?.k === k ? ' on' : ''}" data-dk="${k}" title="${esc(WC.DEC[k])}">${WC.SHORT[k]}</button>`).join('')}
+        ${i.dd < 0 ? `<label class="wk-sum" ${d?.k === 'charge' ? '' : 'hidden'}>сумма, $ <input type="number" min="0" step="0.01" inputmode="decimal" data-sum value="${d?.k === 'charge' ? esc(d.sum ?? auto) : auto}"></label>` : ''}</div>`
+        : d?.k ? `<div class="row2"><span class="wk-chip on ${WC.TONE[d.k] || ''}">${WC.SHORT[d.k] || d.k}${d.k === 'charge' ? ' · ' + $$(d.sum) : ''}</span></div>` : ''}
+    </div>`;
+  };
+  const detail = () => {
+    if (!sub) return UI.empty('Сверок ещё нет', 'Как только завсклад отправит сверку из своего кабинета, она появится здесь.');
+    const st = WC.state(sub, V), q = WC.q.trim().toLowerCase(), hitQ = i => !q || String(i.name).toLowerCase().includes(q) || String(i.art).toLowerCase().includes(q);
+    const by = { diff: V.diff, short: V.short, plus: V.plus }[WC.f] || V.diff;
+    const list = by.filter(hitQ).sort((a, b) => a.dd * (a.cost || 1) - b.dd * (b.cost || 1));
+    const all = V.rows.filter(hitQ).sort((a, b) => (a.dd === 0) - (b.dd === 0) || String(a.name).localeCompare(String(b.name)));
+    const mine = c.subs.filter(s => s.who === sub.who && !s.partial), isLast = mine.at(-1)?.id === sub.id;
+    let streak = 0; for (let k = mine.length - 1; k >= 0 && WC.view(mine[k]).diff.length; k--) streak++;
+    const asked = c.again?.[sub.who] && c.again[sub.who] > sub.at;
+    return UI.panel(`${esc(sub.warehouse)} · ${UI.dateRu(sub.day)}, ${WC.hm(sub.at)}`, `
+      <div class="wk-head"><span class="mut">${esc(sub.name)} · ${sub.short ? `короткая сверка (${f(sub.items.length)} из ${f(sub.total_items)})` : sub.again ? '🔁 повторная' : 'полная сверка'}${sub.round === 2 ? ' · 2-я попытка' : ''}</span>${UI.pill(st[0] === 'bad' ? 'crit' : st[0], st[1])}
+        <span class="spacer"></span><label class="mut" style="display:flex;gap:6px;align-items:center">Другая сверка <select id="wcSel">${c.subs.slice().reverse().slice(0, 60).map(s => `<option value="${esc(s.id)}" ${s.id === sub.id ? 'selected' : ''}>${UI.dm(s.day)} · ${esc(s.warehouse)}${s.partial ? ' (пересчёт)' : s.again ? ' (повторная)' : ''}</option>`).join('')}</select></label></div>
+      <div class="wk-stats"><div class="wk-stat"><b>${f(sub.items.length)}</b><small>посчитано позиций</small></div><div class="wk-stat ${V.diff.length ? 'neg' : 'pos'}"><b>${V.diff.length ? f(V.diff.length) : '✓ 0'}</b><small>расхождений</small></div>
+        <div class="wk-stat ${V.shortSum ? 'neg' : ''}"><b>${V.shortSum ? '−' + $$(V.shortSum) : '$0'}</b><small>недостача (${f(V.short.length)})</small></div><div class="wk-stat ${V.plusSum ? 'pos' : ''}"><b>${V.plusSum ? '+' + $$(V.plusSum) : '$0'}</b><small>излишек (${f(V.plus.length)})</small></div></div>
+      ${sub.status === 'recount' ? `<div class="wk-banner warn">↻ <b>Завскладу отправлены названия ${f(sub.recount.length)} поз. на пересчёт</b> (без цифр). Решения выберете после второй попытки.</div>` : sub.result === 'final' && sub.status !== 'ok' ? '<div class="wk-banner bad">🔒 <b>Пересчёт не сошёлся — расхождение зафиксировано.</b> Выберите решение по каждой позиции.</div>' : sub.result === 'ok' && sub.round === 2 ? '<div class="wk-banner good">✅ <b>После пересчёта всё сошлось.</b></div>' : ''}
+      ${!sub.start_at ? '<div class="wk-banner info">⚠ Начало сверки не зафиксировано — сравнение с остатком LINKO на момент отправки.</div>' : ''}
+      ${sub.comment ? `<div class="wk-banner info">💬 ${esc(sub.comment)}</div>` : ''}${sub.photo ? `<p><a href="#" data-ph="${esc(sub.photo)}">📷 Фото со склада</a></p>` : ''}
+      ${V.charged ? `<div class="wk-banner bad">💸 Удержание с завсклада по этой сверке: <b>${$$(V.charged)}</b></div>` : ''}
+      <div class="wk-tools">${[['diff', 'Расхождения', V.diff.length], ['short', 'Недостача', V.short.length], ['plus', 'Излишек', V.plus.length], ['all', 'Весь список', V.rows.length]].map(([k, t, n]) => `<button type="button" class="wk-chip${WC.f === k ? ' on' : ''}" data-f="${k}">${t} <span class="wk-badge soft">${f(n)}</span></button>`).join('')}
+        <input type="search" id="wcQ" placeholder="🔍 Товар или артикул" value="${esc(WC.q)}" aria-label="Найти товар">${decidable() && WC.f !== 'all' ? '<button type="button" class="wk-chip needs-edit" id="wcAllFix" title="Всем позициям, где решение ещё не выбрано">✓ Всем без решения — ошибка учёта</button>' : ''}</div>
+      ${WC.f === 'all' ? (all.length ? LX.table(['Товар', '#LINKO', '#Факт', '#Разница', 'Итог'], all.map(i => `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td class="n">${f(i.linko)}</td><td class="n"><b>${f(i.fact)}</b></td><td class="n ${i.d < 0 ? 'neg' : i.d > 0 ? 'pos' : ''}">${i.d ? sign(i.d) : '0'}</td><td>${i.moved ? 'ℹ отгрузили во время сверки' : !i.dd ? (i.k ? `<span class="pos">📌 как обычно (${sign(i.k)})</span>` : '<span class="pos">✓</span>') : `<span class="neg">${i.dd < 0 ? 'недостача' : 'излишек'} ${f(Math.abs(i.dd))}</span>`}</td></tr>`), { max: '520px' }) : '<p class="mut">Ничего не найдено.</p>')
+        : list.length ? `<div class="wk-list">${list.map(item).join('')}</div>`
+        : V.diff.length ? '<p class="mut">Ничего не найдено.</p>' : `<div class="wk-empty"><b>✓ Всё сходится с LINKO</b>недостача 0 · излишек 0${V.known.length ? `<br>📌 учтены постоянные разницы: ${V.known.length} поз.` : ''}</div>`}
+      ${V.moved.length && WC.f !== 'all' ? `<details style="margin-top:8px"><summary class="mut">Сошлось после отгрузки во время сверки (${V.moved.length})</summary><ul>${V.moved.map(i => `<li>${esc(i.name)}: на начало ${f(i.linko)}, после отгрузки ${f(i.now)}, факт ${f(i.fact)}</li>`).join('')}</ul></details>` : ''}
+      ${isLast && V.diff.length && sub.status !== 'recount' ? `<div class="wk-banner ${streak >= 2 ? 'warn' : 'info'}" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center"><span style="flex:1 1 200px">${streak >= 2 ? `⚠ <b>${streak} сверки подряд с расхождением.</b> ` : ''}${asked ? `🔁 Повторная сверка запрошена в ${WC.hm(c.again[sub.who])} — ждём.` : 'Сомневаетесь в цифрах? Попросите пересчитать весь склад заново.'}</span><button class="btn gray sm" id="wcAgain">🔁 ${asked ? 'Напомнить ещё раз' : 'Сверить ещё раз'}</button></div>` : ''}
+      ${sub.status === 'recount' ? '' : `<div class="wk-foot needs-edit">${decidable() ? `<div class="prog"><span id="wcProg"></span><div class="bar2"><i id="wcBar"></i></div></div>` : '<span class="spacer"></span>'}<button class="btn" id="wcOk" type="button">${sub.status === 'ok' ? '✓ Сохранить решения' : V.diff.length ? '✓ Принять сверку' : '✓ Принять — всё сходится'}</button></div>`}`,
+      { cls: 'w12' }) + (decidable() ? '<details class="mut" style="margin:-4px 4px 12px"><summary>Что значат решения?</summary><p>«✓ Ошибка учёта» — исправите в LINKO · «🔎 Пересорт» — нашлось или перепутали · «📌 Постоянная» — дальше такая разница считается нормой · «🗑 Брак» — спишете в LINKO · «💸 Удержать» — недостача с завсклада по себестоимости (сумму можно поправить). Разница = факт − LINKO.</p></details>' : '');
+  };
+
+  // ---------- tab «История» ----------
+  const days = [...new Set(c.subs.map(s => s.day))].sort().reverse().slice(0, 14);
+  const history = () => {
+    if (!c.subs.length) return UI.empty('Истории пока нет', 'Здесь будут все сверки по дням.');
+    const freq = new Map(); for (const s of c.subs.filter(x => days.includes(x.day))) for (const i of WC.view(s).diff) { const k = s.warehouse + '|' + i.art, e = freq.get(k) || freq.set(k, { wh: s.warehouse, art: i.art, name: i.name, n: 0, ds: {} }).get(k); e.n++; e.ds[i.d] = (e.ds[i.d] || 0) + 1; }
+    const often = [...freq.values()].filter(e => e.n >= 2).map(e => { const [d, n] = Object.entries(e.ds).sort((a, b) => b[1] - a[1])[0]; return { ...e, mode: Number(d), modeN: n }; }).sort((a, b) => b.n - a.n);
+    const hist = c.subs.filter(s => !WC.hw || s.warehouse === WC.hw).slice().reverse();
+    const whos = [...new Set(c.subs.filter(x => x.day.startsWith(t0.slice(0, 7))).map(x => x.who))];
+    const R = whos.map(w => ({ w, s: WC.stats(w), sub: c.subs.filter(x => x.who === w).at(-1) })).sort((a, b) => (a.s.rank || 99) - (b.s.rank || 99));
+    const ch = []; for (const x of c.subs) for (const [art, d] of Object.entries(x.dec || {})) if (d.k === 'charge' && Number(d.sum) > 0) { const it = x.items.find(i => i.art === art); ch.push({ m: x.day.slice(0, 7), day: x.day, who: x.name, wh: x.warehouse, name: it?.name || art, d: (it?.fact ?? 0) - (it?.linko ?? 0), sum: Number(d.sum) }); }
+    const months = [...new Set(ch.map(x => x.m))].sort().reverse().slice(0, 3), people = [...new Set(ch.map(x => x.who + ' · ' + x.wh))];
+    return `<div class="grid">
+      ${UI.panel('Последние 14 дней', `<div class="tscroll"><table class="wk-mx"><thead><tr><th>День</th>${keepers.map(k => `<th class="n">${esc(k.wh)}</th>`).join('')}</tr></thead><tbody>${days.map(d => `<tr><td>${UI.dateRu(d)}</td>${keepers.map(k => { const s = c.subs.filter(x => x.who === k.who && x.day === d && !x.partial).at(-1); if (!s) return '<td class="n neg" style="cursor:default">нет</td>'; const v = WC.view(s); return `<td class="n ${v.diff.length ? 'neg' : 'pos'}" data-hs="${esc(s.id)}" title="Открыть сверку">${v.diff.length ? v.diff.length + ' расх.' : '✓'} <small class="mut">${WC.hm(s.at)}</small></td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`, { cls: 'w12', sub: 'Нажмите на клетку — откроется эта сверка' })}
+      ${R.length ? UI.panel('🏆 Рейтинг завскладов — этот месяц', LX.table(['Место', 'Завсклад', 'Склад', '#Сверок', '#Без расхождений', '#Вовремя', '#Чисто подряд', '#Удержания'], R.map(x => `<tr><td><b>${x.s.rank === 1 ? '🥇' : x.s.rank === 2 ? '🥈' : x.s.rank === 3 ? '🥉' : x.s.rank || '—'}</b></td><td>${esc(x.sub?.name || x.w)}</td><td>${esc(x.sub?.warehouse || '')}</td><td class="n">${f(x.s.month.cnt)}</td><td class="n ${x.s.month.clean === x.s.month.cnt ? 'pos' : ''}"><b>${f(x.s.month.clean)}</b> <small class="mut">${x.s.month.cnt ? Math.round(x.s.month.clean / x.s.month.cnt * 100) + '%' : ''}</small></td><td class="n">${f(x.s.month.onTime)}</td><td class="n">${f(x.s.streak)} <small class="mut">лучший ${f(x.s.best)}</small></td><td class="n">${x.s.month.charged ? $$(x.s.month.charged) : '—'}</td></tr>`)), { cls: 'w12', sub: `Каждый завсклад видит свою строку в кабинете. Вовремя — до ${esc(dl)}.` }) : ''}
+      ${often.length ? UI.panel('Расходятся постоянно', LX.table(['Склад', 'Товар', '#Раз за 14 дней', '#Чаще всего', ''], often.slice(0, 20).map(e => `<tr><td>${esc(e.wh)}</td><td>${esc(e.name)}</td><td class="n"><b>${e.n}</b></td><td class="n ${e.mode < 0 ? 'neg' : 'pos'}">${sign(e.mode)} <small class="mut">×${e.modeN}</small></td><td>${e.modeN >= 2 ? `<button class="btn gray sm needs-edit" data-kn="${esc(e.wh + '|' + e.art)}" data-kd="${e.mode}" data-knm="${esc(e.name)}">📌 Учитывать</button>` : ''}</td></tr>`)), { cls: 'w12', sub: 'Товар расходится раз за разом на одно и то же число? «📌 Учитывать» — дальше эта разница считается нормой' }) : ''}
+      ${UI.panel('Все сверки', `<div class="wk-tools"><label class="mut">Склад <select id="wcHw"><option value="">все</option>${[...new Set(c.subs.map(s => s.warehouse))].sort().map(w => `<option ${w === WC.hw ? 'selected' : ''}>${esc(w)}</option>`).join('')}</select></label><span class="mut">всего: ${f(hist.length)} · нажмите строку, чтобы открыть</span></div>
+        ${LX.table(['Когда', 'Склад', 'Завсклад', 'Вид', '#Позиций', '#Расх.', '#Недостача', '#Излишек', 'Итог'], hist.slice(0, WC.hn || 30).map(s => { const v = WC.view(s), st = WC.state(s, v); return `<tr class="row" data-hs="${esc(s.id)}" style="cursor:pointer"><td>${UI.dateRu(s.day)} <small class="mut">${WC.hm(s.at)}</small></td><td>${esc(s.warehouse)}</td><td>${esc(s.name)}</td><td>${s.partial ? 'пересчёт' : s.again ? '🔁 повторная' : s.short ? 'короткая' : 'полная'}${s.round === 2 ? ' · 2-я' : ''}</td><td class="n">${f(s.items.length)}</td><td class="n ${v.diff.length ? 'neg' : 'pos'}"><b>${v.diff.length || '✓'}</b></td><td class="n">${v.shortSum ? '−' + $$(v.shortSum) : '0'}</td><td class="n">${v.plusSum ? '+' + $$(v.plusSum) : '0'}</td><td>${UI.pill(st[0] === 'bad' ? 'crit' : st[0], st[1])}${v.charged ? ` 💸 ${$$(v.charged)}` : ''}</td></tr>`; }), { max: '460px' })}
+        ${hist.length > (WC.hn || 30) ? '<div class="bar"><span class="spacer"></span><button class="btn gray sm" id="wcMore">Показать ещё</button></div>' : ''}`, { cls: 'w12' })}
+      ${ch.length ? UI.panel('💸 Удержания с завскладов', `<div class="tscroll"><table><thead><tr><th>Завсклад</th>${months.map(m => `<th class="n">${m.slice(5, 7)}.${m.slice(0, 4)}</th>`).join('')}</tr></thead><tbody>${people.map(p => `<tr><td>${esc(p)}</td>${months.map(m => { const t = ch.filter(x => x.who + ' · ' + x.wh === p && x.m === m).reduce((a, x) => a + x.sum, 0); return `<td class="n">${t ? '<b>' + $$(t) + '</b>' : '—'}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>
+        <details><summary class="mut">Все удержания (${ch.length})</summary>${LX.table(['День', 'Завсклад', 'Товар', '#Недостача', '#Сумма'], ch.slice().reverse().map(x => `<tr><td>${UI.dateRu(x.day)}</td><td>${esc(x.who)}</td><td>${esc(x.name)}</td><td class="n">${f(x.d)}</td><td class="n">${$$(x.sum)}</td></tr>`), { max: '320px' })}</details>`, { cls: 'w12', sub: 'По месяцам, из решений «Удержать»' }) : ''}
+    </div>`;
+  };
+
+  // ---------- tab «Приход / отгрузка» ----------
+  const moves = () => { const M = (c.moves || []).slice().reverse(); if (!M.length) return UI.empty('Пока пусто', 'Когда завсклад отметит приход, отгрузку, возврат или брак в своём кабинете, это появится здесь.');
+    const show = M.filter(x => WC.mv === 'all' || !x.ok);
+    return `<div class="wk-tools"><button type="button" class="wk-chip${WC.mv !== 'all' ? ' on' : ''}" data-mv="new">Не проверено <span class="wk-badge soft">${movesNew}</span></button><button type="button" class="wk-chip${WC.mv === 'all' ? ' on' : ''}" data-mv="all">Все <span class="wk-badge soft">${M.length}</span></button></div>
+      ${show.length ? `<div class="wk-list">${show.slice(0, 80).map(x => `<div class="wk-item ${x.ok ? 'done' : 'need'}"><div class="h"><div><div class="nm">${WC.MOVE[x.type] || esc(x.type)}${x.party ? ' · ' + esc(x.party) : ''}</div><small>${esc(x.warehouse)} · ${esc(x.name)} · ${UI.dateRu(UI.localDate(Date.parse(x.at)))} ${WC.hm(x.at)}</small></div>
+        <div class="num">${x.ok ? '<span class="wk-pos">✓ проверено</span>' : `<button class="btn sm needs-edit" data-mok="${esc(x.id)}">✓ Проверено</button>`}</div></div>
+        <div class="txt">${x.items.slice(0, 15).map(i => `${esc(i.name)}: <b>${f(i.qty)}</b>${i.linko !== null && i.linko !== undefined ? ` <small class="mut">(в LINKO было ${f(i.linko)})</small>` : ''}`).join('<br>')}${x.items.length > 15 ? `<br><small class="mut">…и ещё ${x.items.length - 15}</small>` : ''}</div>
+        ${x.comment ? `<div class="rep">💬 ${esc(x.comment)}</div>` : ''}${x.photo ? `<div class="row2"><a href="#" data-ph="${esc(x.photo)}">📷 накладная</a></div>` : ''}</div>`).join('')}</div>` : '<div class="wk-empty"><b>✓ Всё проверено</b></div>'}
+      <p class="mut" style="margin-top:10px">«В LINKO было» — остаток в LINKO в ту минуту: если приход уже проведён, он там учтён. Сверьте с накладной и отметьте «Проверено».</p>`; };
+
+  // ---------- tab «Настройки» ----------
+  const settings = () => { const knownAll = Object.entries(c.known || {}).flatMap(([wh, m]) => Object.entries(m || {}).map(([art, k]) => ({ wh, art, ...k })));
+    return `<div class="grid">
+    ${UI.panel('Завсклады', `<div class="wk-tools"><label class="mut">Сверка до <input id="wcDl" type="time" value="${esc(dl)}" style="width:110px"></label><label class="mut">Напомнить в <input id="wcRm" type="time" value="${esc(c.remind || '09:00')}" style="width:110px"></label></div>
+      <p class="mut" style="margin-top:0">Утром бот напомнит каждому завскладу (кто уже отправил — не получит); после срока напомнит ещё раз и сообщит вам, кто не прислал. По воскресеньям — нет.</p>
+      ${stores.length ? `<div class="wk-list">${stores.map(([who, s]) => `<div class="wk-item"><div class="h"><div><div class="nm">${esc(s.name)} — ${esc(s.wh)}</div><small>Telegram: ${esc(chats[who]?.name || who)}${s.tgAt ? ` · кабинет с ${UI.dateRu(s.tgAt.slice(0, 10))}` : ' · кабинет не подключён'}</small></div></div>
+        <div class="row2"><button class="btn sm" data-tgc="${esc(who)}">📦 ${s.tgAt ? 'Подключить заново' : 'Подключить в Telegram'}</button><button class="btn gray sm danger" data-rm="${esc(who)}">Убрать</button></div></div>`).join('')}</div>` : '<p class="mut">Завскладов пока нет.</p>'}
+      <h4 style="margin:16px 0 8px">Добавить завсклада</h4>
+      <div class="form"><label>Имя<input id="wcN" maxlength="60" placeholder="например: Ахмад"></label><label>Склад<select id="wcW">${whs.map(w => `<option>${esc(w)}</option>`).join('')}</select></label>
+      <label>Его Telegram<select id="wcT"><option value="">— выберите —</option>${Object.values(chats).filter(ch => !c.stores[ch.id]).map(ch => `<option value="${esc(ch.id)}">${esc(ch.name)}</option>`).join('')}</select><small class="mut">Нет в списке? Пусть нажмёт «Старт» в боте, затем «Обновить список» в «Telegram агентам».</small></label></div>
+      <div class="bar"><span class="spacer"></span><button class="btn" id="wcAdd">Добавить завсклада</button></div>`, { cls: 'w12' })}
+    ${UI.panel('Как считать', `<div class="wk-tools"><label class="mut">Каждый день <select id="wcMode"><option value="full" ${c.mode !== 'short' ? 'selected' : ''}>полная сверка — все товары</option><option value="short" ${c.mode === 'short' ? 'selected' : ''}>короткая — что двигалось + случайные</option></select></label>
+        <label class="mut">Полная — в <select id="wcFull" ${c.mode === 'short' ? '' : 'disabled'}>${WC.DOW.slice(1).map((d, k) => `<option value="${k + 1}" ${Number(c.fullDay || 1) === k + 1 ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+        <label class="mut">Случайных <input id="wcEx" type="number" min="0" max="50" value="${esc(c.extra ?? 8)}" style="width:70px" ${c.mode === 'short' ? '' : 'disabled'}></label></div>
+      <p class="mut">Короткая: в обычный день завсклад считает только товары, у которых со вчерашней сверки менялся остаток в LINKO, товары с расхождением в прошлый раз и несколько случайных — он не знает заранее, какие попадут. Раз в неделю — полная. Если двигалось больше 70 % товаров — тоже полная.</p>
+      <div class="wk-tools"><label class="mut" style="flex:1 1 260px">Не считать (бренды или слова в названии, через запятую) <input id="wcSkip" maxlength="200" value="${esc(WC.skipList().join(', '))}" placeholder="например: MATTEX" style="width:100%"></label></div>
+      ${(() => { const S = CRMLocal.engine.getState(), seen = new Map(); for (const [, st] of stores) { const up = (S.wh.uploads || []).filter(u => u.warehouse === st.wh).sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1))[0]; for (const r of up?.rows || []) if (!seen.has(String(r.art))) seen.set(String(r.art), { art: String(r.art), name: r.name, brand: r.brand || '' }); }
+        const L = [...seen.values()].sort((a, b) => a.brand.localeCompare(b.brand) || a.name.localeCompare(b.name)), P = c.packs || {};
+        return L.length ? `<details><summary><b>📦 Штук в коробке</b> <span class="mut">(${Object.keys(P).length ? 'исправлено ' + Object.keys(P).length : 'всё по названию'})</span></summary>
+          <p class="mut">По названию: 4–5 л — 4 шт, Mitanol 4 л — 5 шт, 1–1,5 л — 12 шт, 20/208 л — поштучно, ECO FILTER — по коду. Пусто — как по названию.</p>
+          ${LX.table(['Товар', '#По названию', '#Своё'], L.map(i => `<tr><td>${esc(i.name)}<br><small class="mut">${esc(i.art)}</small></td><td class="n">${WC.packAuto(i)}</td><td class="n"><input type="number" min="1" max="500" data-pk="${esc(i.art)}" value="${P[i.art] || ''}" placeholder="—" style="width:70px"></td></tr>`), { max: '420px' })}</details>` : ''; })()}`, { cls: 'w12' })}
+    ${knownAll.length ? UI.panel('📌 Постоянные разницы', LX.table(['Склад', 'Товар', '#Разница', 'С какого дня', ''], knownAll.map(k => `<tr><td>${esc(k.wh)}</td><td>${esc(k.name || k.art)}<br><small class="mut">${esc(k.art)}</small></td><td class="n ${k.d < 0 ? 'neg' : 'pos'}"><b>${sign(k.d)}</b></td><td>${k.at ? UI.dateRu(k.at.slice(0, 10)) : '—'}</td><td><button class="btn gray sm needs-edit" data-unk="${esc(k.wh + '|' + k.art)}">Больше не учитывать</button></td></tr>`)), { cls: 'w12', sub: 'Такая разница считается «сходится». Исправили причину в LINKO — уберите.' }) : ''}
+    </div>`; };
+
+  const tabs = [['now', 'Сверка', waiting.length, true], ['hist', 'История', 0], ['moves', 'Приход', movesNew, true], ['set', 'Настройки', 0]];
+  el.innerHTML = `<div class="page-head"><div><h2>Сверка складов</h2><div class="sub">Завсклады до ${esc(dl)} пересчитывают склад вслепую в Telegram. Здесь — расхождения с LINKO и ваши решения.</div></div>
+    <div class="actions"><button class="btn gray" id="wcPull">🔄 Проверить</button></div></div>
+    <div class="wk-seg" role="tablist">${tabs.map(([k, t, n, hot]) => `<button type="button" role="tab" data-tab="${k}" class="${WC.tab === k ? 'on' : ''}" aria-selected="${WC.tab === k}">${t}${n ? ` <span class="wk-badge${hot ? '' : ' soft'}">${n}</span>` : ''}</button>`).join('')}</div>
+    ${WC.tab === 'now' ? cards() + detail() : WC.tab === 'hist' ? history() : WC.tab === 'moves' ? moves() : settings()}`;
+
+  // ---------- events ----------
+  el.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { WC.tab = b.dataset.tab; re(); });
+  el.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { WC.sel = b.dataset.open; WC.f = 'diff'; WC.q = ''; re(); });
+  el.querySelectorAll('[data-hs]').forEach(tr => tr.onclick = () => { WC.sel = tr.dataset.hs; WC.tab = 'now'; WC.f = 'diff'; WC.q = ''; re(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+  el.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { WC.f = b.dataset.f; re(); });
+  el.querySelectorAll('[data-mv]').forEach(b => b.onclick = () => { WC.mv = b.dataset.mv; re(); });
+  { const q = $('#wcQ', el); if (q) { if (WC._qf) { WC._qf = false; q.focus(); q.setSelectionRange(q.value.length, q.value.length); } q.oninput = () => { clearTimeout(WC._qt); WC._qt = setTimeout(() => { WC.q = q.value; WC._qf = true; re(); }, 300); }; } }
+  { const s1 = $('#wcSel', el); if (s1) s1.onchange = e => { WC.sel = e.target.value; WC.f = 'diff'; re(); }; }
   { const h = $('#wcHw', el); if (h) h.onchange = e => { WC.hw = e.target.value || null; WC.hn = 30; re(); }; }
   { const m = $('#wcMore', el); if (m) m.onclick = () => { WC.hn = (WC.hn || 30) + 50; re(); }; }
-  el.querySelectorAll('[data-mok]').forEach(b => b.onclick = async () => { const x = (c.moves || []).find(m => m.id === b.dataset.mok); if (!x) return; x.ok = new Date().toISOString(); CRMLocal.touch(); re(); });
-  el.querySelectorAll('[data-hs]').forEach(tr => tr.onclick = () => { WC.sel = tr.dataset.hs; re(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
-  el.querySelectorAll('[data-kn]').forEach(b => b.onclick = async () => { const [wh, art] = b.dataset.kn.split('|'), d = Number(b.dataset.kd); if (!confirm(`${b.dataset.knm}: дальше разница ${d > 0 ? '+' : ''}${d} на складе ${wh} будет считаться нормой. Учитывать?`)) return; setKnown(wh, art, d, b.dataset.knm); await save(); toast('📌 Учитывается: ' + b.dataset.knm); re(); });
-  el.querySelectorAll('[data-unk]').forEach(b => b.onclick = async () => { const [wh, art] = b.dataset.unk.split('|'); setKnown(wh, art, null); await save(); toast('Больше не учитывается'); re(); });
-  { const sk = $('#wcSkip', el); if (sk) sk.onchange = async () => { const L = [...new Set(sk.value.split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20); CRMLocal.ext().whSkip = L; await save(); toast(L.length ? 'Не считаем: ' + L.join(', ') : 'Считаем все товары'); re(); }; }
+  $('#wcPull', el).onclick = async () => { try { const n = await ATK.pull(); toast(n ? `Новое: ${n}` : 'Новых сверок нет'); re(); } catch (e) { toast(e.message); } };
+  el.querySelectorAll('[data-ph]').forEach(a => a.onclick = async e => { e.preventDefault(); try { const url = await ATK.photo(a.dataset.ph); const m = modal(`<img src="${url}" alt="Фото со склада" style="max-width:100%;border-radius:8px"><div class="bar"><span class="spacer"></span><button class="btn gray" id="phX">Закрыть</button></div>`); $('#phX', m.el).onclick = () => { URL.revokeObjectURL(url); m.close(); }; } catch (err) { toast(err.message); } });
+
+  // decisions: chips change the draft in place (no redraw), the progress bar follows
+  const prog = () => {
+    const p = $('#wcProg', el); if (!p || !decidable()) return;
+    const D = draft(), n = V.diff.filter(i => isDone(i, D[i.art])).length;
+    p.innerHTML = n === V.diff.length ? `<b class="wk-pos">✓ Решено всё: ${n} из ${V.diff.length}</b>` : `Решено <b>${n}</b> из ${V.diff.length}`;
+    $('#wcBar', el).style.width = Math.round(n / V.diff.length * 100) + '%';
+    const all = $('#wcAllFix', el); if (all) all.hidden = n === V.diff.length;
+  };
+  if (decidable()) {
+    el.querySelectorAll('[data-it]').forEach(card => {
+      const art = card.dataset.it, it = V.diff.find(i => i.art === art); if (!it) return;
+      const sumW = card.querySelector('.wk-sum'), sumI = card.querySelector('[data-sum]');
+      const paint = () => { const d = draft()[art]; card.querySelectorAll('[data-dk]').forEach(b => b.classList.toggle('on', d?.k === b.dataset.dk)); if (sumW) sumW.hidden = d?.k !== 'charge'; card.classList.toggle('done', isDone(it, d)); card.classList.toggle('need', !isDone(it, d)); prog(); };
+      card.querySelectorAll('[data-dk]').forEach(b => b.onclick = () => { const D = draft(), k = b.dataset.dk; if (D[art]?.k === k) delete D[art]; else D[art] = k === 'charge' ? { k, sum: Number(sumI?.value) || 0 } : { k }; paint(); if (k === 'charge' && sumI && D[art]) sumI.focus(); });
+      if (sumI) sumI.oninput = () => { const D = draft(); if (D[art]?.k === 'charge') D[art].sum = Math.round(Number(sumI.value) * 100) / 100 || 0; paint(); };
+    });
+    prog();
+    const all = $('#wcAllFix', el); if (all) all.onclick = () => { const D = draft(); for (const i of V.diff) if (!isDone(i, D[i.art])) D[i.art] = { k: 'fix' }; re(); };
+  }
+  { const ok = $('#wcOk', el); if (ok) ok.onclick = async () => {
+    const dec = {}, D = sub.status === 'recount' ? {} : draft();
+    for (const i of V.diff) { const d = D[i.art]; if (d?.k) dec[i.art] = d.k === 'charge' ? { k: 'charge', sum: Math.round(Number(d.sum) * 100) / 100 } : { k: d.k }; }
+    const missing = V.diff.filter(i => !dec[i.art]), noSum = V.diff.filter(i => dec[i.art]?.k === 'charge' && !(dec[i.art].sum > 0));
+    if (missing.length) { toast(`Выберите решение ещё для ${missing.length} поз.`); const first = el.querySelector(`[data-it="${CSS.escape(missing[0].art)}"]`); if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+    if (noSum.length) return toast('Укажите сумму удержания');
+    const name = a => sub.items.find(i => i.art === a)?.name || a, charge = Object.keys(dec).filter(a => dec[a].k === 'charge');
+    for (const a of Object.keys(dec).filter(a => dec[a].k === 'known')) { const it = sub.items.find(i => i.art === a); if (it) setKnown(sub.warehouse, a, it.fact - it.linko, it.name); }
+    ok.disabled = true;
+    sub.dec = dec; sub.recount = []; sub.status = 'ok'; sub.decidedAt = new Date().toISOString(); delete WC.draft[sub.id]; await save();
+    const total = charge.reduce((t, a) => t + dec[a].sum, 0);
+    try { await WC.notify(sub.who, `✓ Сверка ${esc(sub.warehouse)} за ${UI.dateRu(sub.day)} принята${charge.length ? `\n💸 Удержание за недостачу: <b>$${UI.fmt0(total)}</b>\n${charge.map(a => '• ' + esc(name(a)) + ' — $' + UI.fmt0(dec[a].sum)).join('\n')}` : ''}`); } catch { /* Telegram not reachable */ }
+    toast('Сверка принята' + (total ? ` · удержание $${UI.fmt0(total)}` : ''));
+    // the next count that waits for a decision opens by itself
+    const next = c.subs.find(s => s.day >= since && !s.partial && s.id !== sub.id && s.status !== 'ok' && s.status !== 'recount' && WC.view(s).diff.length); if (next) WC.sel = next.id;
+    re();
+  }; }
   { const ag = $('#wcAgain', el); if (ag) ag.onclick = async () => {
-    const tg = !String(sub.who).startsWith('sb_');
-    if (!confirm(`Попросить ${sub.name} провести сверку склада ${sub.warehouse} ещё раз — полностью, все товары?${tg ? '\nЕму придёт сообщение в Telegram.' : '\nВ его кабинете появится просьба пересчитать (Telegram у него не подключён — лучше ещё и позвоните).'}`)) return;
+    const tgo = !String(sub.who).startsWith('sb_');
+    if (!confirm(`Попросить ${sub.name} провести сверку склада ${sub.warehouse} ещё раз — полностью, все товары?${tgo ? '\nЕму придёт сообщение в Telegram.' : '\nВ его кабинете появится просьба пересчитать (Telegram у него не подключён — лучше ещё и позвоните).'}`)) return;
     ag.disabled = true; c.again ||= {}; c.again[sub.who] = new Date().toISOString(); await save();
-    if (tg) { try { await WC.notify(sub.who, `🔁 <b>Повторная сверка склада ${esc(sub.warehouse)}</b>\nРуководитель просит пересчитать склад ещё раз — <b>полностью, все товары</b>. Считайте внимательно: коробки и штуки, отложенное под заказы тоже.\nОткройте кабинет склада → «Начать сверку».`); } catch (e) { toast('Telegram: ' + e.message); } }
+    if (tgo) { try { await WC.notify(sub.who, `🔁 <b>Повторная сверка склада ${esc(sub.warehouse)}</b>\nРуководитель просит пересчитать склад ещё раз — <b>полностью, все товары</b>. Считайте внимательно: коробки и штуки, отложенное под заказы тоже.\nОткройте кабинет склада → «Начать сверку».`); } catch (e) { toast('Telegram: ' + e.message); } }
     toast('🔁 Завскладу отправлена просьба сверить ещё раз'); re();
   }; }
-  $('#wcPull', el).onclick = async () => { try { const n = await ATK.pull(); toast(n ? `Новое: ${n}` : 'Новых сверок нет'); re(); } catch (e) { toast(e.message); } };
-  const s1 = $('#wcSel', el); if (s1) s1.onchange = e => { WC.sel = e.target.value; re(); };
-  el.querySelectorAll('[data-dec]').forEach(sel => sel.onchange = () => { const w = el.querySelector(`[data-sumw="${CSS.escape(sel.dataset.dec)}"]`); if (w) w.style.display = sel.value === 'charge' ? 'flex' : 'none'; });
-  const ok = $('#wcOk', el); if (ok) ok.onclick = async () => {
-    const dec = {}, missing = [], noSum = [];
-    for (const sel of el.querySelectorAll('[data-dec]')) {
-      const art = sel.dataset.dec; if (!sel.value) { missing.push(art); continue; }
-      const d = { k: sel.value };
-      if (sel.value === 'charge') { const v = Number(el.querySelector(`[data-sum="${CSS.escape(art)}"]`)?.value); if (!(v > 0)) { noSum.push(art); continue; } d.sum = Math.round(v * 100) / 100; }
-      dec[art] = d;
-    }
-    if (missing.length) return toast(`Выберите решение ещё для ${missing.length} поз.`);
-    if (noSum.length) return toast('Укажите сумму удержания');
-    const name = a => sub.items.find(i => i.art === a)?.name || a, rec = Object.keys(dec).filter(a => dec[a].k === 'recount'), charge = Object.keys(dec).filter(a => dec[a].k === 'charge');
-    for (const a of Object.keys(dec).filter(a => dec[a].k === 'known')) { const it = sub.items.find(i => i.art === a); if (it) setKnown(sub.warehouse, a, it.fact - it.linko, it.name); }
-    sub.dec = dec; sub.recount = rec; sub.status = rec.length ? 'recount' : 'ok'; sub.decidedAt = new Date().toISOString(); await save();
-    const total = charge.reduce((t, a) => t + dec[a].sum, 0);
-    try {
-      if (rec.length) await WC.notify(sub.who, `↻ <b>Пересчитайте ${rec.length} поз.</b> на складе ${esc(sub.warehouse)}:\n${rec.map(a => '• ' + esc(name(a))).join('\n')}`);
-      else await WC.notify(sub.who, `✓ Сверка ${esc(sub.warehouse)} за ${UI.dateRu(sub.day)} принята${charge.length ? `\n💸 Удержание за недостачу: <b>$${UI.fmt0(total)}</b>\n${charge.map(a => '• ' + esc(name(a)) + ' — $' + UI.fmt0(dec[a].sum)).join('\n')}` : ''}`);
-    } catch { /* Telegram not reachable */ }
-    toast(rec.length ? `Отправлено на пересчёт: ${rec.length} поз.` : 'Сверка принята' + (total ? ` · удержание $${UI.fmt0(total)}` : '')); re();
-  };
-  $('#wcMode', el).onchange = async e => { c.mode = e.target.value; c.fullDay ||= 1; await save(); toast(c.mode === 'short' ? 'Короткая сверка, полная — ' + WC.DOW[c.fullDay] : 'Каждый день — полная сверка'); re(); };
-  $('#wcFull', el).onchange = async e => { c.fullDay = Number(e.target.value); await save(); toast('Полная сверка — ' + WC.DOW[c.fullDay]); };
-  $('#wcEx', el).onchange = async e => { const v = Math.max(0, Math.min(50, Math.round(Number(e.target.value)) || 0)); e.target.value = v; c.extra = v; await save(); };
+  el.querySelectorAll('[data-mok]').forEach(b => b.onclick = () => { const x = (c.moves || []).find(m => m.id === b.dataset.mok); if (!x) return; x.ok = new Date().toISOString(); CRMLocal.touch(); re(); });
+  el.querySelectorAll('[data-kn]').forEach(b => b.onclick = async () => { const [wh, art] = b.dataset.kn.split('|'), d = Number(b.dataset.kd); if (!confirm(`${b.dataset.knm}: дальше разница ${sign(d)} на складе ${wh} будет считаться нормой. Учитывать?`)) return; setKnown(wh, art, d, b.dataset.knm); await save(); toast('📌 Учитывается: ' + b.dataset.knm); re(); });
+  el.querySelectorAll('[data-unk]').forEach(b => b.onclick = async () => { const [wh, art] = b.dataset.unk.split('|'); setKnown(wh, art, null); await save(); toast('Больше не учитывается'); re(); });
+  { const sk = $('#wcSkip', el); if (sk) sk.onchange = async () => { const L = [...new Set(sk.value.split(',').map(x => x.trim()).filter(Boolean))].slice(0, 20); CRMLocal.ext().whSkip = L; await save(); toast(L.length ? 'Не считаем: ' + L.join(', ') : 'Считаем все товары'); re(); }; }
+  { const m = $('#wcMode', el); if (m) m.onchange = async e => { c.mode = e.target.value; c.fullDay ||= 1; await save(); toast(c.mode === 'short' ? 'Короткая сверка, полная — ' + WC.DOW[c.fullDay] : 'Каждый день — полная сверка'); re(); }; }
+  { const m = $('#wcFull', el); if (m) m.onchange = async e => { c.fullDay = Number(e.target.value); await save(); toast('Полная сверка — ' + WC.DOW[c.fullDay]); }; }
+  { const m = $('#wcEx', el); if (m) m.onchange = async e => { const v = Math.max(0, Math.min(50, Math.round(Number(e.target.value)) || 0)); e.target.value = v; c.extra = v; await save(); }; }
   el.querySelectorAll('[data-pk]').forEach(inp => inp.onchange = async () => { c.packs ||= {}; const v = Math.round(Number(inp.value)); if (v >= 1) c.packs[inp.dataset.pk] = v; else { delete c.packs[inp.dataset.pk]; inp.value = ''; } await save(); toast('Штук в коробке сохранено'); });
-  $('#wcRm', el).onchange = async e => { if (!/^\d{2}:\d{2}$/.test(e.target.value) || e.target.value >= (c.deadline || '10:00')) { e.target.value = c.remind || '09:00'; return toast('Напоминание — раньше срока сверки'); } c.remind = e.target.value; await save(); toast('Напоминание в ' + c.remind); };
-  $('#wcDl', el).onchange = async e => { if (!/^\d{2}:\d{2}$/.test(e.target.value)) { e.target.value = c.deadline || '10:00'; return toast('Время ЧЧ:ММ'); } c.deadline = e.target.value; await save(); toast('Срок сверки: ' + c.deadline); };
-  $('#wcAdd', el).onclick = async () => {
+  { const m = $('#wcRm', el); if (m) m.onchange = async e => { if (!/^\d{2}:\d{2}$/.test(e.target.value) || e.target.value >= dl) { e.target.value = c.remind || '09:00'; return toast('Напоминание — раньше срока сверки'); } c.remind = e.target.value; await save(); toast('Напоминание в ' + c.remind); }; }
+  { const m = $('#wcDl', el); if (m) m.onchange = async e => { if (!/^\d{2}:\d{2}$/.test(e.target.value)) { e.target.value = dl; return toast('Время ЧЧ:ММ'); } c.deadline = e.target.value; await save(); toast('Срок сверки: ' + c.deadline); }; }
+  { const m = $('#wcAdd', el); if (m) m.onclick = async () => {
     const name = $('#wcN', el).value.trim(), wh = $('#wcW', el).value, who = $('#wcT', el).value;
     if (!name || !wh || !who) return toast('Заполните имя, склад и Telegram');
     if (!WC.branchOf(wh)) toast(`Внимание: для склада ${wh} нет связи со складом LINKO — сверка начнёт сравнивать, когда автозагрузка его узнает`);
     c.stores[who] = { name: name.slice(0, 60), wh, on: true, tgAt: '' }; await save(); re();
-  };
-  el.querySelectorAll('[data-tgc]').forEach(b => b.onclick = async () => { const who = b.dataset.tgc; try { if (WC._lastTg) delete WC._lastTg[who]; WC._lastSj = null; await WC.publish(); await WC.connect(who); c.stores[who].tgAt = new Date().toISOString(); CRMLocal.touch(); toast('Готово: завскладу отправлена кнопка «Открыть кабинет склада», внизу у него «Панель»'); re(); } catch (e) { toast(e.message); } });
+  }; }
+  el.querySelectorAll('[data-tgc]').forEach(b => b.onclick = async () => { const who = b.dataset.tgc; try { if (WC._lastTg) delete WC._lastTg[who]; WC._lastSj = null; await WC.publish(); await WC.connect(who); c.stores[who].tgAt = new Date().toISOString(); CRMLocal.touch(); toast('Готово: завскладу отправлена кнопка «Открыть кабинет склада»'); re(); } catch (e) { toast(e.message); } });
   el.querySelectorAll('[data-rm]').forEach(b => b.onclick = async () => {
     const who = b.dataset.rm; if (!confirm(`Убрать ${c.stores[who].name} из завскладов? Кабинет склада у него закроется.`)) return;
     delete c.stores[who]; if (WC._lastTg) delete WC._lastTg[who];
     try { const cl = AC.cloud(); if (cl) await AC.gh(cl, 'DELETE', 'agents/tg/' + who + '.json', { message: 'CRM: кабинет склада закрыт' }); await TG.call('setChatMenuButton', { chat_id: Number(who), menu_button: AC.panelBtn() }); } catch { /* already closed */ }
     await save(); re();
   });
-  el.querySelectorAll('[data-ph]').forEach(a => a.onclick = async e => { e.preventDefault(); try { const url = await ATK.photo(a.dataset.ph); const m = modal(`<img src="${url}" alt="Фото со склада" style="max-width:100%;border-radius:8px"><div class="bar"><span class="spacer"></span><button class="btn gray" id="phX">Закрыть</button></div>`); $('#phX', m.el).onclick = () => { URL.revokeObjectURL(url); m.close(); }; } catch (err) { toast(err.message); } });
 };
