@@ -1188,7 +1188,7 @@ async function appAnswer(chatId: number, b: any, stage?: (s: string) => void): P
     ms.data = Date.now() - t2;
     const t3 = Date.now();
     const res = await ask(db, chatId, [{ text: `[приложение] ${heard ? `(голосовое сообщение, расшифровка) ${heard}` : text}` }], text, undefined, true, stage);
-    ms.ai = Date.now() - t3;
+    ms.ai = Date.now() - t3; ms.steps = res.trace; ms.smart = isHardQuestion(text) || undefined;
     // a keyboard a tool prepared (a task card, a reminder) goes to Telegram with the answer, where its buttons work
     if (KB.has(chatId)) await say(chatId, `📱 Из приложения: ${heard || text}\n\n${res.text}`);
     return { status: 200, body: { text: res.text, heard: heard || undefined, ms: Date.now() - t0, timing: ms, requests: res.requests, actions: res.actions?.length ? res.actions : undefined, telegram: res.used.some((x: string) => ['message_agent', 'crm_task', 'crm_note', 'message_client', 'oilbook_action'].includes(x)) || undefined } };
@@ -3729,6 +3729,12 @@ async function gemini(body: any, model = CFG.model(), canFallback = true): Promi
   };
   let { r, d } = await call();
   // the per-minute limit (free tier ~15 a minute) passes by itself: wait as long as Google asks (≤ 20 s) and try once more
+  // the per-minute limit with a fallback model at hand: that model answers at once (its own quota) — nobody waits 20 s
+  const fb0 = fallbackModel();
+  if (r.status === 429 && !search && !isSmart && !perDayLimit(d) && canFallback && fb0 && fb0 !== 'off' && fb0 !== model) {
+    try { const out = await gemini(body, fb0, false); console.log('gemini 429 per minute → fallback at once:', fb0); return out; }
+    catch (e) { console.warn('gemini fallback', fb0, redact((e as Error).message)); }
+  }
   if (r.status === 429 && !search && !isSmart && !perDayLimit(d)) {
     const s = retrySeconds(d);
     if (s <= 20) { console.warn('gemini 429 per minute, waiting', s || 5, 's'); await sleep(Math.max(2, s || 5) * 1000); ({ r, d } = await call()); }
@@ -3758,6 +3764,7 @@ async function gemini(body: any, model = CFG.model(), canFallback = true): Promi
     throw new Error('Gemini сейчас перегружен — это временно, на стороне Google. Подождите минуту-две и спросите снова. Команды /today /dolg /k /plan /brief работают без ИИ.');
   }
   if (!r.ok) throw new Error(`Gemini ${r.status}: ${d.error?.message || ''}`);
+  Object.defineProperty(d, '_model', { value: model, enumerable: false }); // which model really answered (for the app's timing)
   return d;
 }
 async function limitsText() {
@@ -3930,13 +3937,16 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
   const media0 = userParts.some((p: any) => p.inlineData || p.fileData);
   let decl = toolsFor(qText === '[голосовое]' ? '' : qText, prevQ, fix || media0 || !!media);
   let requests = 0, checked = false;
+  const trace: any[] = []; // each AI step: model, seconds, the functions it called — the app shows where the time goes
   for (let step = 0; step < 7; step++) {
     requests++;
     if (step > 0) progress?.('Пишу ответ');
+    const ts = Date.now();
     const d = await gemini({
       systemInstruction: { parts: [{ text: sys }] }, contents,
       tools: [{ functionDeclarations: decl }], generationConfig: { temperature: 0.1 },
     }, model);
+    trace.push({ m: d._model || model, ms: Date.now() - ts, f: (d.candidates?.[0]?.content?.parts || []).filter((p: any) => p.functionCall).map((p: any) => p.functionCall.name).join(',') || undefined });
     const content = d.candidates?.[0]?.content;
     if (!content?.parts?.length) throw new Error('Gemini не ответил' + (d.promptFeedback?.blockReason ? ': ' + d.promptFeedback.blockReason : ''));
     contents.push(content);
@@ -3957,7 +3967,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       text = text || 'Не нашёл, что ответить. Переформулируйте, пожалуйста.';
       if (files.length && !/📎/.test(text)) text += `\n\n📎 Excel: ${files.join(', ')}`;
       await remember(chatId, heard || qText, text, used.join(','));
-      return { text, used, requests, actions };
+      return { text, used, requests, actions, trace };
     }
     const responses = [], done: { name: string; args: any; result: any }[] = [];
     for (const p of calls) {
@@ -3966,11 +3976,13 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       const xls = (args.excel || wantXls) && !WRITES.has(name) && !NO_XLS.has(name);
       if (xls && TOOLS[name]?.params?.limit && args.limit == null) args.limit = 1000; // a file holds the whole list
       let result: any;
+      const tf = Date.now();
       try {
         result = !TOOLS[name] ? { error: 'нет такой функции' }
           : db.meta.data_error && !NO_CRM.has(name) ? { error: db.meta.data_error } // no CRM data → say so, never answer with zeros
           : await TOOLS[name].run(db, args, { chatId, media, app, actions });
       } catch (e) { result = { error: redact((e as Error).message) }; }
+      trace.push({ tool: name, ms: Date.now() - tf });
       // Excel: the file is made by the code from the function's own result — the same numbers as in the answer
       if (xls && result && !result.error && !result.retry && !files.length) {
         try { const f = await sendExcel(chatId, name, args, result); if (f) { files.push(f); result = { ...result, excel_file: f }; } }
@@ -3990,11 +4002,11 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
       const xl = files.length ? `\n\n📎 Excel-файл отправлен: ${files.join(', ')}` : done.find(c => c.result?.excel_error)?.result.excel_error ? `\n\n⚠️ ${done.find(c => c.result?.excel_error)!.result.excel_error}` : '';
       const text = (heard ? `🎤 «${heard}»\n\n` : '') + body + xl;
       await remember(chatId, heard || qText, text.slice(0, 1500), used.join(','));
-      return { text, used, requests, actions };
+      return { text, used, requests, actions, trace };
     }
     contents.push({ role: 'user', parts: responses });
   }
-  return { text: 'Вопрос получился слишком сложным — разбейте, пожалуйста, на части.', used, requests };
+  return { text: 'Вопрос получился слишком сложным — разбейте, пожалуйста, на части.', used, requests, trace };
 }
 
 // «сколько осталось лимитов?», «лимит», «limit qancha» — the bot's own Gemini limit. A CRM limit («кредитный лимит

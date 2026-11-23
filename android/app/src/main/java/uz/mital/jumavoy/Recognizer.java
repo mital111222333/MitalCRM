@@ -15,18 +15,16 @@ import android.speech.SpeechRecognizer;
  * or to the on-device one on Android 12+, so voice input in other apps and in JUMAVOY keeps working as before.
  */
 public class Recognizer extends RecognitionService {
-  static final ComponentName GOOGLE = new ComponentName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.serviceapi.GoogleRecognitionService");
   SpeechRecognizer inner;
   Callback cb;
 
+  // the best recognizer on the phone except this one: the Google app, «Speech Recognition by Google», others, on-device
   SpeechRecognizer make() {
-    try {
-      getPackageManager().getServiceInfo(GOOGLE, 0);
-      return SpeechRecognizer.createSpeechRecognizer(this, GOOGLE);
-    } catch (Exception noGoogle) {
-      if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) return SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
-      return null;
+    for (ComponentName c : Voice.recognizers(this)) {
+      try { return SpeechRecognizer.createSpeechRecognizer(this, c); } catch (Exception ignored) { }
     }
+    if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) return SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
+    return null;
   }
 
   @Override protected void onStartListening(Intent intent, Callback c) {

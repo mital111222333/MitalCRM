@@ -293,7 +293,7 @@
 </div>
 
 <script>
-const WEB_VERSION = '2026.11.23-2';
+const WEB_VERSION = '2026.11.23-3';
 const API = 'https://oxchgcfyzszemqlvdjjr.supabase.co/functions/v1/ai-bot/app';
 const $ = id => document.getElementById(id);
 const store = {
@@ -681,10 +681,14 @@ function failNative(f) {
   lastFail = { ...f, at: Date.now() }; store.set('lastFail', lastFail);
   micIdle(); setState('готов');
   if (f.heard) { note('Не расслышал до конца — скажите ещё раз.', 'err'); return; } // the words were lost: no silent re-recording
-  if (f.code === 12 || f.code === 13) {
+  if (f.code === 12) { // the language is not supported at all (Uzbek on many phones): the server writes it down
     nativeOff[f.lang] = APPV; store.set('nativeOff2', nativeOff);
     note(f.lang === 'uz-UZ' ? 'Узбекскую речь телефон не распознаёт — для UZ записываю голос и расшифровываю на сервере (на пару секунд дольше).' : 'Этот язык телефон не распознаёт — записываю голос для сервера.');
-  } else nativeBadUntil = Date.now() + 10 * 60e3;
+  } else {
+    // 13 = the language pack is not downloaded yet (Android downloads it now), or the recognizer is busy: try again later
+    nativeBadUntil = Date.now() + 10 * 60e3;
+    if (f.code === 13 && f.downloading) note('Телефон скачивает языковой пакет для распознавания речи. Пока записываю голос для сервера.');
+  }
   hint.textContent = 'Скажите ещё раз — записываю';
   setTimeout(() => listen(true), 150);
 }
@@ -879,6 +883,21 @@ async function openDiag() {
     const m = document.createElement('div'); m.className = 'main'; m.textContent = k;
     const x = document.createElement('div'); x.className = 'val ' + (cls || ''); x.textContent = v;
     r.append(m, x); g.append(r);
+  }
+  if (d.order && d.order.length) {
+    const t = document.createElement('div'); t.className = 'group-title'; t.textContent = 'Распознаватели речи на телефоне'; b.append(t);
+    const p = document.createElement('div'); p.className = 'group'; const r = document.createElement('div'); r.className = 'row';
+    r.textContent = d.order.join(', ') + (d.onDevice ? ', на телефоне' : ''); p.append(r); b.append(p);
+  }
+  if (T && T.steps && T.steps.length) {
+    const t = document.createElement('div'); t.className = 'group-title'; t.textContent = 'Где ушло время в последнем ответе'; b.append(t);
+    const p = document.createElement('div'); p.className = 'group'; b.append(p);
+    for (const x of T.steps) {
+      const r = document.createElement('div'); r.className = 'row';
+      const m = document.createElement('div'); m.className = 'main'; m.textContent = x.tool ? 'Функция ' + x.tool : 'ИИ ' + (x.m || '') + (x.f ? ' → ' + x.f : '');
+      const v = document.createElement('div'); v.className = 'val ' + (x.ms > 8000 ? 'no' : x.ms > 3000 ? 'bad' : 'ok'); v.textContent = sec(x.ms);
+      r.append(m, v); p.append(r);
+    }
   }
   if (lastFail || d.lastTry) {
     const t = document.createElement('div'); t.className = 'group-title'; t.textContent = 'Последняя ошибка распознавания'; b.append(t);

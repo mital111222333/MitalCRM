@@ -44,20 +44,19 @@ import java.util.Locale;
  */
 public class Voice {
   static final ComponentName GOOGLE = new ComponentName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.serviceapi.GoogleRecognitionService");
-  static final int E_DEFAULT = 0, E_GOOGLE = 1, E_DEVICE = 2;
-  static final String[] E_NAME = { "система", "Google", "на телефоне" };
+  static final ComponentName DEVICE = new ComponentName("-", "on-device"), DEFAULT = new ComponentName("-", "system");
   final Activity act;
   final WebView web;
   SpeechRecognizer rec;
   TextToSpeech tts;
   boolean ttsReady;
   String pendingLang;
-  final List<Integer> plan = new ArrayList<>();
+  final List<ComponentName> plan = new ArrayList<>();
   int step, session;
   boolean began; // the person started speaking — another recognizer would lose the words
   final StringBuilder tried = new StringBuilder();
 
-  @JavascriptInterface public int version() { return 4; }
+  @JavascriptInterface public int version() { return 5; }
 
   Voice(Activity act, WebView web) {
     this.act = act;
@@ -109,6 +108,34 @@ public class Voice {
   boolean hasGoogle() {
     try { act.getPackageManager().getServiceInfo(GOOGLE, 0); return true; } catch (Exception e) { return false; }
   }
+
+  /**
+   * Every speech recognizer installed on the phone, the best first: the Google app, «Speech Recognition & Synthesis by
+   * Google» (com.google.android.tts — there on phones without the Google app, e.g. HONOR), then the others. Not JUMAVOY's
+   * own (it only passes on) and not other assistants' apps.
+   */
+  static List<ComponentName> recognizers(android.content.Context c) {
+    List<ComponentName> out = new ArrayList<>();
+    try {
+      for (ResolveInfo r : c.getPackageManager().queryIntentServices(new Intent(RecognitionService.SERVICE_INTERFACE), 0)) {
+        String pkg = r.serviceInfo.packageName;
+        if (pkg.equals(c.getPackageName()) || pkg.startsWith("com.anthropic") || pkg.startsWith("com.openai")) continue;
+        out.add(new ComponentName(pkg, r.serviceInfo.name));
+      }
+    } catch (Exception ignored) { }
+    out.sort((a, b) -> rank(a) - rank(b));
+    return out;
+  }
+  static int rank(ComponentName c) {
+    String p = c.getPackageName();
+    return p.equals("com.google.android.googlequicksearchbox") ? 0 : p.equals("com.google.android.tts") ? 1 : p.startsWith("com.google") ? 3 : 2;
+  }
+  static String nameOf(ComponentName c) {
+    if (c == DEVICE) return "на телефоне";
+    if (c == DEFAULT) return "система";
+    String p = c.getPackageName();
+    return p.equals("com.google.android.googlequicksearchbox") ? "Google" : p.equals("com.google.android.tts") ? "Google Speech" : p.equals("com.google.android.as") ? "Android AI" : p;
+  }
   boolean hasOnDevice() { return Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(act); }
 
   @JavascriptInterface public String diag() {
@@ -130,11 +157,12 @@ public class Voice {
       o.put("ttsRu", canSpeak("ru-RU"));
       o.put("ttsUz", canSpeak("uz-UZ"));
       o.put("lastTry", tried.toString());
+      JSONArray pl = new JSONArray(); for (ComponentName c : recognizers(act)) pl.put(nameOf(c)); o.put("order", pl);
     } catch (Exception ignored) { }
     return o.toString();
   }
 
-  @JavascriptInterface public boolean canListen() { return SpeechRecognizer.isRecognitionAvailable(act) || hasGoogle() || hasOnDevice(); }
+  @JavascriptInterface public boolean canListen() { return SpeechRecognizer.isRecognitionAvailable(act) || !recognizers(act).isEmpty() || hasOnDevice(); }
 
   @JavascriptInterface public boolean canSpeak(String lang) {
     if (!ttsReady) return false;
@@ -163,10 +191,10 @@ public class Voice {
   void begin(String lang) {
     plan.clear();
     boolean online = isOnline(), device = hasOnDevice();
-    if (!online && device) plan.add(E_DEVICE);         // no internet: the on-device recognizer works without it
-    if (hasGoogle()) plan.add(E_GOOGLE);
-    plan.add(E_DEFAULT);                               // (while JUMAVOY is the assistant this is Recognizer.java → Google)
-    if (device && !plan.contains(E_DEVICE)) plan.add(E_DEVICE);
+    if (!online && device) plan.add(DEVICE);           // no internet: the on-device recognizer works without it
+    plan.addAll(recognizers(act));
+    if (device && !plan.contains(DEVICE)) plan.add(DEVICE);
+    plan.add(DEFAULT);                                 // the phone's default (while JUMAVOY is the assistant: Recognizer.java)
     step = 0; tried.setLength(0);
     start(lang);
   }
@@ -174,13 +202,14 @@ public class Voice {
   void start(String lang) {
     if (tts != null) tts.stop();
     if (rec != null) { rec.destroy(); rec = null; }
-    final int engine = plan.get(step), my = ++session;
+    final ComponentName engine = plan.get(step);
+    final int my = ++session;
     began = false;
     try {
-      rec = engine == E_GOOGLE ? SpeechRecognizer.createSpeechRecognizer(act, GOOGLE)
-        : engine == E_DEVICE && Build.VERSION.SDK_INT >= 31 ? SpeechRecognizer.createOnDeviceSpeechRecognizer(act)
-        : SpeechRecognizer.createSpeechRecognizer(act);
-    } catch (Exception e) { failed(lang, engine, SpeechRecognizer.ERROR_CLIENT); return; }
+      rec = engine == DEVICE && Build.VERSION.SDK_INT >= 31 ? SpeechRecognizer.createOnDeviceSpeechRecognizer(act)
+        : engine == DEFAULT ? SpeechRecognizer.createSpeechRecognizer(act)
+        : SpeechRecognizer.createSpeechRecognizer(act, engine);
+    } catch (Exception e) { failed(lang, engine, SpeechRecognizer.ERROR_CLIENT, null); return; }
     final String lng = lang;
     rec.setRecognitionListener(new RecognitionListener() {
       boolean live() { return my == session; }
@@ -189,26 +218,33 @@ public class Voice {
       @Override public void onRmsChanged(float db) { if (live()) { float v = Math.max(0f, Math.min(1f, (db + 2f) / 12f)); js("onLevel", String.valueOf(v)); } }
       @Override public void onBufferReceived(byte[] b) { }
       @Override public void onEndOfSpeech() { if (live()) js("onEnd", null); }
-      @Override public void onError(int e) { if (live()) failed(lng, engine, e); }
-      @Override public void onResults(Bundle b) { if (live()) { tried.append(E_NAME[engine]).append(": ok "); js("onResult", best(b)); } }
+      @Override public void onError(int e) { if (live()) failed(lng, engine, e, intentFor); }
+      @Override public void onResults(Bundle b) { if (live()) { tried.append(nameOf(engine)).append(": ok "); js("onResult", best(b)); } }
       @Override public void onPartialResults(Bundle b) { if (!live()) return; String t = best(b); if (!t.isEmpty()) { began = true; js("onPartial", t); } }
       @Override public void onEvent(int t, Bundle b) { }
     });
-    Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+    Intent i = intentFor = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
     i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
     i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang);
     i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang);
     i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
     i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-    if (engine == E_DEVICE) i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+    if (engine == DEVICE) i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
     // a pause to think («…bugun kamandirovkaga… Delpin, Eco Filter») must not end the question
     i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L);
     i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L);
-    try { rec.startListening(i); } catch (Exception e) { failed(lang, engine, SpeechRecognizer.ERROR_CLIENT); }
+    try { rec.startListening(i); } catch (Exception e) { failed(lang, engine, SpeechRecognizer.ERROR_CLIENT, i); }
   }
+  Intent intentFor;
+  boolean downloading;
 
-  void failed(String lang, int engine, int e) {
-    tried.append(E_NAME[engine]).append(": ").append(e).append(' ');
+  void failed(String lang, ComponentName engine, int e, Intent intent) {
+    tried.append(nameOf(engine)).append(": ").append(e).append(' ');
+    // 13 = the language is known but its pack is not on the phone yet: ask Android to download it (Android 13+);
+    // the next questions will be recognized on the phone, even without the internet
+    if (e == 13 && engine == DEVICE && intent != null && Build.VERSION.SDK_INT >= 33 && rec != null && !downloading) {
+      try { rec.triggerModelDownload(intent); downloading = true; } catch (Exception ignored) { }
+    }
     // nothing said (7 no match, 6 silence) → simply nothing; no permission → say so
     if (e == SpeechRecognizer.ERROR_NO_MATCH || e == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) { js("onError", ""); return; }
     if (e == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) { js("onError", "Нет доступа к микрофону. Разрешите его в настройках приложения."); return; }
@@ -217,9 +253,9 @@ public class Voice {
     if (!began && step + 1 < plan.size()) { step++; act.runOnUiThread(() -> start(lang)); return; }
     JSONObject o = new JSONObject();
     try {
-      o.put("code", e); o.put("lang", lang); o.put("heard", began); o.put("tried", tried.toString().trim());
+      o.put("code", e); o.put("lang", lang); o.put("heard", began); o.put("tried", tried.toString().trim()); o.put("downloading", downloading);
       o.put("msg", e == SpeechRecognizer.ERROR_NETWORK || e == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ? "Нет интернета для распознавания речи."
-        : e == 12 || e == 13 ? "Телефон не распознаёт этот язык." : "Распознавание речи: ошибка " + e);
+        : e == 12 ? "Телефон не распознаёт этот язык." : e == 13 ? "Языковой пакет для распознавания ещё не скачан." : "Распознавание речи: ошибка " + e);
     } catch (Exception ignored) { }
     js("onFail", o.toString());
   }

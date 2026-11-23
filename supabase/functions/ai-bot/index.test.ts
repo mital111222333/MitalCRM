@@ -1714,6 +1714,7 @@ D.test('app API: «Jumavoy, …» is not part of the question; stream gives stag
   const r = await (await call({ text: 'Jumavoy, qancha qarz bor', voice: true })).json();
   assert(q.includes('расшифровка) qancha qarz bor') && r.heard === 'qancha qarz bor', 'wake word removed: ' + q);
   assert(r.timing && typeof r.timing.ai === 'number', 'timing: ' + JSON.stringify(r));
+  assert(Array.isArray(r.timing.steps) && r.timing.steps[0].m && typeof r.timing.steps[0].ms === 'number', 'AI steps traced: ' + JSON.stringify(r.timing));
 
   let step = 0;
   GEM = () => { step++; return step === 1 ? call0('debtors', {}) : say('Должники: Fozilxon'); };
