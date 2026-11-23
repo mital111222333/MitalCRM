@@ -185,9 +185,11 @@ public class MainActivity extends Activity {
   }
 
   // the assistant gesture works on the lock screen too, but the CRM is shown only after the owner unlocks the phone
+  @SuppressWarnings("deprecation")
   void unlockIfNeeded() {
-    setShowWhenLocked(true);
-    setTurnScreenOn(true);
+    // Android 8.0 (API 26) has no setShowWhenLocked / setTurnScreenOn: it crashed there (found by Android Lint)
+    if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true); }
+    else getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
     KeyguardManager km = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
     if (km != null && km.isKeyguardLocked()) km.requestDismissKeyguard(this, null);
   }

@@ -26,6 +26,7 @@ public class Tile extends TileService {
   }
 
   @SuppressWarnings("deprecation")
+  @android.annotation.SuppressLint("StartActivityAndCollapseDeprecated") // the old call only below Android 14, where it is the only one
   void go() {
     Intent i = new Intent(this, MainActivity.class).putExtra("ask", "/listen")
       .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);

@@ -3934,13 +3934,15 @@ export async function chatRecall(chatId: number, a: any) {
     const ans = rows[k + 1]?.role === 'model' ? rows[k + 1] : null;
     const hay = latin(u.text + '\n' + (ans?.text || ''));
     const score = words.length ? words.filter(w => hay.includes(w)).length : 1;
-    if (!score || (words.length > 2 && score < 2)) continue;
+    if (!score) continue;
     const lp = localParts(new Date(u.created_at));
     pairs.push({ score, when: `${dm(lp.date)} ${lp.time}`, asked: String(u.text).slice(0, 500), answered: String(ans?.text || '').slice(0, 700) });
   }
   const limit = Math.max(1, Math.min(20, n(a.limit) || 8));
-  const best = words.length ? [...pairs].sort((x, y) => y.score - x.score).slice(0, limit).sort((x, y) => pairs.indexOf(x) - pairs.indexOf(y)) : pairs.slice(-limit);
-  return { period: `${dm(from)}–${dm(to)}`, query: a.query || undefined, found: pairs.length, shown: best.length, talk: best.map(({ score: _s, ...x }) => x),
+  // several words: only the talks with (nearly) all of them — «Fozilxon обещал» is not every message about Fozilxon
+  const top = Math.max(0, ...pairs.map(x => x.score)), min = words.length >= 2 ? Math.max(1, top - (words.length >= 4 ? 1 : 0)) : 1;
+  const best = words.length ? pairs.filter(x => x.score >= min).slice(-limit) : pairs.slice(-limit);
+  return { period: `${dm(from)}–${dm(to)}`, query: a.query || undefined, found: words.length ? pairs.filter(x => x.score >= min).length : pairs.length, shown: best.length, talk: best.map(({ score: _s, ...x }) => x),
     note: best.length ? 'Это прошлые реплики (история разговора). Отвечай по ним, с датой.' : 'В этот период такого разговора нет — так и скажи, предложи другой период или слова.' };
 }
 

@@ -2061,13 +2061,14 @@ D.test('audit 24.11: chat_recall finds an older talk; the history is re-read (an
 
   // 3. the same question again (the connection broke after it reached the server): one run, the same answer
   let runs = 0;
-  GEM = () => { runs++; return call0('reminder_add', { text: 'позвонить Fozilxon', at: '2099-01-05T10:00' }); };
+  const remN = () => DB.ai_reminders.filter((x: any) => /позвонить Фозилу 2099/.test(x.text || '')).length;
+  GEM = () => { runs++; return call0('reminder_add', { text: 'позвонить Фозилу 2099', at: '2099-01-05T10:00' }); };
   const body = { text: 'напомни 5 января 2099 в 10 позвонить Фозилу', qid: 'q1abc2def', stream: false };
   const [a1, a2] = await Promise.all([app(body).then((x: any) => x.json()), app(body).then((x: any) => x.json())]);
-  const rem = DB.ai_reminders.filter((x: any) => /позвонить Fozilxon/.test(x.text || '')).length;
-  assert(rem === 1, 'one reminder, not two: ' + rem + ' runs ' + runs);
+  const rem = remN();
+  assert(rem === 1 && runs === 1, 'one reminder, not two: ' + rem + ' runs ' + runs);
   assert(a1.text && a1.text === a2.text && (a1.repeat || a2.repeat), 'the repeat gets the first answer: ' + JSON.stringify([a1, a2]));
   const a3 = await (await app(body)).json();
   assert(a3.repeat && a3.text === a1.text, 'later repeat too');
-  eq(DB.ai_reminders.filter((x: any) => /позвонить Fozilxon/.test(x.text || '')).length, 1, 'still one reminder');
+  eq(remN(), 1, 'still one reminder');
 });

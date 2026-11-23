@@ -29,6 +29,6 @@ android {
     textReport true
     textOutput file("$buildDir/reports/lint.txt")
     htmlReport true
-    disable 'GradleDependency', 'OldTargetApi', 'NewerVersionAvailable', 'IconMissingDensityFolder', 'IconDensities', 'SetJavaScriptEnabled', 'JavascriptInterface'
+    disable 'GradleDependency', 'OldTargetApi', 'NewerVersionAvailable', 'IconMissingDensityFolder', 'IconDensities', 'SetJavaScriptEnabled', 'JavascriptInterface', 'IconLauncherShape'
   }
 }

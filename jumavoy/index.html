@@ -907,7 +907,7 @@ vb.onclick = () => { if (stopKind === 'stop') { stopSpeaking(); buzz(8); return;
 paintVoice();
 const APPV = N && N.version ? N.version() : 1;
 const isUz = t => /[ўқғҳ]/i.test(t) || /\b(va|uchun|bilan|qancha|narx\w*|yo'q|kerak|mijoz|qarz\w*|sizga|ham|emas|yoki|bo'l\w*|qil\w*|bor|yoq|dona|karobka|bugun|ertaga|kecha|siz|men|bu|uchun|qildim|bo'yicha)\b/i.test(t);
-const spoken = t => String(t || '').replace(/https?:\/\/\S+/g, '').replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{20E3}\u{2190}-\u{21FF}\u{25A0}-\u{25FF}]/gu, '').replace(/<\/?[bi]>/g, '').replace(/^↪.*$/gm, '').replace(/^[•\-]\s*/gm, '').replace(/[•→|*_#]/g, ' ').replace(/[ \t]+/g, ' ').trim();
+const spoken = t => String(t || '').replace(/https?:\/\/\S+/g, '').replace(/\p{Extended_Pictographic}|[\u{1F1E6}-\u{1F1FF}\u{2190}-\u{21FF}\u{25A0}-\u{25FF}]|\u{FE0F}|\u{200D}|\u{20E3}/gu, '').replace(/<\/?[bi]>/g, '').replace(/^↪.*$/gm, '').replace(/^[•\-]\s*/gm, '').replace(/[•→|*_#]/g, ' ').replace(/[ \t]+/g, ' ').trim();
 let speakSeq = 0, speakBtn = null;
 function endSpeakBtn() { if (speakBtn) { speakBtn.reset(); speakBtn = null; } }
 function stopSpeaking() {

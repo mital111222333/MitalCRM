@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -29,7 +29,7 @@
     <intent><action android:name="android.media.action.VIDEO_CAPTURE" /></intent>
   </queries>
   <application android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
-      android:theme="@style/Theme.Jumavoy" android:allowBackup="false" android:enableOnBackInvokedCallback="true" android:usesCleartextTraffic="false">
+      android:theme="@style/Theme.Jumavoy" android:allowBackup="false" android:dataExtractionRules="@xml/data_rules" android:enableOnBackInvokedCallback="true" tools:targetApi="33" android:usesCleartextTraffic="false">
     <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
         android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode"
         android:windowSoftInputMode="adjustResize">
@@ -67,7 +67,8 @@
       <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
       <meta-data android:name="android.service.quicksettings.ACTIVE_TILE" android:value="false" />
     </service>
-    <service android:name=".Recognizer" android:exported="true">
+    <!-- the system binds it as the assistant's recognizer: it must be open to the system (it only passes speech on) -->
+    <service android:name=".Recognizer" android:exported="true" tools:ignore="ExportedService">
       <intent-filter><action android:name="android.speech.RecognitionService" /></intent-filter>
     </service>
   </application>
