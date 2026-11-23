@@ -1976,3 +1976,18 @@ D.test('Telegram like the app: the JUMAVOY button (Mini App) signs in by initDat
     eq(M.stageText('🎤 «x»', 'Думаю'), '🎤 «x»\n\n💭 Думаю…', 'a stage under what was heard');
   } finally { TG_IDS = false; GEM = () => say('ok'); }
 });
+
+D.test('voice: only the answer is sent to the speech model (no instruction read aloud), and it ends softly with a pause', async () => {
+  const rate = 24000, pcm = new Uint8Array(rate * 2), dv0 = new DataView(pcm.buffer);
+  for (let i = 0; i < rate; i++) dv0.setInt16(2 * i, 9000, true); // a loud sound right up to the last sample
+  const out = M.smoothPcm(pcm, rate), dv = new DataView(out.buffer);
+  eq(out.length, pcm.length + Math.round(rate * 0.35) * 2, '350 ms of quiet at the end');
+  eq([dv.getInt16(0, true), dv.getInt16(2 * (rate - 1), true), dv.getInt16(out.length - 2, true)], [0, 0, 0], 'fades in and out, no click');
+  eq(dv.getInt16(2 * (rate / 2), true), 9000, 'the middle is untouched');
+  let ttsBody: any = null;
+  GEM = (b: any) => b.generationConfig?.responseModalities ? (ttsBody = b, { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: btoa(String.fromCharCode(...pcm.subarray(0, 4000))) } }] } }] }) : say('Fozilxonning qarzi 800 dollar.');
+  try {
+    await tgPost({ text: 'ответь голосом: долг Fozilxon' });
+    eq(ttsBody?.contents?.[0]?.parts?.[0]?.text, 'Fozilxonning qarzi 800 dollar.', 'only the answer text, nothing to read aloud before it');
+  } finally { GEM = () => say('ok'); }
+});

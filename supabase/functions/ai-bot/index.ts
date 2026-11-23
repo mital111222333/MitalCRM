@@ -4836,7 +4836,9 @@ async function tts1(text: string, model: string) {
   const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': headerSafe('GEMINI_KEY', CFG.gKey()) },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: `Прочитай спокойно, дружелюбно и чётко, как личный ассистент; язык текста не меняй:\n${text}` }] }],
+      // ONLY the text: an instruction in front of it («Прочитай спокойно, дружелюбно…») was sometimes read aloud
+      // before the answer — and before every part in the app, which voices a long answer in parts
+      contents: [{ parts: [{ text }] }],
       generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: env('GEMINI_TTS_VOICE', 'Charon') } } } },
     }),
   }, 60000);
@@ -4847,7 +4849,17 @@ async function tts1(text: string, model: string) {
   const part = d.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.data);
   if (!part) throw new Error('Gemini не вернул аудио');
   const rate = parseInt((String(part.inlineData.mimeType).match(/rate=(\d+)/) || [])[1] || '24000', 10);
-  return { pcm: unb64(part.inlineData.data), rate };
+  return { pcm: smoothPcm(unb64(part.inlineData.data), rate), rate };
+}
+// Gemini's speech stops on the last sound: the player cut it off with a click, «like a radio». A short fade in and out
+// and a quiet pause at the end (16-bit mono PCM) — the last word ends softly and is heard whole.
+export function smoothPcm(pcm: Uint8Array, rate: number, fadeInMs = 8, fadeOutMs = 40, tailMs = 350) {
+  const samples = Math.floor(pcm.length / 2), tail = Math.round(rate * tailMs / 1000) * 2;
+  const out = new Uint8Array(samples * 2 + tail); out.set(pcm.subarray(0, samples * 2));
+  const dv = new DataView(out.buffer), fi = Math.min(samples, Math.round(rate * fadeInMs / 1000)), fo = Math.min(samples, Math.round(rate * fadeOutMs / 1000));
+  for (let i = 0; i < fi; i++) dv.setInt16(2 * i, Math.round(dv.getInt16(2 * i, true) * i / fi), true);
+  for (let i = 0; i < fo; i++) { const k = samples - 1 - i; dv.setInt16(2 * k, Math.round(dv.getInt16(2 * k, true) * i / fo), true); }
+  return out;
 }
 async function sayVoice(chatId: number, text: string) {
   const s = spokenText(text); if (s.length < 2) return;
