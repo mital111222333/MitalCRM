@@ -418,7 +418,7 @@
 </div>
 
 <script>
-const WEB_VERSION = '2026.11.23-8';
+const WEB_VERSION = '2026.11.23-9';
 const API = 'https://oxchgcfyzszemqlvdjjr.supabase.co/functions/v1/ai-bot/app';
 const $ = id => document.getElementById(id);
 const store = {
@@ -947,6 +947,26 @@ async function toWav(blob) {
 }
 const b64of = blob => new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
 
+// Inside Telegram every opening of the microphone is a Telegram question «allow the microphone?» — so there it is opened
+// ONCE per launch and kept (muted between questions) until JUMAVOY is closed or hidden; elsewhere it is closed each time
+// (the browser and the Android app remember the permission themselves)
+let micKept = null;
+const MIC_OPT = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
+async function openMic() {
+  if (micKept && micKept.getAudioTracks().some(t => t.readyState === 'live')) { micKept.getAudioTracks().forEach(t => { t.enabled = true; }); return micKept; }
+  micKept = null;
+  const s = await navigator.mediaDevices.getUserMedia(MIC_OPT);
+  if (TG) micKept = s;
+  return s;
+}
+function closeMic(s, really = false) {
+  if (s && s === micKept && !really) { s.getAudioTracks().forEach(t => { t.enabled = false; }); return; }
+  if (s) s.getTracks().forEach(t => t.stop());
+  if (s === micKept) micKept = null;
+}
+addEventListener('visibilitychange', () => { if (document.hidden && micKept && !rec) closeMic(micKept, true); });
+addEventListener('pagehide', () => { if (micKept) closeMic(micKept, true); });
+
 async function listen(server = false) {
   if (busy) return;
   if (nativeOn) { N.stopListen(); return; }
@@ -960,7 +980,7 @@ async function listen(server = false) {
   if (micStarting) return; // a second tap while the microphone is still opening — it would start a second recording
   let stream;
   micStarting = true;
-  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+  try { stream = await openMic(); }
   catch (e) { note('Нет доступа к микрофону. Разрешите его в настройках браузера или приложения.', 'err'); return; }
   finally { micStarting = false; }
   const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
@@ -986,7 +1006,7 @@ async function listen(server = false) {
   const stop = () => { if (mr.state !== 'inactive') mr.stop(); };
   mr.ondataavailable = e => e.data.size && chunks.push(e.data);
   mr.onstop = async () => {
-    cancelAnimationFrame(raf); stream.getTracks().forEach(t => t.stop()); ctx.close().catch(() => {});
+    cancelAnimationFrame(raf); closeMic(stream); ctx.close().catch(() => {});
     rec = null; micIdle();
     if (cancelled || !chunks.length) { setState('готов'); return; }
     setState('распознаю');
