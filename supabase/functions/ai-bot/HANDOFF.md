@@ -237,3 +237,12 @@ Mital AI — уже не только рабочий бот: сферы work / p
 - `/app` в Telegram → личная ссылка `https://mital111222333.github.io/MitalCRM/jumavoy/#c=<chat>&k=<key>` (`APP_URL`, `APK_URL`).
 - PWA: `jumavoy/` (index.html, manifest, sw.js, иконки). Микрофон с автостопом по паузе (1,4 с), ответ голосом, `?assist=1` — слушать сразу, `window.jumavoyAssist()`.
 - Android: `android/` — WebView-обёртка без библиотек (Java, minSdk 26), intent-filter ASSIST / VOICE_COMMAND (назначается «Цифровым помощником»), SEND (поделиться ссылкой /app), разблокировка через requestDismissKeyguard. Сборка: `.github/workflows/android.yml` → релиз `jumavoy-app`, файл JUMAVOY.apk. Подпись: секреты `ANDROID_KEYSTORE_B64` + `ANDROID_KEYSTORE_PASS`, если есть; иначе разовый debug-ключ (новая версия ставится после удаления старой).
+
+## Обновление 23.11.2026: приложение JUMAVOY — Siri-дизайн, офлайн, скорость, память (Opus 5.5)
+- Дизайн в стиле Siri (сфера, свечение по краям экрана, стекло), edge-to-edge на Android 15 (клавиатура учитывается вручную: adjustResize там не работает), иконка-сфера.
+- Ассистент по умолчанию: `Assistant.java` (VoiceInteractionService + сессия) и `Recognizer.java` (обязательный для ассистента распознаватель, проксирует в Google). Плашка «По кнопке питания сейчас открывается Gemini» (RoleManager).
+- Офлайн: `WebFiles.java` отдаёт страницу из APK (assets/web, кладётся в CI из jumavoy/) или последней скачанной копии; новая копия качается в фоне и открывается при следующем запуске. Вопросы без интернета — очередь в localStorage (`jv_outbox`), уходят сами; в очередь попадают только запросы, не дошедшие до сервера. Будильник/таймер — сразу телефоном (`localAction`), офлайн ещё «открой …», «позвони …».
+- Скорость: `loadDB` stale-while-revalidate (до 15 мин), хедж-запрос к Gemini через 7 с (`GEMINI_HEDGE_MS`), потолок размышлений 2.5 Flash (`GEMINI_THINK_BUDGET`), `{warm:true}` при открытии/микрофоне, `{stream:true}` → NDJSON с этапами; в ответе `timing` (data / ai / transcribe).
+- Голос: распознаватели по очереди (Google → система → на телефоне; офлайн — сначала на телефоне), `onFail` с причиной; язык, который телефон не знает (узбекский, ошибка 12/13) → только для него запись WAV 16 кГц на сервер. Пауза 1,8 с. «Jumavoy, …» в начале вопроса отрезается (`stripWake`).
+- Экраны в меню: «Память» (`{op:'memory'}`, `{op:'forget', id}`) и «Проверка приложения» (версии, сервер, распознавание RU/UZ, голос, время последнего ответа, отчёт для разработчика).
+- Тесты 49/49, 29 сценариев страницы в headless Chrome; APK собирается в Actions (сборка 8).
