@@ -84,7 +84,8 @@ public class Device {
         case "volume": return volume(x.optString("level"));
         case "settings": {
           String pn = x.optString("panel");
-          String act29 = pn.equals("wifi") ? android.provider.Settings.Panel.ACTION_WIFI : pn.equals("internet") ? android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY
+          String act29 = android.os.Build.VERSION.SDK_INT < 29 ? null
+            : pn.equals("wifi") ? android.provider.Settings.Panel.ACTION_WIFI : pn.equals("internet") ? android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY
             : pn.equals("volume") ? android.provider.Settings.Panel.ACTION_VOLUME : pn.equals("nfc") ? android.provider.Settings.Panel.ACTION_NFC : null;
           String old = pn.equals("wifi") ? android.provider.Settings.ACTION_WIFI_SETTINGS : pn.equals("internet") ? android.provider.Settings.ACTION_WIRELESS_SETTINGS
             : pn.equals("bluetooth") ? android.provider.Settings.ACTION_BLUETOOTH_SETTINGS : pn.equals("nfc") ? android.provider.Settings.ACTION_NFC_SETTINGS
