@@ -3,6 +3,7 @@
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+  <uses-permission android:name="android.permission.VIBRATE" />
   <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
   <!-- Android 11+: to find the phone's speech recognizer and text-to-speech engine -->
   <queries>

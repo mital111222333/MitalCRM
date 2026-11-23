@@ -1,0 +1,13 @@
+<resources>
+  <!-- Android 12+: the launch screen is black with the orb icon, then the app -->
+  <style name="Theme.Jumavoy" parent="@android:style/Theme.Material.NoActionBar">
+    <item name="android:windowBackground">@android:color/black</item>
+    <item name="android:colorBackground">@android:color/black</item>
+    <item name="android:statusBarColor">@android:color/transparent</item>
+    <item name="android:navigationBarColor">@android:color/transparent</item>
+    <item name="android:windowLightStatusBar">false</item>
+    <item name="android:colorAccent">#0A84FF</item>
+    <item name="android:windowSplashScreenBackground">@android:color/black</item>
+    <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+  </style>
+</resources>

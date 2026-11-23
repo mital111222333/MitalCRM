@@ -35,7 +35,7 @@ public class Voice {
   String pendingLang;
   int engine; // 0 the phone's default recognizer, 1 Google's service by name, 2 the on-device one (Android 12+)
 
-  @JavascriptInterface public int version() { return 2; }
+  @JavascriptInterface public int version() { return 3; }
 
   Voice(Activity act, WebView web) {
     this.act = act;

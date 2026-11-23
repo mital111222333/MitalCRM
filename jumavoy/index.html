@@ -3,104 +3,231 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-<meta name="theme-color" content="#0a0e1c">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
 <title>JUMAVOY</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
+  /* JUMAVOY — the look of Apple's Siri: black, glass, the coloured orb and the glow along the screen edges.
+     Apple's dark-mode system colours (label / secondaryLabel / fills / separator / systemBlue / systemRed). */
+  @property --a { syntax: '<angle>'; inherits: true; initial-value: 0deg; }
   :root {
-    --bg: #0a0e1c; --panel: #121830; --panel2: #18203d; --line: #253058; --text: #e8ecf8; --mute: #8b94b8;
-    --accent: #38bdf8; --accent2: #0ea5e9; --me: #1d4ed8; --warn: #f59e0b; --bad: #f87171;
+    --text: #f5f5f7; --text2: rgba(235,235,245,.62); --text3: rgba(235,235,245,.34);
+    --fill: rgba(118,118,128,.24); --fill2: rgba(118,118,128,.16); --glass: rgba(28,28,30,.62);
+    --sep: rgba(84,84,88,.55); --blue: #0a84ff; --red: #ff453a;
+    --c1: #ff6a3d; --c2: #ff2d92; --c3: #a44dff; --c4: #2e8bff; --c5: #3de0ff;
+    --siri: conic-gradient(from 0deg, var(--c1), var(--c2), var(--c3), var(--c4), var(--c5), var(--c1));
+    --sat: 0px; --sab: 0px; --lvl: 0;   /* --sat/--sab: status / navigation bar heights from the Android app */
+    --top: max(env(safe-area-inset-top), var(--sat)); --bot: max(env(safe-area-inset-bottom), var(--sab));
+    --screen-r: 34px;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  body { display: flex; flex-direction: column; height: 100dvh; }
-  header { display: flex; align-items: center; gap: 10px; padding: calc(10px + env(safe-area-inset-top)) 14px 10px; border-bottom: 1px solid var(--line); background: var(--bg); }
-  header img { width: 32px; height: 32px; border-radius: 50%; }
-  header .name { font-weight: 700; letter-spacing: .06em; }
-  header .state { font-size: 12px; color: var(--mute); }
-  header .sp { flex: 1; }
-  .iconbtn { background: none; border: 1px solid var(--line); color: var(--text); border-radius: 10px; height: 36px; min-width: 36px; padding: 0 9px; font-size: 16px; }
-  .iconbtn.on { border-color: var(--accent); color: var(--accent); }
-  main { flex: 1; overflow-y: auto; padding: 14px 12px 8px; display: flex; flex-direction: column; gap: 10px; }
-  .msg { max-width: 88%; padding: 10px 12px; border-radius: 16px; white-space: pre-wrap; word-wrap: break-word; }
-  .me { align-self: flex-end; background: var(--me); border-bottom-right-radius: 4px; }
-  .bot { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
-  .bot .tools { display: flex; gap: 8px; margin-top: 6px; }
-  .bot .tools button { background: var(--panel2); border: 1px solid var(--line); color: var(--mute); border-radius: 8px; font-size: 13px; padding: 3px 9px; }
-  .err { align-self: center; color: var(--bad); font-size: 14px; text-align: center; }
-  .note { align-self: center; color: var(--mute); font-size: 13px; text-align: center; max-width: 90%; }
-  .thinking { align-self: flex-start; color: var(--mute); font-size: 14px; }
-  .thinking::after { content: '…'; animation: dots 1.2s infinite steps(4); display: inline-block; width: 1.2em; overflow: hidden; vertical-align: bottom; }
-  @keyframes dots { from { width: 0 } to { width: 1.2em } }
-  .chips { display: flex; gap: 8px; overflow-x: auto; padding: 6px 12px; scrollbar-width: none; }
-  .chips button { flex: none; background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 7px 12px; font-size: 14px; }
-  footer { padding: 8px 12px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--bg); }
-  .row { display: flex; gap: 8px; align-items: flex-end; }
-  textarea { flex: 1; resize: none; max-height: 120px; min-height: 44px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 11px 12px; font: inherit; outline: none; }
-  textarea:focus { border-color: var(--accent); }
-  .send { height: 44px; width: 44px; border-radius: 50%; border: none; background: var(--accent2); color: #fff; font-size: 18px; }
-  .micwrap { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 10px; }
-  .mic { width: 76px; height: 76px; border-radius: 50%; border: 2px solid var(--accent); background: radial-gradient(circle, #0ea5e9 0 55%, #0b3b5c 100%); color: #fff; font-size: 30px; box-shadow: 0 0 24px rgba(56,189,248,.35); transition: transform .15s; }
-  .mic.rec { background: radial-gradient(circle, #ef4444 0 55%, #5b1111 100%); border-color: #fca5a5; box-shadow: 0 0 calc(18px + var(--lvl, 0) * 40px) rgba(248,113,113,.6); transform: scale(calc(1 + var(--lvl, 0) * .12)); }
-  .mic.busy { opacity: .5; }
-  .microw { display: flex; align-items: center; gap: 18px; }
-  .lang { width: 52px; height: 36px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-weight: 600; font-size: 14px; }
-  .ms { font-size: 11px; color: var(--mute); align-self: center; }
-  .hint { font-size: 13px; color: var(--mute); min-height: 18px; text-align: center; }
-  .setup { margin: auto; max-width: 420px; padding: 24px; text-align: center; }
-  .setup img { width: 96px; height: 96px; border-radius: 50%; }
-  .setup h1 { font-size: 22px; letter-spacing: .08em; margin: 14px 0 6px; }
-  .setup p { color: var(--mute); }
-  .setup input { width: 100%; margin: 12px 0; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; }
-  .setup button { width: 100%; padding: 12px; border-radius: 12px; border: none; background: var(--accent2); color: #fff; font: inherit; font-weight: 600; }
-  .menu { position: fixed; right: 12px; top: calc(56px + env(safe-area-inset-top)); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px; z-index: 5; min-width: 250px; }
-  .menu label, .menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; background: none; border: none; color: var(--text); font: inherit; text-align: left; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--text); }
+  body {
+    display: flex; flex-direction: column; height: 100dvh; overflow: hidden;
+    font: 17px/1.42 "SF Pro Text", -apple-system, "Google Sans Text", "Google Sans", Roboto, system-ui, sans-serif;
+    letter-spacing: -.01em; -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  svg { width: 1em; height: 1em; display: block; }
   .hidden { display: none !important; }
+
+  /* the faint colour that sits low behind everything and wakes up when JUMAVOY listens or answers */
+  .aura { position: fixed; inset: auto -30% -40% -30%; height: 70%; pointer-events: none; z-index: 0;
+    background: radial-gradient(closest-side at 30% 60%, rgba(164,77,255,.22), transparent),
+                radial-gradient(closest-side at 70% 70%, rgba(46,139,255,.18), transparent),
+                radial-gradient(closest-side at 50% 90%, rgba(255,45,146,.14), transparent);
+    opacity: .35; transition: opacity .8s ease; filter: blur(10px); }
+  body[data-mode="listen"] .aura, body[data-mode="think"] .aura { opacity: 1; }
+  body[data-mode="speak"] .aura { opacity: .7; }
+
+  /* ── the Siri glow along the screen edges ── */
+  .edge { position: fixed; inset: 0; pointer-events: none; z-index: 60; opacity: 0; transition: opacity .5s ease; }
+  .edge .ring { position: absolute; inset: 0; border-radius: var(--screen-r); overflow: hidden;
+    padding: calc(var(--w) + var(--lvl) * var(--wl));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); transition: padding .12s linear; }
+  .edge .spin { position: absolute; left: 50%; top: 50%; width: 220vmax; height: 220vmax; margin: -110vmax 0 0 -110vmax;
+    background: var(--siri); animation: rot 5s linear infinite; }
+  .edge.sharp { --w: 3px; --wl: 7px; filter: blur(1.5px); }
+  .edge.soft { --w: 10px; --wl: 18px; filter: blur(16px); }
+  body[data-mode="listen"] .edge { opacity: 1; }
+  body[data-mode="think"] .edge { opacity: .85; }
+  body[data-mode="think"] .edge .spin { animation-duration: 1.6s; }
+  body[data-mode="speak"] .edge { opacity: .55; }
+  /* while you speak, your words are what matters: the conversation steps back */
+  main, .chips { transition: opacity .35s ease; }
+  body[data-mode="listen"] main { opacity: .28; }
+  @keyframes rot { to { transform: rotate(1turn); } }
+
+  /* ── the orb ── */
+  .orb { --s: 78px; position: relative; flex: none; width: var(--s); height: var(--s); padding: 0; border: 0; border-radius: 50%;
+    background: radial-gradient(circle at 50% 55%, #160c2a 0%, #050508 72%); isolation: isolate; overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.09), inset 0 -8px 18px rgba(255,255,255,.05), 0 14px 44px -10px rgba(164,77,255,.65), 0 0 32px -6px rgba(46,139,255,.45);
+    transform: scale(calc(1 + var(--lvl) * .16)); transition: transform .12s linear, box-shadow .4s; }
+  .orb i { position: absolute; width: 64%; height: 64%; left: 18%; top: 18%; border-radius: 50%; mix-blend-mode: screen; filter: blur(7px);
+    animation: orbit 9s linear infinite; }
+  .orb i:nth-child(1) { background: radial-gradient(circle, var(--c2) 0, transparent 68%); }
+  .orb i:nth-child(2) { background: radial-gradient(circle, var(--c4) 0, transparent 68%); animation-duration: 7s; animation-direction: reverse; }
+  .orb i:nth-child(3) { background: radial-gradient(circle, var(--c5) 0, transparent 66%); animation-duration: 11s; animation-delay: -4s; }
+  .orb i:nth-child(4) { background: radial-gradient(circle, var(--c1) 0, transparent 64%); animation-duration: 8s; animation-delay: -2s; animation-direction: reverse; }
+  .orb::after { content: ''; position: absolute; inset: 0; border-radius: 50%; z-index: 2;
+    background: radial-gradient(circle at 34% 26%, rgba(255,255,255,.38), transparent 30%), radial-gradient(circle at 50% 50%, transparent 58%, rgba(0,0,0,.45) 100%); }
+  @keyframes orbit { from { transform: rotate(0) translateX(17%) scale(1); } 50% { transform: rotate(180deg) translateX(21%) scale(1.12); } to { transform: rotate(360deg) translateX(17%) scale(1); } }
+  body[data-mode="listen"] .orb i { animation-duration: 2.6s; }
+  body[data-mode="think"] .orb i { animation-duration: 1.1s; }
+  body[data-mode="speak"] .orb { animation: breathe 1.3s ease-in-out infinite; }
+  body[data-mode="listen"] .orb { box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), 0 0 calc(30px + var(--lvl) * 50px) rgba(255,45,146,.55), 0 0 60px -10px rgba(61,224,255,.6); }
+  @keyframes breathe { 50% { transform: scale(1.07); } }
+  .orb.big { --s: 128px; pointer-events: none; }
+
+  /* ── header ── */
+  header { position: relative; z-index: 5; display: flex; align-items: center; gap: 10px; padding: calc(var(--top) + 10px) 16px 6px; }
+  header .title { flex: 1; min-width: 0; }
+  header .name { display: block; font: 600 17px/1.2 "SF Pro Display", -apple-system, "Google Sans", Roboto, system-ui, sans-serif; letter-spacing: .02em; }
+  header .state { display: block; font-size: 13px; color: var(--text2); transition: color .3s; }
+  body[data-mode="listen"] header .state, body[data-mode="think"] header .state { color: transparent; background: linear-gradient(90deg, var(--c2), var(--c3), var(--c4), var(--c5)); -webkit-background-clip: text; background-clip: text; }
+  .round { width: 38px; height: 38px; border-radius: 50%; border: 0; background: var(--fill); display: grid; place-items: center; font-size: 19px; color: var(--text); flex: none; }
+  .round:active { background: rgba(118,118,128,.4); }
+  .round.off { color: var(--text3); }
+
+  /* ── the menu (iOS context-menu look) ── */
+  .menu { position: fixed; z-index: 30; right: 14px; top: calc(var(--top) + 58px); width: min(300px, calc(100vw - 28px));
+    background: rgba(40,40,44,.78); -webkit-backdrop-filter: blur(30px) saturate(170%); backdrop-filter: blur(30px) saturate(170%);
+    border-radius: 14px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6); transform-origin: top right; animation: pop .22s cubic-bezier(.2,.9,.3,1.2); }
+  @keyframes pop { from { opacity: 0; transform: scale(.85); } }
+  .menu .item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 11px 16px; background: none; border: 0; border-top: .5px solid var(--sep); text-align: left; font-size: 16px; }
+  .menu .item:first-child { border-top: 0; }
+  .menu .item span { flex: 1; }
+  .menu .item svg { font-size: 19px; color: var(--text2); }
+  .menu .item:active { background: rgba(255,255,255,.08); }
+  .menu .danger, .menu .danger svg { color: var(--red); }
+  .switch { position: relative; width: 51px; height: 31px; border-radius: 16px; background: rgba(120,120,128,.32); transition: background .2s; flex: none; }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 3px 8px rgba(0,0,0,.25); transition: transform .22s cubic-bezier(.3,.9,.4,1.1); }
+  .switch.on { background: #30d158; }
+  .switch.on::after { transform: translateX(20px); }
+
+  /* ── conversation ── */
+  main { position: relative; z-index: 2; flex: 1; overflow-y: auto; padding: 18px 16px 12px; display: flex; flex-direction: column; gap: 14px;
+    -webkit-mask: linear-gradient(transparent, #000 22px, #000 calc(100% - 16px), transparent); mask: linear-gradient(transparent, #000 22px, #000 calc(100% - 16px), transparent);
+    overscroll-behavior: contain; -webkit-user-select: text; user-select: text; }
+  .hello { margin: auto 0 8px; padding: 0 2px; }
+  .hello h1 { margin: 0 0 8px; font: 700 34px/1.08 "SF Pro Display", -apple-system, "Google Sans", Roboto, system-ui, sans-serif; letter-spacing: -.025em; }
+  .hello p { margin: 0; max-width: 32ch; color: var(--text2); font-size: 17px; }
+  .me { align-self: flex-end; max-width: 86%; text-align: right; font: 600 19px/1.3 "SF Pro Display", -apple-system, "Google Sans", Roboto, system-ui, sans-serif; letter-spacing: -.015em; white-space: pre-wrap; word-wrap: break-word; }
+  .me .via { display: inline-block; width: .8em; height: .8em; margin-right: 6px; vertical-align: -.05em; border-radius: 50%; background: var(--siri); }
+  .bot { align-self: stretch; padding: 14px 16px 12px; border-radius: 22px; background: var(--glass);
+    -webkit-backdrop-filter: blur(24px) saturate(160%); backdrop-filter: blur(24px) saturate(160%);
+    box-shadow: inset 0 0 0 .5px rgba(255,255,255,.12); white-space: pre-wrap; word-wrap: break-word; }
+  .bot b { font-weight: 650; }
+  .bot a { color: #64d2ff; text-decoration: none; word-break: break-all; }
+  .bot .tools { display: flex; align-items: center; gap: 10px; margin-top: 10px; white-space: normal; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 15px; border: 0; background: var(--fill); font-size: 14px; color: var(--text); }
+  .pill svg { font-size: 14px; }
+  .pill:active { background: rgba(118,118,128,.4); }
+  .ms { font-size: 12px; color: var(--text3); font-variant-numeric: tabular-nums; }
+  .new { animation: rise .42s cubic-bezier(.2,.8,.2,1); }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(.98); } }
+  .note { align-self: center; max-width: 92%; text-align: center; font-size: 14px; color: var(--text2); }
+  .err { align-self: stretch; padding: 12px 14px; border-radius: 16px; background: rgba(255,69,58,.14); color: #ff8a80; font-size: 15px; }
+  .thinking { align-self: flex-start; padding: 12px 16px; border-radius: 22px; background: var(--glass); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.12);
+    font-weight: 600; color: transparent; background-image: linear-gradient(100deg, var(--text3) 20%, #fff 40%, var(--c5) 50%, var(--c2) 60%, var(--text3) 80%);
+    background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; animation: shine 1.6s linear infinite; }
+  @keyframes shine { from { background-position: 130% 0; } to { background-position: -30% 0; } }
+
+  /* ── bottom: what you are saying, quick questions, the text field, the orb ── */
+  footer { position: relative; z-index: 3; padding: 4px 0 calc(var(--bot) + 10px); }
+  .live { min-height: 0; max-height: 30vh; overflow: hidden; padding: 0 20px; font: 600 24px/1.25 "SF Pro Display", -apple-system, "Google Sans", Roboto, system-ui, sans-serif; letter-spacing: -.02em; display: flex; flex-direction: column; justify-content: flex-end; }
+  .live:empty { display: none; }
+  .live { color: transparent; background: linear-gradient(90deg, #fff 0%, #fff 55%, rgba(255,255,255,.5) 100%); -webkit-background-clip: text; background-clip: text; margin-bottom: 10px; }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding: 4px 16px 10px; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chips button { flex: none; height: 34px; padding: 0 14px; border-radius: 17px; border: 0; background: var(--fill2); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.1); font-size: 15px; color: var(--text); }
+  .chips button:active { background: var(--fill); }
+  body[data-mode="listen"] .chips { visibility: hidden; }
+  .field { display: flex; align-items: flex-end; gap: 6px; margin: 0 16px; padding: 4px 4px 4px 16px; min-height: 46px; border-radius: 23px;
+    background: var(--fill2); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.12); transition: box-shadow .2s; }
+  .field:focus-within { box-shadow: inset 0 0 0 1px rgba(255,255,255,.26); }
+  textarea { flex: 1; resize: none; max-height: 132px; min-height: 38px; padding: 8px 0; border: 0; outline: none; background: none; color: var(--text); font: inherit; line-height: 1.3; -webkit-user-select: text; user-select: text; }
+  textarea::placeholder { color: var(--text3); }
+  .send { width: 38px; height: 38px; flex: none; border-radius: 50%; border: 0; display: grid; place-items: center; font-size: 20px; background: var(--blue); color: #fff; transition: transform .18s, opacity .18s; }
+  .send.idle { background: none; color: var(--text2); }
+  .dock { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 16px 24px 4px; }
+  .lang { justify-self: start; height: 34px; min-width: 50px; padding: 0 12px; border-radius: 17px; border: 0; background: var(--fill2); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.1); font-size: 14px; font-weight: 600; letter-spacing: .04em; color: var(--text2); }
+  .hint { min-height: 20px; margin-top: 8px; padding: 0 24px; text-align: center; font-size: 13px; color: var(--text3); }
+  body.typing .dock, body.typing .hint { display: none; }
+
+  /* ── first screen: connecting the app ── */
+  .setup { position: relative; z-index: 2; flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: calc(var(--top) + 24px) 28px calc(var(--bot) + 24px); text-align: center; }
+  .setup .orb { margin-bottom: 28px; }
+  .setup h1 { margin: 0 0 10px; font: 700 34px/1.1 "SF Pro Display", -apple-system, "Google Sans", Roboto, system-ui, sans-serif; letter-spacing: -.01em; }
+  .setup p { margin: 0 0 22px; max-width: 34ch; color: var(--text2); }
+  .setup input { width: 100%; max-width: 400px; height: 50px; padding: 0 16px; border-radius: 14px; border: 0; background: var(--fill2); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.12); color: var(--text); font: inherit; font-size: 16px; -webkit-user-select: text; user-select: text; }
+  .setup .primary { width: 100%; max-width: 400px; height: 50px; margin-top: 12px; border-radius: 14px; border: 0; background: var(--blue); color: #fff; font-weight: 600; }
+  .setup .primary:active { opacity: .8; }
+  .setup .small { margin: 18px 0 0; font-size: 14px; color: var(--text3); }
+  .setup .err { max-width: 400px; margin-top: 14px; }
+  .setup .err:empty { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .edge .spin, .orb i, .thinking, body[data-mode="speak"] .orb { animation: none !important; }
+    .new, .menu { animation: none; }
+  }
 </style>
 </head>
-<body>
-<div id="setup" class="setup hidden">
-  <img src="icon-192.png" alt="">
+<body data-mode="idle">
+<div class="aura" aria-hidden="true"></div>
+<div class="edge soft" aria-hidden="true"><div class="ring"><div class="spin"></div></div></div>
+<div class="edge sharp" aria-hidden="true"><div class="ring"><div class="spin"></div></div></div>
+
+<section id="setup" class="setup hidden">
+  <div class="orb big" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
   <h1>JUMAVOY</h1>
-  <p>Ваш личный помощник. Чтобы подключить приложение, напишите боту в Telegram команду <b>/app</b> и вставьте сюда ссылку, которую он пришлёт.</p>
-  <input id="link" placeholder="https://…#c=…&k=…" autocomplete="off">
-  <button id="linkBtn">Подключить</button>
-  <p id="setupErr" class="err"></p>
-</div>
+  <p>Ваш помощник по MITAL CRM. Чтобы подключить его, отправьте боту в Telegram команду /app и вставьте ссылку из ответа.</p>
+  <input id="link" placeholder="Ссылка из /app" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url">
+  <button class="primary" id="linkBtn">Подключить</button>
+  <p class="small">Можно и так: в Telegram зажмите сообщение со ссылкой → «Поделиться» → JUMAVOY.</p>
+  <p id="setupErr" class="err" role="alert"></p>
+</section>
 
 <header id="head" class="hidden">
-  <img src="icon-192.png" alt="">
-  <div><div class="name">JUMAVOY</div><div class="state" id="state">готов</div></div>
-  <div class="sp"></div>
-  <button class="iconbtn on" id="voiceBtn" title="Ответ голосом">🔊</button>
-  <button class="iconbtn" id="menuBtn" title="Настройки">⋮</button>
+  <div class="title"><span class="name">JUMAVOY</span><span class="state" id="state" aria-live="polite">Готов</span></div>
+  <button class="round" id="voiceBtn" aria-label="Отвечать голосом"></button>
+  <button class="round" id="menuBtn" aria-label="Меню" aria-haspopup="menu"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5.5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="18.5" cy="12" r="2"/></svg></button>
 </header>
-<div class="menu hidden" id="menu">
-  <label><input type="checkbox" id="autoListen"> Слушать сразу при открытии</label>
-  <button id="newChat">🧹 Начать разговор заново</button>
-  <button id="clearLocal">🗑 Очистить экран</button>
-  <button id="logout">🔑 Отключить приложение</button>
+<div class="menu hidden" id="menu" role="menu">
+  <button class="item" id="autoListen" role="menuitemcheckbox"><span>Слушать сразу при открытии</span><i class="switch" id="autoSw"></i></button>
+  <button class="item" id="newChat" role="menuitem"><span>Новый разговор</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+  <button class="item" id="clearLocal" role="menuitem"><span>Очистить экран</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/></svg></button>
+  <button class="item danger" id="logout" role="menuitem"><span>Отключить приложение</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg></button>
 </div>
-<main id="log" class="hidden"></main>
-<div class="chips hidden" id="chips">
-  <button data-q="Кого сегодня дожимать?">Кого дожимать</button>
-  <button data-q="/dolg">Должники</button>
-  <button data-q="/plan">План</button>
-  <button data-q="Что мне сегодня сделать в первую очередь, чтобы продать больше?">Идея на сегодня</button>
-  <button data-q="/tasks">Задачи</button>
-  <button data-q="/reminders">Напоминания</button>
-</div>
+
+<main id="log" class="hidden" aria-live="polite"></main>
+
 <footer id="foot" class="hidden">
-  <div class="row">
-    <textarea id="input" rows="1" placeholder="Спросите текстом…" enterkeyhint="send"></textarea>
-    <button class="send" id="sendBtn" aria-label="Отправить">➤</button>
+  <div class="live" id="live"></div>
+  <div class="chips" id="chips">
+    <button data-q="Кого сегодня дожимать?">Кого дожимать</button>
+    <button data-q="/dolg">Должники</button>
+    <button data-q="/plan">План</button>
+    <button data-q="Что мне сегодня сделать в первую очередь, чтобы продать больше?">Идея на сегодня</button>
+    <button data-q="/tasks">Задачи</button>
+    <button data-q="/reminders">Напоминания</button>
   </div>
-  <div class="micwrap">
-    <div class="microw"><button class="lang" id="langBtn" title="Язык, на котором вы говорите">RU</button><button class="mic" id="mic" aria-label="Говорить">🎤</button><span style="width:52px"></span></div>
-    <div class="hint" id="hint">Нажмите и говорите — я сам пойму, когда вы закончили</div>
+  <div class="field">
+    <textarea id="input" rows="1" placeholder="Спросите JUMAVOY" enterkeyhint="send" aria-label="Вопрос текстом"></textarea>
+    <button class="send idle" id="sendBtn" aria-label="Говорить"></button>
   </div>
+  <div class="dock">
+    <button class="lang" id="langBtn" aria-label="Язык, на котором вы говорите">RU</button>
+    <button class="orb" id="mic" aria-label="Говорить"><i></i><i></i><i></i><i></i></button>
+    <span></span>
+  </div>
+  <div class="hint" id="hint"></div>
 </footer>
 
 <script>
@@ -113,6 +240,15 @@ const store = {
 };
 const params = new URLSearchParams(location.search);
 const ASSIST = params.has('assist');            // opened by the Android assistant gesture / app → listen at once
+const ICON = {
+  speaker: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
+  muted: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>',
+  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg>',
+  mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21"/></svg>',
+};
+const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch {} };
 
 // ── the personal link: #c=<chat>&k=<key> (from /app in Telegram) ──
 function takeLink(s) {
@@ -125,32 +261,75 @@ const creds = () => ({ chat: store.get('chat', ''), key: store.get('key', '') })
 
 function showApp(on) {
   $('setup').classList.toggle('hidden', on);
-  for (const id of ['head', 'log', 'chips', 'foot']) $(id).classList.toggle('hidden', !on);
+  for (const id of ['head', 'log', 'foot']) $(id).classList.toggle('hidden', !on);
 }
 $('linkBtn').onclick = () => {
-  if (takeLink($('link').value)) { showApp(true); start(); }
+  if (takeLink($('link').value)) { $('setupErr').textContent = ''; showApp(true); start(); }
   else $('setupErr').textContent = 'Это не та ссылка. Скопируйте всю ссылку из ответа бота на /app.';
 };
+$('link').addEventListener('keydown', e => { if (e.key === 'Enter') $('linkBtn').click(); });
+// a link shared to the app while it is already open changes only the #hash — the page is not reloaded
+addEventListener('hashchange', () => {
+  if (!takeLink(location.hash)) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  showApp(true); start();
+});
 
 // ── chat log (kept on the phone) ──
 let history_ = store.get('log', []);
 const log = $('log');
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// the answer as the bot writes it: **bold**, <b>…</b>, links — everything else stays plain text
+const rich = t => esc(t)
+  .replace(/&lt;(\/?)(b|i)&gt;/g, '<$1$2>')
+  .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+  .replace(/https?:\/\/[^\s<]+[^\s<.,!?)»]/g, u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+function greet() {
+  const h = new Date().getHours();
+  const hi = h >= 5 && h < 12 ? 'Доброе утро' : h >= 12 && h < 17 ? 'Добрый день' : h >= 17 && h < 23 ? 'Добрый вечер' : 'Доброй ночи';
+  const d = document.createElement('div'); d.className = 'hello';
+  d.innerHTML = `<h1>${hi}.<br>Чем помочь?</h1><p>Спросите о клиентах, долгах, агентах, ценах или задачах — голосом или текстом.</p>`;
+  log.append(d);
+}
+function scrollDown() { log.scrollTop = log.scrollHeight; }
 function bubble(m, save = true) {
+  log.querySelector('.hello')?.remove();
   const d = document.createElement('div');
-  d.className = 'msg ' + (m.who === 'me' ? 'me' : 'bot');
-  d.textContent = m.text;
-  if (m.who === 'bot') {
+  let text = String(m.text || ''), voiced = !!m.voice;
+  if (text.startsWith('🎤 ')) { text = text.slice(3); voiced = true; } // older saved messages
+  if (m.who === 'me') {
+    d.className = 'me';
+    if (voiced) { const v = document.createElement('span'); v.className = 'via'; v.title = 'Сказано голосом'; d.append(v); }
+    d.append(text || '…');
+  } else {
+    d.className = 'bot';
+    d.innerHTML = rich(text);
     const t = document.createElement('div'); t.className = 'tools';
-    const b = document.createElement('button'); b.textContent = '🔊 Прослушать'; b.onclick = () => speak(m.text, b);
+    const b = document.createElement('button'); b.className = 'pill';
+    const idle = () => { b.innerHTML = ICON.play + '<span>Прослушать</span>'; };
+    idle(); b.onclick = () => speak(m.text, b, idle);
     t.append(b);
-    if (m.ms) { const x = document.createElement('span'); x.className = 'ms'; x.textContent = '⏱ ' + (m.ms / 1000).toFixed(1).replace('.', ',') + ' с'; t.append(x); }
+    if (m.ms) { const x = document.createElement('span'); x.className = 'ms'; x.textContent = (m.ms / 1000).toFixed(1).replace('.', ',') + ' с'; t.append(x); }
     d.append(t);
   }
-  log.append(d); log.scrollTop = log.scrollHeight;
-  if (save) { history_.push(m); history_ = history_.slice(-60); store.set('log', history_); }
+  if (save) d.classList.add('new');
+  log.append(d); scrollDown();
+  if (save) { history_.push({ who: m.who, text, voice: voiced || undefined, ms: m.ms }); history_ = history_.slice(-60); store.set('log', history_); }
   return d;
 }
-function note(text, cls = 'note') { const d = document.createElement('div'); d.className = cls; d.textContent = text; log.append(d); log.scrollTop = log.scrollHeight; return d; }
+function note(text, cls = 'note') {
+  log.querySelector('.hello')?.remove();
+  const d = document.createElement('div'); d.className = cls + ' new'; d.textContent = text; log.append(d); scrollDown(); return d;
+}
+
+// ── state: the words under the name, and the mode the orb and the screen glow follow ──
+const MODE = { 'готов': 'idle', 'слушаю': 'listen', 'распознаю': 'think', 'думаю': 'think', 'озвучиваю': 'think', 'говорю': 'speak' };
+const setLvl = v => document.documentElement.style.setProperty('--lvl', Math.max(0, Math.min(1, +v || 0)).toFixed(2));
+function setState(s) {
+  $('state').textContent = s[0].toUpperCase() + s.slice(1);
+  document.body.dataset.mode = MODE[s] || 'idle';
+  if (MODE[s] !== 'listen') setLvl(0);
+}
 
 // ── talking to JUMAVOY ──
 let busy = false;
@@ -160,63 +339,88 @@ async function api(body) {
   if (r.status === 401) { const j = await r.json().catch(() => ({})); throw Object.assign(new Error(j.error || 'Нет доступа'), { auth: true }); }
   return r;
 }
-async function ask(body, shown) {
+async function ask(body, shown, voiced) {
   if (busy) return; busy = true; setState('думаю');
-  if (shown) bubble({ who: 'me', text: shown });
-  const th = note('JUMAVOY думает', 'thinking'), t0 = performance.now();
+  if (shown) bubble({ who: 'me', text: shown, voice: voiced });
+  const th = note('Думаю…', 'thinking'), t0 = performance.now();
   try {
-    const r = await api(body), j = await r.json().catch(() => ({}));
+    let r, j;
+    try { r = await api(body); j = await r.json().catch(() => ({})); }
+    catch (e) { if (e.auth) throw e; throw new Error('Нет связи с JUMAVOY. Проверьте интернет и спросите ещё раз.'); }
     th.remove();
     if (!r.ok) throw new Error(j.error || ('Ошибка ' + r.status));
-    if (j.heard !== undefined && body.audio) bubble({ who: 'me', text: j.heard ? '🎤 ' + j.heard : '🎤 …' });
+    if (j.heard !== undefined && body.audio) bubble({ who: 'me', text: j.heard || '…', voice: true });
     bubble({ who: 'bot', text: j.text || '…', ms: Math.round(performance.now() - t0) });
-    if (j.telegram) note('✉️ Черновик пришёл в Telegram — отправьте его там кнопкой «✅ Отправить».');
+    buzz(8);
+    if (j.telegram) note('Черновик пришёл в Telegram — отправьте его там кнопкой «✅ Отправить».');
     for (const x of j.actions || []) { // alarm, timer, calendar, call, SMS, route, app — done by the Android app
-      if (!window.JumavoyDevice) { note('📱 Это умеет только Android-приложение JUMAVOY.'); break; }
-      const r = window.JumavoyDevice.run(JSON.stringify(x));
-      if (r !== 'ok') note('⚠️ ' + r, 'err');
+      if (!window.JumavoyDevice) { note('Это умеет только Android-приложение JUMAVOY.'); break; }
+      const res = window.JumavoyDevice.run(JSON.stringify(x));
+      if (res !== 'ok') note(res, 'err');
     }
+    busy = false; setState('готов');
     if (voiceOn && (body.audio || body.voice || ASSIST) && j.text) speak(j.text);
   } catch (e) {
-    th.remove(); note('⚠️ ' + e.message, 'err');
+    th.remove(); note(e.message, 'err');
     if (e.auth) { store.del('key'); setTimeout(() => showApp(false), 1500); }
-  } finally { busy = false; setState('готов'); }
+  } finally { if (busy) { busy = false; setState('готов'); } }
 }
 function sendText() {
   const t = $('input').value.trim(); if (!t) return;
   $('input').value = ''; autosize(); ask({ text: t }, t);
 }
-$('sendBtn').onclick = sendText;
-$('input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); } });
-const autosize = () => { const i = $('input'); i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, 120) + 'px'; };
-$('input').addEventListener('input', autosize);
-for (const b of $('chips').querySelectorAll('button')) b.onclick = () => ask({ text: b.dataset.q }, b.dataset.q);
-function setState(s) { $('state').textContent = s; }
+const input = $('input'), sendBtn = $('sendBtn');
+const autosize = () => {
+  input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 132) + 'px';
+  const has = !!input.value.trim();
+  sendBtn.classList.toggle('idle', !has); sendBtn.innerHTML = has ? ICON.up : ICON.mic;
+  sendBtn.setAttribute('aria-label', has ? 'Отправить' : 'Говорить');
+};
+sendBtn.addEventListener('pointerdown', e => e.preventDefault()); // keep the keyboard open
+sendBtn.onclick = () => { if (input.value.trim()) sendText(); else { input.blur(); listen(); } };
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); } });
+input.addEventListener('input', autosize);
+// while the keyboard is open the orb steps aside (the keyboard can also be closed by «Back» without leaving the field)
+let fullH = innerHeight;
+const kb = () => { fullH = Math.max(fullH, innerHeight); document.body.classList.toggle('typing', document.activeElement === input && innerHeight < fullH * .8); };
+addEventListener('resize', () => { kb(); if (document.activeElement === input) scrollDown(); });
+input.addEventListener('focus', () => setTimeout(() => { kb(); scrollDown(); }, 350));
+input.addEventListener('blur', () => document.body.classList.remove('typing'));
+autosize();
+for (const b of $('chips').querySelectorAll('button')) b.onclick = () => ask({ text: b.dataset.q }, b.textContent);
 
 // ── voice answers ──
 let voiceOn = store.get('voice', true), player = null;
 const vb = $('voiceBtn');
-const paintVoice = () => { vb.classList.toggle('on', voiceOn); vb.textContent = voiceOn ? '🔊' : '🔇'; };
+const paintVoice = () => { vb.classList.toggle('off', !voiceOn); vb.innerHTML = voiceOn ? ICON.speaker : ICON.muted; vb.setAttribute('aria-pressed', voiceOn); };
 vb.onclick = () => { voiceOn = !voiceOn; store.set('voice', voiceOn); if (!voiceOn) stopSpeaking(); paintVoice(); };
 paintVoice();
 const N = window.JumavoyNative || null;
 const APPV = N && N.version ? N.version() : 1; // a newer Android app (another recognizer) gets a new try on a phone that failed before
 const nativeListen = () => !!(N && N.canListen() && store.get('nativeOff', 0) !== APPV);   // the Android app: the phone's own recognition and voice (instant, no Gemini)
 const isUz = t => /[ўқғҳ]/i.test(t) || /\b(va|uchun|bilan|qancha|narx\w*|yo'q|kerak|mijoz|qarz\w*|sizga|ham|emas|yoki|bo'l\w*|qil\w*|bor|yoq|dona|karobka)\b/i.test(t);
-const spoken = t => String(t || '').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '').replace(/^[•\-]\s*/gm, '').replace(/[•→|*_#]/g, ' ').replace(/[ \t]+/g, ' ').trim();
-let speakSeq = 0;
-function stopSpeaking() { speakSeq++; if (player) { player.pause(); player = null; } if (N) try { N.stopSpeak(); } catch {} }
-async function speak(text, btn) {
+const spoken = t => String(t || '').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '').replace(/<\/?[bi]>/g, '').replace(/^[•\-]\s*/gm, '').replace(/[•→|*_#]/g, ' ').replace(/[ \t]+/g, ' ').trim();
+let speakSeq = 0, speakBtn = null;
+function endSpeakBtn() { if (speakBtn) { speakBtn.reset(); speakBtn = null; } }
+function stopSpeaking() {
+  speakSeq++; endSpeakBtn();
+  if (player) { player.pause(); player = null; }
+  if (N) try { N.stopSpeak(); } catch {}
+  if (document.body.dataset.mode === 'speak') setState('готов');
+}
+async function speak(text, btn, reset) {
+  const again = btn && speakBtn && speakBtn.btn === btn; // the same «Прослушать» pressed while it plays → stop
   stopSpeaking();
+  if (again) return;
   const my = speakSeq, t = spoken(text), lang = isUz(t) ? 'uz-UZ' : 'ru-RU';
   if (!t) return;
+  if (btn) { speakBtn = { btn, reset }; btn.innerHTML = ICON.stop + '<span>Остановить</span>'; }
   if (N && N.canSpeak(lang)) { setState('говорю'); N.speak(t, lang); return; }
   // Gemini voice by parts: the first sentence is read while the next ones are being made
   const parts = [], words = t.split(/(?<=[.!?…\n])\s+/);
   for (const w of words) { if (parts.length && (parts.at(-1) + ' ' + w).length < 220) parts[parts.length - 1] += ' ' + w; else parts.push(w); }
   const get = async p => { const r = await api({ tts: p }); if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || 'не удалось озвучить'); } return URL.createObjectURL(await r.blob()); };
   try {
-    if (btn) btn.textContent = '⏳';
     setState('озвучиваю');
     let next = get(parts[0]);
     for (let i = 0; i < parts.length; i++) {
@@ -224,24 +428,25 @@ async function speak(text, btn) {
       if (my !== speakSeq) return;
       next = i + 1 < parts.length ? get(parts[i + 1]) : null;
       player = new Audio(url); setState('говорю');
-      if (btn) btn.textContent = '🔊 Прослушать';
       await player.play();
       await new Promise(res => { player.onended = res; player.onpause = res; });
       URL.revokeObjectURL(url);
       if (my !== speakSeq) return;
     }
   } catch (e) {
-    if (e.name === 'NotAllowedError') note('Нажмите «🔊 Прослушать» под ответом — браузер не дал включить звук сам.');
-    else note('🔇 ' + e.message, 'err');
-  } finally { if (btn) btn.textContent = '🔊 Прослушать'; if (my === speakSeq) setState('готов'); }
+    if (my !== speakSeq) return;
+    if (e.name === 'NotAllowedError') note('Нажмите «Прослушать» под ответом — браузер не дал включить звук сам.');
+    else note('Не удалось озвучить: ' + e.message, 'err');
+  } finally { if (my === speakSeq) { endSpeakBtn(); if (!busy && !rec && !nativeOn) setState('готов'); } }
 }
 window.jvNative = {
-  onSpeakDone: () => setState('готов'),
-  onReady: () => setState('слушаю'),
-  onLevel: v => mic.style.setProperty('--lvl', (+v).toFixed(2)),
-  onPartial: t => { hint.textContent = t; },
-  onEnd: () => setState('распознаю'),
-  onResult: t => { micIdle(); if (t) ask({ text: t, voice: true }, '🎤 ' + t); else setState('готов'); },
+  // speaking ended (or was stopped): only when nothing else has started since
+  onSpeakDone: () => { endSpeakBtn(); if (document.body.dataset.mode === 'speak') setState('готов'); },
+  onReady: () => { if (nativeOn) setState('слушаю'); },
+  onLevel: v => { if (nativeOn) setLvl(v); },
+  onPartial: t => { if (nativeOn) live.textContent = t; },
+  onEnd: () => { if (nativeOn) setState('распознаю'); },
+  onResult: t => { micIdle(); if (t) ask({ text: t, voice: true }, t, true); else setState('готов'); },
   onError: m => {
     micIdle(); setState('готов');
     if (!m) return;
@@ -249,11 +454,11 @@ window.jvNative = {
     // and the server writes it down — as before, a bit slower but it works; remembered until the app is updated
     if (/ошибка \d+/.test(m)) {
       store.set('nativeOff', APPV); langBtn.style.visibility = 'hidden';
-      note('🎤 Распознавание речи телефона не работает (' + m.replace(/^.*ошибка/, 'ошибка') + '). Слушаю через сервер — говорите.');
+      note('Распознавание речи телефона не работает (' + m.replace(/^.*ошибка/, 'ошибка') + '). Слушаю через сервер — говорите.');
       setTimeout(listen, 300);
       return;
     }
-    note('🎤 ' + m, 'err');
+    note(m, 'err');
   },
 };
 let lang = store.get('lang', 'ru-RU');
@@ -262,23 +467,24 @@ langBtn.onclick = () => { lang = lang === 'uz-UZ' ? 'ru-RU' : 'uz-UZ'; store.set
 paintLang();
 if (!nativeListen()) langBtn.style.visibility = 'hidden'; // the web version writes down any language itself (Gemini)
 
-// ── microphone: tap, speak, it stops by itself after a pause ──
+// ── microphone: tap the orb, speak, it stops by itself after a pause ──
 let rec = null;
-const mic = $('mic'), hint = $('hint');
+const mic = $('mic'), hint = $('hint'), live = $('live');
+const HINT = 'Нажмите на сферу и говорите';
 let nativeOn = false;
-function micIdle() { nativeOn = false; mic.classList.remove('rec'); mic.style.removeProperty('--lvl'); hint.textContent = 'Нажмите и говорите — я сам пойму, когда вы закончили'; }
+function micIdle() { nativeOn = false; setLvl(0); live.textContent = ''; hint.textContent = HINT; }
 async function listen() {
   if (busy) return;
   if (nativeOn) { N.stopListen(); return; }
-  if (rec) return rec.stop(true);
-  stopSpeaking();
+  if (rec) return rec.stop();
+  stopSpeaking(); buzz(12);
   if (nativeListen()) { // the phone's recognizer: words appear while speaking, no upload, no Gemini request
-    nativeOn = true; mic.classList.add('rec'); hint.textContent = 'Говорите…'; setState('слушаю');
+    nativeOn = true; hint.textContent = 'Говорите — нажмите ещё раз, чтобы закончить'; setState('слушаю');
     N.listen(lang); return;
   }
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
-  catch (e) { note('🎤 Нет доступа к микрофону. Разрешите его в настройках браузера / приложения.', 'err'); return; }
+  catch (e) { note('Нет доступа к микрофону. Разрешите его в настройках браузера или приложения.', 'err'); return; }
   const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
   const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined), chunks = [];
   const ctx = new (window.AudioContext || window.webkitAudioContext)(); ctx.resume().catch(() => {});
@@ -290,44 +496,54 @@ async function listen() {
     an.getFloatTimeDomainData(buf);
     let s = 0; for (const v of buf) s += v * v;
     const rms = Math.sqrt(s / buf.length), now = performance.now();
-    mic.style.setProperty('--lvl', Math.min(1, rms * 12).toFixed(2));
+    setLvl(Math.min(1, rms * 12));
     if (rms > 0.025) { spoke = true; quietSince = now; }
     if (spoke && now - quietSince > 1400) return stop();            // a pause after speech → done
     if (!spoke && now - t0 > 7000) { cancelled = true; return stop(); } // nothing said
     if (now - t0 > 45000) return stop();                             // too long
     raf = requestAnimationFrame(loop);
   };
-  const stop = (manual) => { if (mr.state !== 'inactive') mr.stop(); };
+  const stop = () => { if (mr.state !== 'inactive') mr.stop(); };
   mr.ondataavailable = e => e.data.size && chunks.push(e.data);
   mr.onstop = async () => {
     cancelAnimationFrame(raf); stream.getTracks().forEach(t => t.stop()); ctx.close().catch(() => {});
-    rec = null; mic.classList.remove('rec'); mic.style.removeProperty('--lvl'); hint.textContent = 'Нажмите и говорите — я сам пойму, когда вы закончили';
+    rec = null; micIdle();
     if (cancelled || !chunks.length) { setState('готов'); return; }
+    setState('распознаю');
     const blob = new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' });
     const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
     ask({ audio: b64, mime: blob.type });
   };
-  rec = { stop: () => stop(true) };
-  mr.start(250); mic.classList.add('rec'); setState('слушаю'); hint.textContent = 'Говорите… (нажмите ещё раз, чтобы закончить)';
+  rec = { stop };
+  mr.start(250); setState('слушаю'); hint.textContent = 'Говорите — нажмите ещё раз, чтобы закончить';
   raf = requestAnimationFrame(loop);
 }
 mic.onclick = listen;
 
 // ── menu ──
-$('menuBtn').onclick = () => $('menu').classList.toggle('hidden');
-document.addEventListener('click', e => { if (!e.target.closest('#menu, #menuBtn')) $('menu').classList.add('hidden'); });
-$('autoListen').checked = store.get('autoListen', false);
-$('autoListen').onchange = e => store.set('autoListen', e.target.checked);
-$('newChat').onclick = () => { $('menu').classList.add('hidden'); ask({ text: '/new' }, '/new'); };
-$('clearLocal').onclick = () => { history_ = []; store.set('log', []); log.innerHTML = ''; $('menu').classList.add('hidden'); };
-$('logout').onclick = () => { store.del('key'); store.del('chat'); location.reload(); };
+const menu = $('menu'), closeMenu = () => { menu.classList.add('hidden'); armLogout(false); };
+$('menuBtn').onclick = () => { if (menu.classList.contains('hidden')) menu.classList.remove('hidden'); else closeMenu(); };
+document.addEventListener('click', e => { if (!e.target.closest('#menu, #menuBtn')) closeMenu(); });
+let autoListen = store.get('autoListen', false);
+const paintAuto = () => { $('autoSw').classList.toggle('on', autoListen); $('autoListen').setAttribute('aria-checked', autoListen); };
+$('autoListen').onclick = () => { autoListen = !autoListen; store.set('autoListen', autoListen); paintAuto(); };
+paintAuto();
+$('newChat').onclick = () => { closeMenu(); stopSpeaking(); clearScreen(); ask({ text: '/new' }); };
+function clearScreen() { history_ = []; store.set('log', []); log.innerHTML = ''; greet(); }
+$('clearLocal').onclick = () => { clearScreen(); closeMenu(); };
+let logoutArmed = false;
+function armLogout(on) { logoutArmed = on; $('logout').querySelector('span').textContent = on ? 'Нажмите ещё раз, чтобы отключить' : 'Отключить приложение'; }
+$('logout').onclick = () => {
+  if (!logoutArmed) return armLogout(true);
+  store.del('key'); store.del('chat'); location.reload();
+};
 
 // ── start ──
 function start() {
-  log.innerHTML = '';
+  log.innerHTML = ''; hint.textContent = HINT;
   for (const m of history_.slice(-30)) bubble(m, false);
-  if (!history_.length) note('Спросите что угодно: о клиентах, долгах, агентах, ценах, напоминаниях — голосом или текстом.');
-  if (ASSIST || store.get('autoListen', false)) setTimeout(listen, 250);
+  if (!history_.length) greet();
+  if (ASSIST || autoListen) setTimeout(listen, 250);
 }
 if (creds().key) { showApp(true); start(); } else showApp(false);
 // the Android app calls this when the assistant gesture opens an already running app
