@@ -2030,3 +2030,44 @@ D.test('voice: only the answer is sent to the speech model (no instruction read 
     eq(ttsBody?.contents?.[0]?.parts?.[0]?.text, 'Fozilxonning qarzi 800 dollar.', 'only the answer text, nothing to read aloud before it');
   } finally { GEM = () => say('ok'); }
 });
+
+D.test('audit 24.11: chat_recall finds an older talk; the history is re-read (another copy of the function); a repeated question (qid) is answered once', async () => {
+  // 1. the whole conversation, beyond the last messages: found by words (Cyrillic = Latin), with the date
+  const old = new Date(Date.now() - 3 * 864e5).toISOString();
+  DB.ai_messages.push({ id: 900001, chat_id: 111, role: 'user', text: 'Фозилхон обещал оплатить в пятницу 300$', created_at: old },
+    { id: 900002, chat_id: 111, role: 'model', text: 'Записал: Fozilxon Fargona — $300 в пятницу.', created_at: old },
+    { id: 900003, chat_id: 111, role: 'user', text: 'сколько стоит Liman ATF', created_at: old },
+    { id: 900004, chat_id: 111, role: 'model', text: 'Liman ATF — $5,10 за литр', created_at: old });
+  const r = await M.TOOLS.chat_recall.run(null, { query: 'что обещал Fozilxon' }, { chatId: 111 });
+  assert(r.shown === 1 && /Fozilxon Fargona — \$300/.test(r.talk[0].answered) && /\d\d\.\d\d \d\d:\d\d/.test(r.talk[0].when), 'recall: ' + JSON.stringify(r));
+  const none = await M.TOOLS.chat_recall.run(null, { query: 'Mobil 1 цена', from: '2001-01-01', to: '2001-01-02' }, { chatId: 111 });
+  assert(none.shown === 0 && /нет/.test(none.note), 'nothing in another period');
+  assert(M.toolsFor('о чём мы говорили вчера', '').some((d: any) => d.name === 'chat_recall'), 'declared for «о чём мы говорили»');
+  assert(M.toolsFor('kecha nima gaplashdik', '').some((d: any) => d.name === 'chat_recall'), 'declared in Uzbek');
+
+  // 2. the app and Telegram may be answered by two copies of the function: what the other copy saved is seen
+  await tgPost({ text: '/app' });
+  const k = (lastText().match(/#c=111&k=([0-9a-f]{32})/) || [])[1];
+  const app = (body: any) => M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': '111', 'x-app-key': k }, body: JSON.stringify(body) }));
+  GEM = () => say('Хорошо');
+  await (await app({ text: 'Привет, это первый вопрос' })).json();
+  DB.ai_messages.push({ id: 900010, chat_id: 111, role: 'user', text: 'В Telegram (другая копия функции): агент Adxamjon в отпуске', created_at: new Date().toISOString() },
+    { id: 900011, chat_id: 111, role: 'model', text: 'Понял, учту.', created_at: new Date().toISOString() });
+  const realNow = Date.now; Date.now = () => realNow() + 25e3; // 25 s later: the copy in memory is no longer trusted
+  let ctx = '';
+  try { GEM = (b: any) => { ctx = ctx || JSON.stringify(b.contents); return say('Да, Adxamjon в отпуске.'); }; await (await app({ text: 'а кто в отпуске?' })).json(); }
+  finally { Date.now = realNow; }
+  assert(ctx.includes('агент Adxamjon в отпуске'), 'the other copy\'s message is in the history');
+
+  // 3. the same question again (the connection broke after it reached the server): one run, the same answer
+  let runs = 0;
+  GEM = () => { runs++; return call0('reminder_add', { text: 'позвонить Fozilxon', at: '2099-01-05T10:00' }); };
+  const body = { text: 'напомни 5 января 2099 в 10 позвонить Фозилу', qid: 'q1abc2def', stream: false };
+  const [a1, a2] = await Promise.all([app(body).then((x: any) => x.json()), app(body).then((x: any) => x.json())]);
+  const rem = DB.ai_reminders.filter((x: any) => /позвонить Fozilxon/.test(x.text || '')).length;
+  assert(rem === 1, 'one reminder, not two: ' + rem + ' runs ' + runs);
+  assert(a1.text && a1.text === a2.text && (a1.repeat || a2.repeat), 'the repeat gets the first answer: ' + JSON.stringify([a1, a2]));
+  const a3 = await (await app(body)).json();
+  assert(a3.repeat && a3.text === a1.text, 'later repeat too');
+  eq(DB.ai_reminders.filter((x: any) => /позвонить Fozilxon/.test(x.text || '')).length, 1, 'still one reminder');
+});

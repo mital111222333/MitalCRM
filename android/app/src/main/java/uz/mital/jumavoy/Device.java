@@ -101,7 +101,10 @@ public class Device {
           break;
         }
         case "whatsapp": {
-          i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + x.getString("phone") + "?text=" + Uri.encode(x.optString("text"))));
+          String wa = x.getString("phone").replaceAll("\\D", ""); // wa.me takes digits only: «+998 90 123-45-67» did not open
+          if (wa.length() == 9) wa = "998" + wa; // a local Uzbek number
+          if (wa.length() < 9) return "Неверный номер для WhatsApp: " + x.getString("phone");
+          i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + wa + "?text=" + Uri.encode(x.optString("text"))));
           for (String pk : new String[] { "com.whatsapp", "com.whatsapp.w4b" }) {
             try { act.getPackageManager().getPackageInfo(pk, 0); i.setPackage(pk); break; } catch (Exception ignored) { }
           }

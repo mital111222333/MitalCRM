@@ -6,7 +6,7 @@
 name: android
 on:
   push:
-    branches: [main]
+    branches: [main, 'audit/**']   # audit/* branches: build + Android Lint only, nothing is released
     paths: ['android/**', 'jumavoy/**', '.github/workflows/android.yml']
   workflow_dispatch:
 permissions:
@@ -32,9 +32,17 @@ jobs:
             pip install -q pycryptodome cryptography
             python3 tools/signing_key.py "$RUNNER_TEMP/jv.p12" && export KS_FILE="$RUNNER_TEMP/jv.p12"
           fi
-          gradle --no-daemon assembleRelease
+          gradle --no-daemon assembleRelease lintRelease
           cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/JUMAVOY.apk"
+      - name: Android Lint report
+        if: always()
+        working-directory: android
+        run: cat app/build/reports/lint.txt 2>/dev/null || echo "no lint report"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: lint, path: android/app/build/reports/lint*, if-no-files-found: ignore }
       - name: release
+        if: github.ref == 'refs/heads/main'
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
           gh release delete jumavoy-app -y --cleanup-tag -R "$GITHUB_REPOSITORY" || true

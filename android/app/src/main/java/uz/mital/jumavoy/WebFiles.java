@@ -69,7 +69,9 @@ class WebFiles {
   }
 
   /** download the newest page from GitHub (in the background); true if something changed */
-  boolean update() {
+  static final Object LOCK = new Object(); // the app and the panel over other apps may update at the same moment
+  boolean update() { synchronized (LOCK) { return updateNow(); } }
+  boolean updateNow() {
     boolean changed = false;
     try {
       dir.mkdirs();

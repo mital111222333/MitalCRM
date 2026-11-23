@@ -77,7 +77,10 @@ public class MainActivity extends Activity {
       }
       // the WebView's engine crashed or was stopped by Android to free memory: open again instead of closing the app
       @Override public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail d) {
-        if (web == v) { ((android.view.ViewGroup) v.getParent()).removeView(v); v.destroy(); web = null; recreate(); }
+        if (web == v) {
+          if (v.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) v.getParent()).removeView(v);
+          v.destroy(); web = null; recreate();
+        }
         return true;
       }
     });
@@ -108,14 +111,20 @@ public class MainActivity extends Activity {
         catch (Exception e) { dropCamera(); fileCb = null; cb.onReceiveValue(null); return false; }
       }
 
+      // only the microphone is ever given to the page (never the camera through the web page)
       @Override public void onPermissionRequest(PermissionRequest r) {
         runOnUiThread(() -> {
-          if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) r.grant(r.getResources());
+          if (!java.util.Arrays.asList(r.getResources()).contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) { r.deny(); return; }
+          if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) r.grant(new String[] { PermissionRequest.RESOURCE_AUDIO_CAPTURE });
           else { if (pending != null) pending.deny(); pending = r; requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MIC); } // an older request never left waiting
         });
       }
     });
     voice = new Voice(this, web);
+    // Android 13+: «Back» through the system callback (Android 16 no longer calls onBackPressed for new apps)
+    if (Build.VERSION.SDK_INT >= 33) {
+      getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
+    }
     web.addJavascriptInterface(voice, "JumavoyNative"); // the phone's speech recognition and voice (Voice.java)
     web.addJavascriptInterface(new Device(this), "JumavoyDevice"); // alarm, timer, calendar, call, SMS, route, apps (Device.java)
     FrameLayout root = new FrameLayout(this);
@@ -155,10 +164,19 @@ public class MainActivity extends Activity {
     return Intent.ACTION_ASSIST.equals(a) || Intent.ACTION_VOICE_COMMAND.equals(a);
   }
 
+  static final Pattern ASK_OK = Pattern.compile("^/(dolg|plan|today|tasks|stats|reminders|listen)$");
   void open(Intent i, boolean fresh) {
     if (web == null) return;
     String link = sharedLink(i);
     if (link != null) { web.loadUrl(BASE + "#" + link); return; }
+    String ask = i == null ? null : i.getStringExtra("ask");
+    if (ask != null && ASK_OK.matcher(ask).matches()) {
+      i.removeExtra("ask"); // a later re-creation of the screen does not ask it again
+      if ("/listen".equals(ask)) unlockIfNeeded();
+      if (fresh || web.getUrl() == null || files.updated) { files.updated = false; web.loadUrl(BASE + "?ask=" + Uri.encode(ask)); }
+      else web.evaluateJavascript("window.jumavoyAsk && window.jumavoyAsk(" + org.json.JSONObject.quote(ask) + ")", null);
+      return;
+    }
     if (isAssist(i)) {
       unlockIfNeeded();
       if (fresh || web.getUrl() == null) web.loadUrl(BASE + "?assist=1");
@@ -213,18 +231,24 @@ public class MainActivity extends Activity {
     }
     if (code == MIC_NATIVE) { voice.permissionResult(res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED); return; }
     if (code != MIC || pending == null) return;
-    if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pending.grant(pending.getResources());
+    if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pending.grant(new String[] { PermissionRequest.RESOURCE_AUDIO_CAPTURE });
     else pending.deny();
     pending = null;
   }
 
   @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); if (web != null) web.saveState(b); }
 
-  @Override protected void onDestroy() { if (voice != null) voice.destroy(); super.onDestroy(); }
+  @Override protected void onDestroy() {
+    if (voice != null) voice.destroy();
+    if (web != null) { try { ((android.view.ViewGroup) web.getParent()).removeView(web); } catch (Exception ignored) { } web.destroy(); web = null; }
+    super.onDestroy();
+  }
 
   // «Back» closes an open sheet / the menu of the page first (window.jumavoyBack returns true), then leaves the app
-  @Override public void onBackPressed() {
-    if (web == null) { super.onBackPressed(); return; }
+  @SuppressWarnings("deprecation")
+  @Override public void onBackPressed() { back(); }
+  void back() {
+    if (web == null) { moveTaskToBack(true); return; }
     web.evaluateJavascript("window.jumavoyBack ? window.jumavoyBack() : false", v -> { if (!"true".equals(v)) { if (web != null && web.canGoBack()) web.goBack(); else moveTaskToBack(true); } });
   }
 }

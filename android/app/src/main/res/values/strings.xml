@@ -1,1 +1,9 @@
-<resources><string name="app_name">JUMAVOY</string></resources>
+<resources>
+  <string name="app_name">JUMAVOY</string>
+  <string name="tile">JUMAVOY</string>
+  <string name="sc_listen">Спросить</string>
+  <string name="sc_listen_long">Спросить голосом</string>
+  <string name="sc_dolg">Должники</string>
+  <string name="sc_plan">План</string>
+  <string name="sc_tasks">Задачи</string>
+</resources>

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long press on the JUMAVOY icon: ask at once, without typing. Each can also be dragged to the home screen. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+  <shortcut android:shortcutId="listen" android:enabled="true" android:icon="@drawable/sc_mic"
+      android:shortcutShortLabel="@string/sc_listen" android:shortcutLongLabel="@string/sc_listen_long">
+    <intent android:action="android.intent.action.VIEW" android:targetPackage="uz.mital.jumavoy" android:targetClass="uz.mital.jumavoy.MainActivity">
+      <extra android:name="ask" android:value="/listen" />
+    </intent>
+  </shortcut>
+  <shortcut android:shortcutId="dolg" android:enabled="true" android:icon="@drawable/sc_money"
+      android:shortcutShortLabel="@string/sc_dolg" android:shortcutLongLabel="@string/sc_dolg">
+    <intent android:action="android.intent.action.VIEW" android:targetPackage="uz.mital.jumavoy" android:targetClass="uz.mital.jumavoy.MainActivity">
+      <extra android:name="ask" android:value="/dolg" />
+    </intent>
+  </shortcut>
+  <shortcut android:shortcutId="plan" android:enabled="true" android:icon="@drawable/sc_chart"
+      android:shortcutShortLabel="@string/sc_plan" android:shortcutLongLabel="@string/sc_plan">
+    <intent android:action="android.intent.action.VIEW" android:targetPackage="uz.mital.jumavoy" android:targetClass="uz.mital.jumavoy.MainActivity">
+      <extra android:name="ask" android:value="/plan" />
+    </intent>
+  </shortcut>
+  <shortcut android:shortcutId="tasks" android:enabled="true" android:icon="@drawable/sc_tasks"
+      android:shortcutShortLabel="@string/sc_tasks" android:shortcutLongLabel="@string/sc_tasks">
+    <intent android:action="android.intent.action.VIEW" android:targetPackage="uz.mital.jumavoy" android:targetClass="uz.mital.jumavoy.MainActivity">
+      <extra android:name="ask" android:value="/tasks" />
+    </intent>
+  </shortcut>
+</shortcuts>

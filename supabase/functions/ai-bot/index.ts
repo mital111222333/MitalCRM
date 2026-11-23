@@ -732,7 +732,7 @@ const WRITES = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'rem
   'skill_add', 'skill_delete', 'calendar_add', 'oilbook_action', 'client_info_add', 'client_info_delete']);
 // tools that do not need the CRM data: when GitHub / LINKO is down they keep working (reminders, personal money, tasks,
 // notebook, the outside world, Google); every other tool then answers with the data error instead of zeros
-const NO_CRM = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel',
+const NO_CRM = new Set(['chat_recall', 'task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel',
   'personal_debt_add', 'personal_debts', 'personal_debt_delete', 'phone_action', 'notebook_search', 'save_photo', 'send_saved_file', 'web_research', 'open_page', 'weather', 'promo_calc', 'price_list',
   'currency_rates', 'news', 'skill_use', 'skill_add', 'skill_list', 'skill_delete', 'calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search',
   'oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action', 'client_info_add', 'client_info', 'client_info_delete']);
@@ -1275,20 +1275,58 @@ export async function appApi(req: Request) {
     } catch (e) { return out({ error: redact((e as Error).message) || 'Ошибка озвучки' }, 500); } finally { await usageSettled(); }
   }
   // { stream: true }: newline-separated JSON — {"stage":"Смотрю прайс"} while working, then the answer itself
+  const answer = (stage?: (s: string) => void) => answerOnce(chatId, b, stage);
   if (b.stream) {
     const enc = new TextEncoder();
     const body = new ReadableStream({
       async start(ctrl) {
         const send = (v: any) => { try { ctrl.enqueue(enc.encode(JSON.stringify(v) + '\n')); } catch { /* the app went away */ } };
-        const r = await appAnswer(chatId, b, st => send({ stage: st }));
+        const r = await answer(st => send({ stage: st }));
         send({ ...r.body, done: true, status: r.status });
         try { ctrl.close(); } catch { /* closed */ }
       },
     });
     return new Response(body, { headers: { ...APP_CORS, 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' } });
   }
-  const r = await appAnswer(chatId, b);
+  const r = await answer();
   return out(r.body, r.status);
+}
+// The same question twice — the connection broke after the question had reached the server (the app sent it again from
+// its queue) or «Спросить ещё раз» after «Связь оборвалась» — must not be done twice: a reminder, a debt or a message to
+// an agent was saved twice. Every question from the app has its id (qid): a repeat gets the first answer (the same copy
+// of the function: waits for it; another copy: the answer saved to the conversation), never a second run.
+const QIDS = new Map<string, { at: number; p: Promise<{ status: number; body: any }> }>();
+export async function answerOnce(chatId: number, b: any, stage?: (s: string) => void): Promise<{ status: number; body: any }> {
+  const qid = /^[a-z0-9_-]{6,40}$/i.test(String(b.qid || '')) ? `${chatId}:${b.qid}` : '';
+  if (!qid || /^\//.test(String(b.text || '').trim())) return appAnswer(chatId, b, stage); // quick commands change nothing
+  for (const [k, v] of QIDS) if (Date.now() - v.at > 20 * 60e3) QIDS.delete(k);
+  const mine = QIDS.get(qid);
+  if (mine) { stage?.('Уже отвечаю на этот вопрос'); const r = await mine.p; return { status: r.status, body: { ...r.body, repeat: true } }; }
+  // taken at once, before anything is awaited: a repeat arriving a moment later waits for this answer
+  let done!: (r: { status: number; body: any }) => void;
+  QIDS.set(qid, { at: Date.now(), p: new Promise(res => { done = res; }) });
+  let r: { status: number; body: any } = { status: 500, body: { error: 'Ошибка' } };
+  try {
+    let firstTime = true, mark = '';
+    if (sbOn()) {
+      try {
+        const rows = await sb('ai_events?on_conflict=key', { method: 'POST', body: { key: 'q:' + qid }, prefer: 'resolution=ignore-duplicates,return=representation' });
+        firstTime = !!rows?.length;
+        if (!firstTime) mark = (await sb(`ai_events?key=eq.${q('q:' + qid)}&select=created_at`).catch(() => []))[0]?.created_at || '';
+      } catch { firstTime = true; }
+    }
+    if (!firstTime && mark) { // another copy of the function got it first: its answer comes into the conversation log
+      stage?.('Уже отвечаю на этот вопрос');
+      for (let k = 0; k < 24; k++) {
+        const a = (await sb(`ai_messages?chat_id=eq.${chatId}&role=eq.model&created_at=gte.${q(mark)}&order=id.asc&limit=1&select=text`).catch(() => []))[0];
+        if (a?.text) { r = { status: 200, body: { text: a.text, repeat: true } }; return r; }
+        await new Promise(res => setTimeout(res, 2500));
+      }
+    }
+    r = await appAnswer(chatId, b, stage);
+    if (r.status !== 200) { QIDS.delete(qid); if (sbOn()) unonce('q:' + qid); } // a failed question may be asked again
+    return r;
+  } finally { done(r); }
 }
 // a file from the app, the same way as one sent to the bot in Telegram: it goes into the owner's chat with the bot
 // (there it stays, and its file_id lets the notebook keep it and send it back later); without a question it is saved
@@ -2153,6 +2191,14 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       if (!sbOn()) return { error: NO_DB }; MEM.delete(ctx.chatId);
       const sph = SPHERES.includes(a.sphere) ? a.sphere : '', rows = (await memoryOf(ctx.chatId)).filter(r => !sph || (r.sphere || 'work') === sph);
       return { sphere: sph || undefined, facts: rows.filter(r => r.kind === 'fact'), rules: rows.filter(r => r.kind === 'rule') };
+    },
+  },
+  chat_recall: {
+    desc: 'ВСПОМНИТЬ ПРОШЛЫЙ РАЗГОВОР с владельцем — всё, что было раньше последних сообщений, за любые дни (Telegram и приложение): «о чём мы говорили вчера», «что я спрашивал про Fozil на прошлой неделе», «ты мне называл цену…», «я тебе говорил…», «kecha nima gaplashdik». query — слова для поиска (имя, товар, тема; пусто — весь разговор за период), from / to — YYYY-MM-DD («вчера» → вчерашняя дата в обоих). Отвечай по найденным репликам с датой. Цифры CRM из старых ответов — история: свежие цифры бери функциями CRM.',
+    params: { query: { type: 'string' }, from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD' }, limit: { type: 'number', description: 'сколько пар вопрос-ответ, по умолчанию 8' } },
+    async run(_db, a, ctx) {
+      if (!sbOn()) return { error: NO_DB };
+      return await chatRecall(ctx.chatId, a);
     },
   },
   phone_action: {
@@ -3458,7 +3504,8 @@ export const TOOL_GROUPS: [RegExp, string[]][] = [
   [/напом|будильн|eslat|budilnik/i, ['reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel']],
   [/будильн|разбуди|таймер|позвони|набери|звонок|смс|sms|маршрут|навигац|довези|как доехать|открой|запусти|календар|фонар|громк|тише|без звука|вайфай|wi-?fi|блютуз|bluetooth|поделись|отправь в|whatsapp|ватсап|вацап|ссылк|budilnik|uyg.?ot|taymer|qo.?ng.?iroq|telefon qil|yo.?l\b|xarita|och\b|ochib|chiroq|ovoz/i, ['phone_action', 'find_client', 'client_card', 'calendar_add']],
   [/занял|одолж|в долг|дал |вернул|должен мне|мне должн|долг|qarz|berdim|oldim|qaytar/i, ['personal_debt_add', 'personal_debts', 'personal_debt_delete']],
-  [/запомн|забуд|забыть|помниш|памят|обо мне|знаешь|eslab|esla|unut|yodla|xotira/i, ['remember', 'forget', 'memory_list']],
+  [/запомн|забуд|забыть|помниш|памят|обо мне|знаешь|eslab|esla|unut|yodla|xotira/i, ['remember', 'forget', 'memory_list', 'chat_recall']],
+  [/говорили|обсуждал|спрашивал|я (тебе )?говорил|ты (мне )?(говорил|сказал|называл|отвечал|советовал)|в прошлый раз|раньше|вчера|позавчера|на прошлой неделе|разговор|переписк|gaplash|so.?ragan|aytgan|aytding|kecha|o.?tgan (safar|hafta)/i, ['chat_recall']],
   [/фото|файл|документ|блокнот|пришли|прайс|notebooklm|rasm|fayl|hujjat|yubor/i, ['save_photo', 'send_saved_file', 'notebook_search', 'notebooklm_export']],
   [/oilbook|oil ?book|точк|замен\S* масл|moyxona|moy almashtir/i, ['oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action']],
   [/цен|прайс|стоит|почём|почем|narx|prays|акци|aksiya|промо|скидк|бонус|chegirma|bonus/i, ['price_list', 'promo_calc']],
@@ -3789,6 +3836,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 • Думай на шаг вперёд: если это реально полезно, в конце одной строкой предложи следующее действие («Напомнить ему завтра в 10?», «Скинуть в Excel?», «Написать ему черновик?»). Не в каждом ответе.
 • Приветствие, «как дела», «rahmat», благодарность, шутка, разговор не о деле — ответь коротко и тепло, как живой человек, функции не вызывай.
 • Не можешь что-то сделать — скажи честно одной фразой и предложи, что можешь.
+• Ты помнишь ВЕСЬ разговор: последние сообщения видишь сам, а более ранний (вчера, на прошлой неделе, «я тебе говорил…», «ты мне называл…») ищи через chat_recall, прежде чем сказать «не помню».
 
 ПРАВИЛА:
 0. ИСТОЧНИК — ТОЛЬКО MitalCRM. Всё о работе (клиенты, агенты, заказы, оплаты, долги, склад, планы, зарплата, дисциплина, договоры, задания, пользователи, регионы) бери только из функций CRM: готовых или crm_explore / crm_query. Не бери это из интернета, новостей, писем, памяти разговора или своих знаний. Пользователь может попросить ЛЮБЫЕ данные платформы — найди и выдай их. ИСКЛЮЧЕНИЕ — OILBOOK, второй бизнес Саидбонура (платформа для точек замены масла, он её владелец и админ): всё про OilBook, его точки, подписки, оплаты подписок, заявки — только функции oilbook_* (суммы там в сумах, не в $). Изменить что-то в OilBook (продлить, включить, отключить, подтвердить чек, одобрить заявку, написать точке) → oilbook_action: это черновик с кнопкой, выполнится после нажатия. Данных о клиентах, машинах и выручке точек OilBook у тебя нет и не будет — так обещано точкам; на такие вопросы так и отвечай.
@@ -3839,10 +3887,15 @@ ${skills.length ? `\nНАВЫКИ (название — когда примен�
 // conversation: the last HIST_PAIRS (10) question/answer pairs of the last 12 hours go to the AI as context (it used to be
 // 6 pairs / 3 hours — «a nima bo'ldi?» after lunch had nothing to refer to). Every message is also kept
 // in Supabase (ai_messages), so after a cold start of the function the bot still remembers the talk. «/new» puts a marker.
-const HIST = new Map<number, { at: number; items: any[] }>();
+// The copy in memory is trusted only for HIST_FRESH_MS: Telegram and the app can be answered by two different copies of
+// the function at once, and a copy that kept its own history forever did not know what was said in the other one
+// («I told you in the app a minute ago…» → it did not remember). After that the history is read from Supabase again.
+const HIST = new Map<number, { at: number; fresh: number; items: any[] }>();
 const HIST_MS = (n(env('HIST_HOURS')) || 12) * 3600e3, HIST_PAIRS = n(env('HIST_PAIRS')) || 10, NEW_MARK = '/new';
+const HIST_FRESH_MS = 20e3;
 async function getHistory(chatId: number): Promise<any[]> {
-  const h = HIST.get(chatId); if (h) return Date.now() - h.at < HIST_MS ? h.items : [];
+  const h = HIST.get(chatId);
+  if (h && (Date.now() - h.fresh < HIST_FRESH_MS || !sbOn())) return Date.now() - h.at < HIST_MS ? h.items : [];
   let items: any[] = [];
   if (sbOn()) {
     const rows = await sb(`ai_messages?chat_id=eq.${chatId}&created_at=gte.${q(new Date(Date.now() - HIST_MS).toISOString())}&order=id.desc&limit=${HIST_PAIRS * 2 + 1}&select=role,text`).catch(() => []);
@@ -3850,18 +3903,45 @@ async function getHistory(chatId: number): Promise<any[]> {
     items = list.slice(cut + 1).map((r: any) => ({ role: r.role, parts: [{ text: r.text }] }));
     while (items.length && items[0].role !== 'user') items.shift();
   }
-  HIST.set(chatId, { at: Date.now(), items });
+  HIST.set(chatId, { at: Date.now(), fresh: Date.now(), items });
   return items;
 }
 async function remember(chatId: number, qText: string, a: string, tools = '') {
   const items = [...await getHistory(chatId), { role: 'user', parts: [{ text: qText }] }, { role: 'model', parts: [{ text: a }] }].slice(-HIST_PAIRS * 2);
-  HIST.set(chatId, { at: Date.now(), items });
+  HIST.set(chatId, { at: Date.now(), fresh: Date.now(), items });
   // a bulk insert needs the same keys in every row (PostgREST PGRST102), so the question row has tools: null too
   if (sbOn()) await sb('ai_messages', { method: 'POST', prefer: 'return=minimal', body: [{ chat_id: chatId, role: 'user', text: qText.slice(0, 8000), tools: null }, { chat_id: chatId, role: 'model', text: a.slice(0, 8000), tools: tools || null }] }).catch(e => console.warn('log', e.message));
 }
 async function resetHistory(chatId: number) {
-  HIST.set(chatId, { at: Date.now(), items: [] });
+  HIST.set(chatId, { at: Date.now(), fresh: Date.now(), items: [] });
   if (sbOn()) await sb('ai_messages', { method: 'POST', prefer: 'return=minimal', body: { chat_id: chatId, role: 'user', text: NEW_MARK } }).catch(() => {});
+}
+// «о чём мы говорили вчера / что я спрашивал про Fozil»: the whole conversation is in ai_messages (Telegram and the app),
+// not only the last HIST_PAIRS — found by words (Cyrillic = Latin, endings ignored) and / or by days
+const stemOf = (w: string) => w.length > 5 ? w.slice(0, w.length - 2) : w;
+const RECALL_STOP = new Set(['что', 'как', 'про', 'мне', 'мы', 'ты', 'это', 'там', 'был', 'была', 'было', 'говорили', 'говорил', 'спрашивал', 'обсуждали', 'вчера', 'сегодня', 'неделе', 'прошлой', 'nima', 'haqida', 'kecha', 'bugun', 'gaplashdik', 'soragan'].map(x => latin(x)));
+export async function chatRecall(chatId: number, a: any) {
+  const today = todayStr(), okD = (d: any) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) ? String(d) : '';
+  let from = okD(a.from), to = okD(a.to) || today;
+  if (!from) from = addDays(to, okD(a.to) ? 0 : -30);
+  if (from > to) [from, to] = [to, from];
+  const since = localToUtc(from + 'T00:00') || new Date(Date.parse(from + 'T00:00:00Z')), till = localToUtc(addDays(to, 1) + 'T00:00') || new Date(Date.parse(addDays(to, 1) + 'T00:00:00Z'));
+  const rows: any[] = await sb(`ai_messages?chat_id=eq.${chatId}&created_at=gte.${q(since.toISOString())}&created_at=lt.${q(till.toISOString())}&order=id.asc&limit=3000&select=id,role,text,created_at`).catch(() => []);
+  const words = [...new Set(latin(String(a.query || '')).replace(/[^a-z0-9'\s-]/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !RECALL_STOP.has(w)).map(stemOf))];
+  const pairs: any[] = [];
+  for (let k = 0; k < rows.length; k++) {
+    const u = rows[k]; if (u.role !== 'user' || u.text === NEW_MARK) continue;
+    const ans = rows[k + 1]?.role === 'model' ? rows[k + 1] : null;
+    const hay = latin(u.text + '\n' + (ans?.text || ''));
+    const score = words.length ? words.filter(w => hay.includes(w)).length : 1;
+    if (!score || (words.length > 2 && score < 2)) continue;
+    const lp = localParts(new Date(u.created_at));
+    pairs.push({ score, when: `${dm(lp.date)} ${lp.time}`, asked: String(u.text).slice(0, 500), answered: String(ans?.text || '').slice(0, 700) });
+  }
+  const limit = Math.max(1, Math.min(20, n(a.limit) || 8));
+  const best = words.length ? [...pairs].sort((x, y) => y.score - x.score).slice(0, limit).sort((x, y) => pairs.indexOf(x) - pairs.indexOf(y)) : pairs.slice(-limit);
+  return { period: `${dm(from)}–${dm(to)}`, query: a.query || undefined, found: pairs.length, shown: best.length, talk: best.map(({ score: _s, ...x }) => x),
+    note: best.length ? 'Это прошлые реплики (история разговора). Отвечай по ним, с датой.' : 'В этот период такого разговора нет — так и скажи, предложи другой период или слова.' };
 }
 
 // ───── Gemini usage: every request is counted (ai_usage), /limits shows what is left ─────

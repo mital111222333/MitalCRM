@@ -66,7 +66,7 @@ public class Voice {
   boolean began; // the person started speaking — another recognizer would lose the words
   final StringBuilder tried = new StringBuilder();
 
-  @JavascriptInterface public int version() { return 5; }
+  @JavascriptInterface public int version() { return 6; }
 
   Voice(Activity act, WebView web) { this(act, act, web, null); }
   Voice(android.content.Context ctx, Activity activity, WebView web, Host host) {
@@ -81,7 +81,7 @@ public class Voice {
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
           @Override public void onStart(String id) { }
           @Override public void onDone(String id) { if ("last".equals(id)) js("onSpeakDone", null); }
-          @Override public void onError(String id) { js("onSpeakDone", null); }
+          @Override public void onError(String id) { if ("last".equals(id)) js("onSpeakDone", null); } // a middle part failed: the next ones still play
         });
       }
     });
@@ -306,9 +306,19 @@ public class Voice {
       tts.stop();
       // long answers: by sentences, so the first one starts at once
       String[] parts = text.split("(?<=[.!?…\\n])\\s+");
+      if (parts.length == 0) { js("onSpeakDone", null); return; }
       for (int k = 0; k < parts.length; k++) {
         tts.speak(parts[k], k == 0 ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, null, k == parts.length - 1 ? "last" : "p" + k);
       }
+    });
+  }
+
+  // the screen stays on while JUMAVOY listens, thinks and speaks (it went dark in the middle of a long answer)
+  @JavascriptInterface public void keepAwake(boolean on) {
+    if (activity == null) return;
+    ui.post(() -> {
+      if (on) activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+      else activity.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     });
   }
 
