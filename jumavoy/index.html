@@ -172,6 +172,7 @@
   .setup .primary:active { opacity: .8; }
   .setup .small { margin: 18px 0 0; font-size: 14px; color: var(--text3); }
   .setup .err { max-width: 400px; margin-top: 14px; }
+  .err .retry { display: block; margin-top: 10px; padding: 9px 14px; border: 0; border-radius: 12px; background: rgba(255,255,255,.14); color: #fff; font: inherit; font-size: 14px; }
   .setup .err:empty { display: none; }
 
   /* JUMAVOY is no longer the phone's assistant (Google switched it back to Gemini) */
@@ -418,7 +419,7 @@
 </div>
 
 <script>
-const WEB_VERSION = '2026.11.23-9';
+const WEB_VERSION = '2026.11.23-10';
 const API = 'https://oxchgcfyzszemqlvdjjr.supabase.co/functions/v1/ai-bot/app';
 const $ = id => document.getElementById(id);
 const store = {
@@ -660,7 +661,12 @@ async function ask(body, shown, voiced) {
   } catch (e) {
     th.remove();
     if (e.net) { busy = false; setState('готов'); return queueQ(body, meText, voiced || !!body.audio, me); }
-    note(e.message, 'err');
+    const n = note(e.message, 'err');
+    if (!e.auth && body.audio) { // the recording is still here: send it again with one tap instead of saying it twice
+      const again = document.createElement('button'); again.className = 'retry'; again.textContent = 'Отправить голосовое ещё раз';
+      again.onclick = () => { if (busy) return; n.remove(); ask(body, shown, voiced); };
+      n.append(' ', again);
+    }
     if (e.auth && !TG) { store.del('key'); setTimeout(() => showApp(false), 1500); }
   } finally { if (busy) { busy = false; setState('готов'); } }
 }
@@ -886,13 +892,17 @@ async function speak(text, btn, reset) {
   } finally { if (my === speakSeq) { endSpeakBtn(); if (!busy && !rec && !nativeOn) setState('готов'); } }
 }
 
-// ── listening: the phone's own recognizer (instant), else the voice is recorded and written down by the server ──
-// A language the phone cannot recognize (Uzbek on many phones) is remembered per language until the app is updated;
+// ── listening: by default the voice is recorded and written down by the server — the same way as a Telegram voice
+// message (one recognizer for RU and UZ, no language button). The phone's own recognizer (words appear while
+// speaking) is only an option in «Проверка»: on the owner's HONOR without Google it worked one time and failed the
+// next, did not know Uzbek at all and made him say everything twice — that was the «unstable» APK.
+// With the option on: a language the phone cannot recognize is remembered per language until the app is updated;
 // a recognizer that failed for another reason is skipped for 10 minutes.
 let nativeOff = store.get('nativeOff2', {}), nativeBadUntil = 0, lastFail = store.get('lastFail', null);
-const nativeListen = l => !!(N && N.canListen() && nativeOff[l] !== APPV && Date.now() > nativeBadUntil);
+let phoneVoice = store.get('phoneVoice', false);
+const nativeListen = l => !!(phoneVoice && N && N.canListen() && nativeOff[l] !== APPV && Date.now() > nativeBadUntil);
 let lang = store.get('lang', 'ru-RU');
-const langBtn = $('langBtn'), paintLang = () => { langBtn.textContent = lang === 'uz-UZ' ? 'UZ' : 'RU'; langBtn.style.visibility = N && N.canListen() ? '' : 'hidden'; };
+const langBtn = $('langBtn'), paintLang = () => { langBtn.textContent = lang === 'uz-UZ' ? 'UZ' : 'RU'; langBtn.style.visibility = phoneVoice && N && N.canListen() ? '' : 'hidden'; };
 langBtn.onclick = () => { lang = lang === 'uz-UZ' ? 'ru-RU' : 'uz-UZ'; store.set('lang', lang); paintLang(); hint.textContent = nativeListen(lang) ? HINT : 'Этот язык телефон не распознаёт — запишу голос и расшифрую на сервере'; };
 let rec = null, nativeOn = false, micStarting = false;
 const mic = $('mic'), hint = $('hint'), live = $('live');
@@ -1429,7 +1439,7 @@ async function openDiag() {
     catch (e) { ping = e.message; pingCls = 'no'; }
   } else ping = 'нет интернета';
   const yes = (v, a = 'да', bad = 'нет', cls = 'no') => [v ? a : bad, v ? 'ok' : cls];
-  const recog = l => !N ? ['через сервер', 'bad'] : nativeOff[l] === APPV ? ['через сервер', 'bad'] : Date.now() < nativeBadUntil ? ['через сервер (10 мин)', 'bad'] : ['телефон, сразу', 'ok'];
+  const recog = l => !N || !phoneVoice ? ['как в Telegram (сервер)', 'ok'] : nativeOff[l] === APPV ? ['через сервер', 'bad'] : Date.now() < nativeBadUntil ? ['через сервер (10 мин)', 'bad'] : ['телефон, сразу', 'ok'];
   const tts = v => !N ? ['Gemini', 'bad'] : v ? ['телефон, сразу', 'ok'] : ['Gemini, 2–4 с', 'bad'];
   const T = lastTiming;
   const rows = [
@@ -1475,7 +1485,8 @@ async function openDiag() {
   const btn = (text, fn) => { const x = document.createElement('button'); x.className = 'sheet-btn'; x.textContent = text; x.onclick = fn; b.append(x); return x; };
   if (N && d.mic === false && N.requestMic) btn('Разрешить микрофон', () => N.requestMic());
   if (N && d.assistant === false) btn('Сделать JUMAVOY помощником', () => N.openAssistantSettings());
-  if (N && (Object.keys(nativeOff).length || nativeBadUntil)) btn('Снова пробовать распознавание телефона', () => { nativeOff = {}; nativeBadUntil = 0; store.set('nativeOff2', {}); openDiag(); });
+  if (N) btn(phoneVoice ? 'Голос: распознавать как в Telegram (надёжнее)' : 'Голос: пробовать распознавание телефона (быстрее, но хуже)', () => { phoneVoice = !phoneVoice; store.set('phoneVoice', phoneVoice); paintLang(); openDiag(); });
+  if (N && phoneVoice && (Object.keys(nativeOff).length || nativeBadUntil)) btn('Снова пробовать распознавание телефона', () => { nativeOff = {}; nativeBadUntil = 0; store.set('nativeOff2', {}); openDiag(); });
   if (outbox.length && online()) btn('Отправить отложенные сейчас', () => { closeSheets(); flush(); });
   const rep = JSON.stringify({ web: WEB_VERSION, ...d, nativeOff, lastFail, timing: T, outbox: outbox.length, ua: navigator.userAgent });
   const cp = btn('Скопировать отчёт для разработчика', async () => {
