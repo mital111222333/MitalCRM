@@ -1802,3 +1802,20 @@ D.test('app API: a file — without a question saved to the notebook (and kept i
   const big = new FormData(); big.append('json', '{}'); big.append('file', new File([new Uint8Array(26e6)], 'big.mp4', { type: 'video/mp4' }));
   eq((await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'x-app-chat': '111', 'x-app-key': k }, body: big }))).status, 413, 'too big');
 });
+
+D.test('app API: «Про экран» — the screen text and screenshot go to the AI with the question; new phone actions', async () => {
+  await tgPost({ text: '/app' });
+  const k = (lastText().match(/#c=111&k=([0-9a-f]{32})/) || [])[1];
+  const call = async (body: any) => (await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': '111', 'x-app-key': k }, body: JSON.stringify(body) }))).json();
+  let req: any = null;
+  GEM = (b: any) => { req = b.contents?.at(-1); return say('Javob: Assalomu alaykum, ertaga yetkazamiz.'); };
+  const r = await call({ text: 'что ему ответить?', screen: { app: 'WhatsApp', text: 'Aziz: Moy qachon keladi?', image: 'AAAA' } });
+  assert(/ertaga/.test(r.text), r.text);
+  assert(req.parts[0].inlineData?.mimeType === 'image/jpeg' && /ЭКРАН ТЕЛЕФОНА.*WhatsApp/.test(req.parts[1].text) && req.parts[1].text.includes('Moy qachon keladi'), 'screen in the request: ' + JSON.stringify(req).slice(0, 300));
+  const ctx = { chatId: 111, app: true, actions: [] as any[] };
+  eq((await M.TOOLS.phone_action.run(null, { action: 'flashlight', on: true }, ctx)).done_on_phone, { action: 'flashlight', on: true }, 'flashlight');
+  eq((await M.TOOLS.phone_action.run(null, { action: 'volume', level: '150' }, ctx)).done_on_phone.level, '100', 'volume capped');
+  eq((await M.TOOLS.phone_action.run(null, { action: 'whatsapp', phone: '90 123 45 67', text: 'Salom' }, ctx)).done_on_phone.phone, '998901234567', 'whatsapp: local number → +998');
+  assert((await M.TOOLS.phone_action.run(null, { action: 'open_url', url: 'javascript:alert(1)' }, ctx)).error, 'only http(s) links');
+  assert(/Wi-Fi/.test(M.TPL.phone_action({ done_on_phone: { action: 'settings', panel: 'wifi' } })), 'settings text');
+});

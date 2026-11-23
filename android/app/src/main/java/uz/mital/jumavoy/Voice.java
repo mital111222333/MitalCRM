@@ -45,7 +45,17 @@ import java.util.Locale;
 public class Voice {
   static final ComponentName GOOGLE = new ComponentName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.serviceapi.GoogleRecognitionService");
   static final ComponentName DEVICE = new ComponentName("-", "on-device"), DEFAULT = new ComponentName("-", "system");
-  final Activity act;
+  /** where the page lives: the app's screen, or the panel over other apps (Assistant.Session) */
+  interface Host {
+    void close();            // the panel goes away (in the app: to the background)
+    void expand();           // open the full JUMAVOY app
+    String screen();         // what is on the screen under the panel: JSON {app, text, shot} or null
+    String screenShot();     // the screenshot as base64 JPEG, or null
+  }
+  final android.content.Context act; // a Context: the activity, or the assistant session's context
+  final Activity activity;           // null in the panel (no permission dialogs there)
+  final Host host;
+  final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
   final WebView web;
   SpeechRecognizer rec;
   TextToSpeech tts;
@@ -58,8 +68,11 @@ public class Voice {
 
   @JavascriptInterface public int version() { return 5; }
 
-  Voice(Activity act, WebView web) {
-    this.act = act;
+  Voice(Activity act, WebView web) { this(act, act, web, null); }
+  Voice(android.content.Context ctx, Activity activity, WebView web, Host host) {
+    this.act = ctx;
+    this.activity = activity;
+    this.host = host;
     this.web = web;
     tts = new TextToSpeech(act, st -> {
       ttsReady = st == TextToSpeech.SUCCESS;
@@ -76,7 +89,7 @@ public class Voice {
 
   void js(String fn, String arg) {
     String a = arg == null ? "" : JSONObject.quote(arg);
-    act.runOnUiThread(() -> web.evaluateJavascript("window.jvNative && window.jvNative." + fn + " && window.jvNative." + fn + "(" + a + ")", null));
+    ui.post(() -> web.evaluateJavascript("window.jvNative && window.jvNative." + fn + " && window.jvNative." + fn + "(" + a + ")", null));
   }
 
   // ── the internet, the assistant role, a self-check for the «Проверка» screen ──
@@ -98,9 +111,9 @@ public class Voice {
 
   // the «Default apps» screen with «Digital assistant app» (the assistant role cannot be asked for from an app)
   @JavascriptInterface public void openAssistantSettings() {
-    act.runOnUiThread(() -> {
+    ui.post(() -> {
       for (String a : new String[] { Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS, Settings.ACTION_VOICE_INPUT_SETTINGS, Settings.ACTION_SETTINGS }) {
-        try { act.startActivity(new Intent(a)); return; } catch (Exception ignored) { }
+        try { act.startActivity(new Intent(a).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); if (host != null) host.close(); return; } catch (Exception ignored) { }
       }
     });
   }
@@ -162,6 +175,13 @@ public class Voice {
     return o.toString();
   }
 
+  // ── the panel over other apps ──
+  @JavascriptInterface public boolean isPanel() { return host != null; }
+  @JavascriptInterface public void closePanel() { ui.post(() -> { if (host != null) host.close(); else if (activity != null) activity.moveTaskToBack(true); }); }
+  @JavascriptInterface public void openApp() { ui.post(() -> { if (host != null) host.expand(); }); }
+  @JavascriptInterface public String screen() { return host == null ? null : host.screen(); }
+  @JavascriptInterface public String screenShot() { return host == null ? null : host.screenShot(); }
+
   @JavascriptInterface public boolean canListen() { return SpeechRecognizer.isRecognitionAvailable(act) || !recognizers(act).isEmpty() || hasOnDevice(); }
 
   @JavascriptInterface public boolean canSpeak(String lang) {
@@ -172,10 +192,11 @@ public class Voice {
 
   // ── speech recognition ──
   @JavascriptInterface public void listen(String lang) {
-    act.runOnUiThread(() -> {
+    ui.post(() -> {
       if (act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        if (activity == null) { js("onError", "Разрешите микрофон: откройте JUMAVOY и нажмите на сферу."); if (host != null) host.expand(); return; }
         pendingLang = lang;
-        act.requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MainActivity.MIC_NATIVE);
+        activity.requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MainActivity.MIC_NATIVE);
         return;
       }
       begin(lang);
@@ -250,7 +271,7 @@ public class Voice {
     if (e == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) { js("onError", "Нет доступа к микрофону. Разрешите его в настройках приложения."); return; }
     // the recognizer could not (busy, too many requests, no language, no service, no network…) and nothing was said
     // yet → the next one; the words are never lost to a switch in the middle of speech
-    if (!began && step + 1 < plan.size()) { step++; act.runOnUiThread(() -> start(lang)); return; }
+    if (!began && step + 1 < plan.size()) { step++; ui.post(() -> start(lang)); return; }
     JSONObject o = new JSONObject();
     try {
       o.put("code", e); o.put("lang", lang); o.put("heard", began); o.put("tried", tried.toString().trim()); o.put("downloading", downloading);
@@ -265,11 +286,11 @@ public class Voice {
     return r == null || r.isEmpty() || r.get(0) == null ? "" : r.get(0);
   }
 
-  @JavascriptInterface public void stopListen() { act.runOnUiThread(() -> { if (rec != null) rec.stopListening(); }); }
+  @JavascriptInterface public void stopListen() { ui.post(() -> { if (rec != null) rec.stopListening(); }); }
 
   // ── the answer read aloud ──
   @JavascriptInterface public void speak(String text, String lang) {
-    act.runOnUiThread(() -> {
+    ui.post(() -> {
       if (!ttsReady) { js("onSpeakDone", null); return; }
       tts.setLanguage(Locale.forLanguageTag(lang));
       tts.stop();
@@ -281,7 +302,7 @@ public class Voice {
     });
   }
 
-  @JavascriptInterface public void stopSpeak() { act.runOnUiThread(() -> { if (tts != null) tts.stop(); }); }
+  @JavascriptInterface public void stopSpeak() { ui.post(() -> { if (tts != null) tts.stop(); }); }
 
   void destroy() {
     session++;

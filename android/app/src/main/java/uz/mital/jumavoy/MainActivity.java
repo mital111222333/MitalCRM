@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
   long lastUpdate;
   Voice voice;
   PermissionRequest pending;
-  float barTop, barBottom; // status / navigation bar heights in CSS px, handed to the page (--sat / --sab)
+  Edge edge; // status / navigation bar heights for the page, the keyboard (Edge.java)
 
   @Override protected void onCreate(Bundle b) {
     super.onCreate(b);
@@ -70,7 +70,7 @@ public class MainActivity extends Activity {
         try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
         return true; // Telegram, WhatsApp, sites → their own apps
       }
-      @Override public void onPageFinished(WebView v, String url) { sendInsets(); }
+      @Override public void onPageFinished(WebView v, String url) { if (edge != null) edge.send(); }
       // the page itself comes from the phone: opens at once even without the internet (WebFiles)
       @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
         return "GET".equals(r.getMethod()) ? files.serve(r.getUrl().toString()) : null;
@@ -122,7 +122,7 @@ public class MainActivity extends Activity {
     root.setBackgroundColor(Color.BLACK);
     root.addView(web, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
     setContentView(root);
-    edgeToEdge(root);
+    edge = new Edge(getWindow(), root, web);
     if (b != null) web.restoreState(b);
     open(getIntent(), b == null);
     updatePage();
@@ -142,38 +142,6 @@ public class MainActivity extends Activity {
     super.onNewIntent(i);
     setIntent(i);
     open(i, false);
-  }
-
-  /**
-   * Siri-like full screen: the page is drawn under the status and navigation bars (the screen-edge glow reaches the
-   * corners) and gets their heights as CSS variables. Android 15 (targetSdk 35) forces this mode anyway, and there the
-   * keyboard no longer shrinks the window by itself (adjustResize is ignored) — so the keyboard height is taken off
-   * the bottom here, otherwise the keyboard covers the text field.
-   */
-  void edgeToEdge(View root) {
-    if (Build.VERSION.SDK_INT < 30) return; // Android 8–10: black bars, the window resizes for the keyboard by itself
-    getWindow().setDecorFitsSystemWindows(false);
-    getWindow().setStatusBarColor(Color.TRANSPARENT);
-    getWindow().setNavigationBarColor(Color.TRANSPARENT);
-    getWindow().setNavigationBarContrastEnforced(false);
-    root.setOnApplyWindowInsetsListener((v, in) -> {
-      android.graphics.Insets bars = in.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-      android.graphics.Insets ime = in.getInsets(WindowInsets.Type.ime());
-      boolean kb = ime.bottom > bars.bottom;
-      v.setPadding(bars.left, 0, bars.right, kb ? ime.bottom : 0);
-      float d = getResources().getDisplayMetrics().density;
-      barTop = bars.top / d;
-      barBottom = kb ? 0 : bars.bottom / d;
-      sendInsets();
-      return WindowInsets.CONSUMED;
-    });
-    root.requestApplyInsets();
-  }
-
-  void sendInsets() {
-    if (web == null || Build.VERSION.SDK_INT < 30) return;  // Android 8–10: the window is not drawn under the bars
-    web.evaluateJavascript("(function(s){s.setProperty('--sat','" + barTop + "px');s.setProperty('--sab','" + barBottom
-      + "px');window.dispatchEvent(new Event('resize'))})(document.documentElement.style)", null);
   }
 
   boolean isAssist(Intent i) {

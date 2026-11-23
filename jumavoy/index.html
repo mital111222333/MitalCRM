@@ -294,6 +294,26 @@
   .me .filechip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .me img.shot { display: block; max-width: 220px; max-height: 260px; margin: 0 0 6px auto; border-radius: 16px; }
 
+
+  /* ── the panel over other apps (long press of the power button), like Gemini ── */
+  html.panel, body.panel { background: transparent; }
+  body.panel .aura, body.panel #assistWarn, body.panel #net, body.panel .chips, body.panel #tasksBtn, body.panel #statsBtn, body.panel #menuBtn, body.panel #voiceBtn { display: none !important; }
+  .scrim { flex: 1; min-height: 20vh; }
+  .pcard { position: relative; z-index: 3; display: flex; flex-direction: column; max-height: 78vh; min-height: 0; border-radius: 30px 30px 0 0;
+    background: rgba(22,22,24,.84); -webkit-backdrop-filter: blur(34px) saturate(170%); backdrop-filter: blur(34px) saturate(170%);
+    box-shadow: 0 -12px 50px rgba(0,0,0,.45), inset 0 .5px 0 rgba(255,255,255,.14); animation: up .38s cubic-bezier(.2,.9,.25,1); }
+  body.panel header { padding: 14px 16px 2px; }
+  body.panel main { flex: 0 1 auto; min-height: 0; padding-top: 8px; }
+  body.panel .hello h1 { font-size: 26px; }
+  body.panel .hello p { display: none; }
+  body.panel .orb { --s: 64px; }
+  body.panel .dock { padding-top: 12px; }
+  body.panel .live { font-size: 22px; }
+  .scr { display: flex; align-items: center; gap: 8px; align-self: flex-start; margin: 0 16px 8px; height: 34px; padding: 0 14px; border: 0; border-radius: 17px;
+    background: var(--fill2); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.14); color: var(--text); font-size: 14px; }
+  .scr.on { background: linear-gradient(90deg, rgba(255,45,146,.35), rgba(46,139,255,.35)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.3); }
+  .me .scrtag { display: block; margin-bottom: 4px; font: 400 12px/1.3 -apple-system, "Google Sans Text", Roboto, system-ui, sans-serif; color: var(--text2); letter-spacing: 0; }
+
   @media (prefers-reduced-motion: reduce) {
     .edge .spin, .orb i, .thinking, body[data-mode="speak"] .orb { animation: none !important; }
     .new, .menu, .sheet, .sheet-card { animation: none; }
@@ -348,6 +368,7 @@
     <button data-q="/tasks">Задачи</button>
     <button data-q="/reminders">Напоминания</button>
   </div>
+  <button class="scr hidden" id="scrBtn" aria-pressed="false"></button>
   <div class="att hidden" id="att"></div>
   <div class="field">
     <button class="clip" id="clipBtn" aria-label="Прикрепить файл"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></svg></button>
@@ -396,7 +417,7 @@
 </div>
 
 <script>
-const WEB_VERSION = '2026.11.23-4';
+const WEB_VERSION = '2026.11.23-5';
 const API = 'https://oxchgcfyzszemqlvdjjr.supabase.co/functions/v1/ai-bot/app';
 const $ = id => document.getElementById(id);
 const store = {
@@ -480,6 +501,7 @@ function bubble(m, save = true) {
     d.className = 'me';
     if (m.img) { const im = document.createElement('img'); im.className = 'shot'; im.src = m.img; im.alt = ''; d.append(im); }
     else if (m.file) { const fc = document.createElement('div'); fc.className = 'filechip'; fc.append(fileIcon(m.file.name)); const sp = document.createElement('span'); sp.textContent = m.file.name; fc.append(sp); d.append(fc, document.createElement('br')); }
+    if (m.screen) { const t = document.createElement('span'); t.className = 'scrtag'; t.textContent = '📱 про экран: ' + m.screen; d.append(t); }
     if (voiced) { const v = document.createElement('span'); v.className = 'via'; v.title = 'Сказано голосом'; d.append(v); }
     if (text || !m.file) d.append(text || '…');
     if (m.pending) { d.dataset.q = m.pending; pendMark(d, true); }
@@ -491,13 +513,20 @@ function bubble(m, save = true) {
     const b = document.createElement('button'); b.className = 'pill';
     const idle = () => { b.innerHTML = ICON.play + '<span>Прослушать</span>'; };
     idle(); b.onclick = () => speak(text, b, idle);
-    t.append(b);
+    // «Копировать» — a ready reply goes straight into WhatsApp / Telegram
+    const cp = document.createElement('button'); cp.className = 'pill'; cp.textContent = 'Копировать';
+    cp.onclick = async () => {
+      const plain = text.replace(/\*\*/g, '').replace(/<\/?[bi]>/g, '').replace(/^(javob|ответ)\s*:\s*/i, '');
+      try { await navigator.clipboard.writeText(plain); } catch { const ta = document.createElement('textarea'); ta.value = plain; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+      cp.textContent = 'Скопировано'; buzz(8); setTimeout(() => { cp.textContent = 'Копировать'; }, 1800);
+    };
+    t.append(b, cp);
     if (m.ms) { const x = document.createElement('span'); x.className = 'ms'; x.textContent = sec(m.ms); t.append(x); }
     d.append(t);
   }
   if (save) d.classList.add('new');
   log.append(d); scrollDown();
-  if (save) { history_.push({ who: m.who, text, voice: voiced || undefined, ms: m.ms, pending: m.pending, re: m.re, file: m.file }); history_ = history_.slice(-60); store.set('log', history_); }
+  if (save) { history_.push({ who: m.who, text, voice: voiced || undefined, ms: m.ms, pending: m.pending, re: m.re, file: m.file, screen: m.screen }); history_ = history_.slice(-60); store.set('log', history_); }
   return d;
 }
 function note(text, cls = 'note') {
@@ -567,9 +596,10 @@ async function ask(body, shown, voiced) {
   // an alarm or a timer is set by the phone at once — no internet needed, no waiting for the AI
   if (body.text && !body.audio) { const la = localAction(body.text, online()); if (la) return doLocal(la, shown || body.text, voiced); }
   const meText = shown || (body.audio ? 'Голосовое сообщение' : '');
-  if (!online()) return queueQ(body, meText, voiced || !!body.audio, null);
+  const onScreen = withScreen(body, body.text);
+  if (!online()) { delete body.screen; return queueQ(body, meText, voiced || !!body.audio, null); }
   busy = true; setState('думаю');
-  const me = shown ? bubble({ who: 'me', text: shown, voice: voiced }) : null;
+  const me = shown ? bubble({ who: 'me', text: shown, voice: voiced, screen: onScreen ? (scr.app || 'экран') : undefined }) : null;
   const th = note('Думаю…', 'thinking'), t0 = performance.now();
   try {
     const j = await send(body, st => { th.textContent = st + '…'; setState(st.toLowerCase(), 'think'); });
@@ -675,6 +705,18 @@ function localAction(text, isOnline) {
     if (h > 23 || mi > 59) return null;
     const hh = String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
     return { act: { action: 'alarm', hour: h, minute: mi, label: 'JUMAVOY' }, say: `⏰ Будильник на ${hh}` };
+  }
+  // the flashlight and the volume: at once, with or without the internet
+  if (/фонар|chiroq|fonar/.test(s) && s.length < 40) {
+    const off = /выключ|отключ|убер|o'chir|ochir/.test(s);
+    if (off || /включ|зажг|вруби|yoq|yoqib/.test(s)) return { act: { action: 'flashlight', on: !off }, say: off ? '🔦 Фонарик выключен' : '🔦 Фонарик включён' };
+  }
+  if (s.length < 40) {
+    if (/^(сделай )?(громче|погромче)|ovozni (oshir|baland)/.test(s)) return { act: { action: 'volume', level: 'up' }, say: '🔊 Громче' };
+    if (/^(сделай )?(тише|потише)|ovozni (pasaytir|past)/.test(s)) return { act: { action: 'volume', level: 'down' }, say: '🔉 Тише' };
+    if (/^(выключи звук|без звука|отключи звук)|ovozni o'chir/.test(s)) return { act: { action: 'volume', level: 'mute' }, say: '🔇 Звук выключен' };
+    m = s.match(/(?:громкость|ovoz)\D{0,8}(\d{1,3})\s*%?/);
+    if (m && +m[1] <= 100) return { act: { action: 'volume', level: m[1] }, say: `🔊 Громкость ${m[1]}%` };
   }
   if (!isOnline) { // without the internet: the AI cannot be asked, simple phone actions still work
     m = s.match(/^(?:открой|запусти|включи|och(?:ib ber)?)\s+(.{2,30})$/);
@@ -1340,18 +1382,53 @@ $('diagBtn').onclick = openDiag;
 // ── is JUMAVOY still the phone's assistant? Google sometimes switches the assistant back to Gemini by itself ──
 let warnLater = false;
 function checkAssistant() {
-  const bad = !!(N && N.isAssistant && !N.isAssistant()) && !warnLater && !!creds().key;
+  const bad = !PANEL && !!(N && N.isAssistant && !N.isAssistant()) && !warnLater && !!creds().key;
   $('assistWarn').classList.toggle('hidden', !bad);
 }
 $('assistFix').onclick = () => { if (N && N.openAssistantSettings) N.openAssistantSettings(); };
 $('assistLater').onclick = () => { warnLater = true; checkAssistant(); };
 document.addEventListener('visibilitychange', () => { if (document.hidden) return; checkAssistant(); paintNet(); warm(); flush(); });
 
+
+// ── the panel over other apps (Assistant.Session): the same page as a glass card at the bottom, like Gemini ──
+const PANEL = params.has('panel') && !!(N && N.isPanel && N.isPanel());
+const SCREEN_RE = /экран|на экране|это сообщени|этому|ему ответ|ей ответ|что ответить|ответь (ему|ей|им|клиенту)|переведи|перевод|что тут|что здесь|что это|кратко|перескажи|посчитай (это|тут|здесь)|сохрани (этот )?номер|ekran|bunga javob|javob yoz|tarjima|nima deyapti|bu nima/i;
+let scrOn = false, scr = null;
+const scrBtn = $('scrBtn');
+function paintScr() {
+  scrBtn.classList.toggle('hidden', !scr); scrBtn.classList.toggle('on', scrOn); scrBtn.setAttribute('aria-pressed', scrOn);
+  if (scr) scrBtn.textContent = (scrOn ? '✓ ' : '📱 ') + 'Про экран' + (scr.app ? ': ' + scr.app : '');
+}
+function readScreen() { try { const j = N && N.screen ? N.screen() : null; scr = j ? JSON.parse(j) : null; } catch { scr = null; } paintScr(); }
+scrBtn.onclick = () => { scrOn = !scrOn; paintScr(); buzz(6); };
+// the question goes with the screen when the chip is on, or when it plainly asks about the screen («что ему ответить?»)
+function withScreen(body, text) {
+  if (!PANEL || !scr || !(scrOn || SCREEN_RE.test(text || ''))) return false;
+  let shot = null; try { shot = scr.shot && N.screenShot ? N.screenShot() : null; } catch {}
+  body.screen = { app: scr.app || '', text: scr.text || '', image: shot || undefined };
+  return true;
+}
+if (PANEL) {
+  document.documentElement.classList.add('panel'); document.body.classList.add('panel');
+  const card = el('div', 'pcard'), scrim = el('div', 'scrim');
+  scrim.onclick = () => N.closePanel();
+  document.body.insertBefore(scrim, $('head')); document.body.insertBefore(card, $('head'));
+  for (const id of ['head', 'log', 'foot']) card.append($(id));
+  const ex = el('button', 'round'); ex.setAttribute('aria-label', 'Открыть JUMAVOY');
+  ex.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M19 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4"/></svg>';
+  ex.onclick = () => N.openApp();
+  const cl = el('button', 'round', '✕'); cl.setAttribute('aria-label', 'Закрыть'); cl.onclick = () => N.closePanel();
+  $('head').append(ex, cl);
+  jvNative.onScreen = readScreen;
+  window.jumavoyPanelShow = () => { stopSpeaking(); log.innerHTML = ''; greet(); scrOn = false; readScreen(); setTimeout(() => listen(), 200); };
+  window.jumavoyPanelHide = () => { stopSpeaking(); if (rec) { try { rec.stop(); } catch {} } micIdle(); setState('готов'); };
+}
+
 // ── start ──
 function start() {
   log.innerHTML = ''; hint.textContent = HINT;
-  for (const m of history_.slice(-30)) bubble(m, false);
-  if (!history_.length) greet();
+  if (PANEL) { greet(); readScreen(); } // the panel starts a fresh conversation, like Gemini (the history stays in the app)
+  else { for (const m of history_.slice(-30)) bubble(m, false); if (!history_.length) greet(); }
   checkAssistant(); paintNet(); warm();
   if (ASSIST || autoListen) setTimeout(() => listen(), 250);
   setTimeout(flush, 1500);
