@@ -48,12 +48,14 @@ function reset() {
 }
 // deno-lint-ignore require-await
 (globalThis as any).fetch = async (input: any, init: any = {}) => {
-  const url = String(input), method = init.method || 'GET', body = init.body ? JSON.parse(init.body) : undefined;
+  const url = String(input), method = init.method || 'GET', body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
   calls.push({ url, method, body, headers: init.headers });
   const J = (v: any, s = 200) => new Response(JSON.stringify(v), { status: s, headers: { 'Content-Type': 'application/json' } });
   if (url.startsWith('https://api.telegram.org/')) {
     const m = url.split('/').pop();
-    if (m === 'sendMessage') state.sent.push(body);
+    if (m === 'sendMessage') { state.sent.push(body); return J({ ok: true, result: { message_id: state.sent.length } }); }
+    if (m === 'editMessageText') { (state.edits ||= []).push(body); return J({ ok: true, result: { message_id: body.message_id } }); }
+    if (m === 'sendVoice' || m === 'sendAudio') { (state.voices ||= []).push(m); return J({ ok: true, result: {} }); }
     if (m === 'getMe') return J({ ok: true, result: { username: 'mital_team_bot' } });
     return J({ ok: true, result: {} });
   }
@@ -66,6 +68,21 @@ function reset() {
   if (path.startsWith('profiles?')) { const id = path.match(/id=eq\.([0-9a-f-]+)/)![1]; return J(state.profiles[id] ? [state.profiles[id]] : []); }
   if (path === 'team_links' && method === 'POST') { state.links.push(body); return J(null, 201); }
   if (path.startsWith('team_usage?')) return J([{ requests: state.usage || 0 }]);
+  // a tiny store for memory (settings live there) and reminders (the morning plan rows)
+  if (path.startsWith('team_memory')) {
+    const mem = (state.memory ||= []);
+    if (method === 'POST') { mem.push({ id: mem.length + 1, ...body }); return J(null, 201); }
+    if (method === 'DELETE') { const like = decodeURIComponent((path.match(/text=like\.([^&]+)/) || [])[1] || '').replace(/\*$/, ''); state.memory = mem.filter((r: any) => !(like && r.text.startsWith(like))); return J(null, 204); }
+    const chat = +((path.match(/chat_id=eq\.(\d+)/) || [])[1] || 0); return J(mem.filter((r: any) => !chat || r.chat_id === chat));
+  }
+  if (path.startsWith('team_reminders')) {
+    const rem = (state.rem ||= []);
+    if (method === 'POST') { for (const b of [].concat(body)) rem.push({ id: rem.length + 1, sent_at: null, ...(b as any) }); return J(null, 201); }
+    if (method === 'PATCH') { const id = +(path.match(/id=eq\.(\d+)/) || [])[1]; const hit = rem.filter((r: any) => r.id === id && !r.sent_at); for (const r of hit) Object.assign(r, body); return J(hit); }
+    if (path.includes('text=eq.')) return J(rem.filter((r: any) => r.text === '§plan'));
+    return J(rem.filter((r: any) => !r.sent_at && Date.parse(r.due_at) <= Date.now()));
+  }
+  if (path.startsWith('team_users?select=chat_id')) return J(state.users.filter((u: any) => u.profiles.is_active).map((u: any) => ({ chat_id: u.chat_id })));
   if (path === 'rpc/team_usage_add') return J(1);
   if (path.startsWith('rpc/team_cron_check')) return J(body.p === 'good');
   if (method === 'GET') return J([]);
@@ -193,11 +210,13 @@ Deno.test('secrets never leak into logs', () => { eq(M.redact('https://api.teleg
 
 Deno.test('keys: the owner key is never used; a spent key moves to the next one', async () => {
   reset(); state.quota429 = ['keyAAAAAA1'];
-  const d1 = await M.gemini({ contents: [] }), d2 = await M.gemini({ contents: [] });
-  ok(d1.candidates && d2.candidates);
+  const d1 = await M.gemini({ contents: [] });
+  const spentA = () => state.keys.filter((k: string) => k === 'keyAAAAAA1').length, a1 = spentA();
+  const d2 = await M.gemini({ contents: [] }), d3 = await M.gemini({ contents: [] });
+  ok(d1.candidates && d2.candidates && d3.candidates);
   ok(!state.keys.includes('OWNERKEY'), 'owner key used!');
   ok(state.keys.includes('keyBBBBBB2'));
-  eq(state.keys.filter((k: string) => k === 'keyAAAAAA1').length <= 2, true, 'spent key is skipped afterwards');
+  eq(spentA(), a1, 'spent key is skipped afterwards');
 });
 Deno.test('keys: all keys spent → a clear team message', async () => {
   reset(); state.quota429 = ['keyAAAAAA1', 'keyBBBBBB2'];
@@ -211,11 +230,94 @@ Deno.test('keys: no team key → never falls back to the owner key', async () =>
   eq(msg, M.NO_KEY); ok(!(state.keys || []).length, 'no request was sent');
 });
 Deno.test('503 high demand: the fallback model answers', async () => {
-  reset(); M._resetSpent(); state.over503 = 'gemini-3.1-flash-lite';
-  const d = await M.gemini({ contents: [] }); ok(d.candidates, 'fallback answered');
+  reset(); M._resetSpent(); state.over503 = 'gemini-3.5-flash-lite';
+  const d = await M.gemini({ contents: [] }); ok(d.candidates && d._model === 'gemini-3.1-flash-lite', 'fallback answered: ' + d._model);
 });
 Deno.test('503 everywhere: a plain «overloaded» message, not Google text', async () => {
   reset(); M._resetSpent(); state.over503 = '*';
   let msg = ''; try { await M.gemini({ contents: [] }); } catch (e) { msg = (e as any).user; }
   ok(msg.includes('перегружен') && !msg.includes('high demand'), msg);
+});
+
+Deno.test('23.11 like the owner\'s JUMAVOY: Uzbek speech model with the agent\'s OWN clients, one message per voice question, voice answer', async () => {
+  reset(); M._resetSpent(); M._resetDead();
+  const media = new Uint8Array([1, 2, 3]);
+  // Telegram file download
+  const f0 = (globalThis as any).fetch;
+  (globalThis as any).fetch = (input: any, init: any = {}) => {
+    const u = String(input);
+    if (u.includes('/getFile')) return Promise.resolve(new Response(JSON.stringify({ ok: true, result: { file_path: 'v.ogg', file_size: 3 } })));
+    if (u.includes('/file/bot')) return Promise.resolve(new Response(media));
+    return f0(input, init);
+  };
+  try {
+    state.gemini.push({ candidates: [{ content: { parts: [{ audioTranscription: { words: ['Jumavoy,', 'Fozilxon', 'qarzi', 'qancha?'].map(word => ({ word })) } }] } }] });
+    state.gemini.push({ candidates: [{ content: { role: 'model', parts: [{ text: 'Fozilxon Fargona qarzi $12 444.' }] } }] });
+    state.gemini.push({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;rate=24000', data: btoa(String.fromCharCode(...new Uint8Array(4800))) } }] } }] });
+    await M.handle({ update_id: 900, message: { chat: { id: 100, type: 'private' }, voice: { file_id: 'v1', mime_type: 'audio/ogg', duration: 3 } } });
+    const g = calls.filter(c => c.url.includes('generativelanguage'));
+    ok(g[0].url.includes('gemini-3.5-transcribe'), 'speech model first: ' + g[0].url);
+    const ac = g[0].body.generationConfig.audioTranscriptionConfig;
+    ok(ac.languageCodes.includes('uz-UZ') && ac.customVocabulary.includes('Fozilxon Fargona') && ac.customVocabulary.includes('Golden Booster'), 'own clients + products');
+    ok(!JSON.stringify(ac).includes('SECRET CLIENT B'), 'never another agent\'s clients');
+    ok(g[1].url.includes('gemini-3.5-flash-lite') && JSON.stringify(g[1].body.contents.at(-1)).includes('распознано] Fozilxon qarzi qancha?'), 'wake word cut, question answered by the main model');
+    ok(g[1].body.systemInstruction.parts[0].text.includes('ХАРАКТЕР (как Джарвис') && g[1].body.systemInstruction.parts[0].text.includes('Fozil aka'), 'character + name');
+    eq(state.sent.at(-1).text, '🎤 «Jumavoy, Fozilxon qarzi qancha?»\n\n⏳', 'heard at once');
+    eq(state.edits.at(-1).text, '🎤 «Jumavoy, Fozilxon qarzi qancha?»\n\nFozilxon Fargona qarzi $12 444.', 'then the same message becomes the answer');
+    ok((state.voices || []).length === 1, 'a voice question gets a voice answer');
+
+    // the speech model is not available for this key → the Flash model writes it down; asked once a day only
+    reset(); M._resetDead();
+    let sttCalls = 0;
+    const f1 = (globalThis as any).fetch;
+    (globalThis as any).fetch = (input: any, init: any = {}) => {
+      const u = String(input);
+      if (u.includes('gemini-3.5-transcribe')) { sttCalls++; return Promise.resolve(new Response(JSON.stringify({ error: { code: 404, message: 'models/gemini-3.5-transcribe is not found' } }), { status: 404 })); }
+      return f1(input, init);
+    };
+    state.gemini.push({ candidates: [{ content: { parts: [{ text: 'Bugungi marshrut' }] } }] }, { candidates: [{ content: { role: 'model', parts: [{ text: 'Mana.' }] } }] });
+    await M.handle({ update_id: 901, message: { chat: { id: 100, type: 'private' }, voice: { file_id: 'v1', mime_type: 'audio/ogg', duration: 3 } } });
+    const llm = calls.find(c => c.url.includes('gemini-3.6-flash'));
+    ok(llm && llm.body.generationConfig.thinkingConfig.thinkingLevel === 'minimal', 'Flash fallback, no thinking');
+    eq(state.edits.at(-1).text, '🎤 «Bugungi marshrut»\n\nMana.', 'answered');
+    await M.handle({ update_id: 902, message: { chat: { id: 100, type: 'private' }, voice: { file_id: 'v1', mime_type: 'audio/ogg', duration: 3 } } });
+    eq(sttCalls, 2, 'the key\'s unavailable model is not asked again (2 = both keys once)');
+    (globalThis as any).fetch = f1;
+  } finally { (globalThis as any).fetch = f0; }
+});
+
+Deno.test('23.11: settings are hidden from memory; /voice off; the morning plan by code, once a day, not on Sunday, /morning off', async () => {
+  reset();
+  await M.handle({ update_id: 910, message: { chat: { id: 100, type: 'private' }, text: '/voice off' } });
+  ok(state.sent.at(-1).text.includes("o'chirilgan"), state.sent.at(-1).text);
+  eq(await M.setting(100, 'voice'), 'off');
+  eq((await M.TOOLS.memory_list.run(CAB_A, {}, { chatId: 100 })).rows.length, 0, 'a setting is not «remembered»');
+  ok(!M.systemPrompt(CAB_A, state.memory).includes('voice:off'), 'nor in the prompt');
+
+  const t = M.morningText(CAB_A);
+  ok(t.startsWith('☀️ Xayrli tong, Fozil aka!') && t.includes('$1 200 / $40 000 (3%)') && t.includes('Muddati o\'tgan: 1 ta, $104'), t);
+  ok(!t.includes('SECRET'), 'only his own cabinet');
+  await M.handle({ update_id: 911, message: { chat: { id: 100, type: 'private' }, text: '/plan' } });
+  ok(state.sent.at(-1).text.startsWith('☀️ Xayrli tong'), '/plan');
+
+  // the schedule: one §plan row per linked agent, sent once when due
+  state.rem = [{ id: 1, chat_id: 100, due_at: new Date(Date.now() - 60e3).toISOString(), text: '§plan', repeat: 'daily', sent_at: null }];
+  const wd = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tashkent', weekday: 'short' }).format(new Date());
+  const s0 = state.sent.length;
+  const tick = () => M.serve(new Request('https://x/team-bot?cron=1', { method: 'POST', headers: { 'x-team-cron': 'good' } }));
+  await tick();
+  if (wd !== 'Sun') ok(state.sent.slice(s0).some((x: any) => x.text.startsWith('☀️ Xayrli tong')), 'plan sent');
+  ok(Date.parse(state.rem[0].due_at) > Date.now(), 'moved to tomorrow');
+  const s1 = state.sent.length; await tick(); eq(state.sent.length, s1, 'not twice');
+  // switched off by the agent → no plan
+  await M.handle({ update_id: 912, message: { chat: { id: 100, type: 'private' }, text: '/morning off' } });
+  state.rem[0].due_at = new Date(Date.now() - 60e3).toISOString();
+  const s2 = state.sent.length; await tick(); eq(state.sent.length, s2, 'off → nothing');
+  ok(!(await M.TOOLS.reminder_list.run(CAB_A, {}, { chatId: 100 })).rows.some((r: any) => r.text === '§plan'), 'the plan row is not in «my reminders»');
+});
+
+Deno.test('23.11: history is 10 pairs, models are the current ones with thinking «low» for Flash', () => {
+  eq(M.withThinking({}, 'gemini-3.6-flash').generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+  eq(M.withThinking({ a: 1 }, 'gemini-3.5-flash-lite'), { a: 1 });
+  eq(M.cleanHeard('to’lov  o‘g‘il'), "to'lov o'g'il");
 });
