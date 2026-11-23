@@ -165,8 +165,23 @@ let DBC: { at: number; db: any } | null = null;
 const dataError = (why: string) => `Нет доступа к данным CRM (репозиторий ${CFG.owner()}/${CFG.repo()}): ${why}.\n`
   + `Проверьте секрет GH_TOKEN: токен должен быть создан в аккаунте ${CFG.owner()} (Resource owner) с доступом к ${CFG.repo()} и правом Contents: Read-only. `
   + `Если репозиторий в организации — владелец организации должен одобрить токен. После исправления напишите /fresh.`;
-async function loadDB(force = false) {
-  if (!force && DBC && Date.now() - DBC.at < 120e3) return DBC.db;
+// The data is fresh for 2 minutes. After that a question no longer waits for the reload (5–15 s on GitHub): for up to
+// 15 minutes it gets the copy at hand at once and the new one loads in the background (the CRM itself updates every 5 min).
+let DB_LOADING: Promise<any> | null = null;
+function loadDB(force = false): Promise<any> {
+  const age = DBC ? Date.now() - DBC.at : Infinity;
+  if (!force && DBC && age < 120e3) return Promise.resolve(DBC.db);
+  if (!force && DBC && age < 15 * 60e3 && !DBC.db.meta?.data_error) { refreshDB().catch(() => {}); return Promise.resolve(DBC.db); }
+  return refreshDB();
+}
+function refreshDB(): Promise<any> {
+  if (!DB_LOADING) {
+    DB_LOADING = loadDBNow().finally(() => { DB_LOADING = null; });
+    const rt = (globalThis as any).EdgeRuntime; if (rt?.waitUntil) rt.waitUntil(DB_LOADING.catch(() => {}));
+  }
+  return DB_LOADING;
+}
+async function loadDBNow() {
   const errs: string[] = [];
   const main = (p: string) => ghJson(p).catch(e => { errs.push(e.message); console.warn(p, e.message); return null; });
   const [ghCrm, ws, fast, extra, inst, tree] = await Promise.all([
@@ -1083,6 +1098,9 @@ export async function webAppUser(init: string, now = Date.now()): Promise<number
 //   { text }                → { text, heard? }            a question or a /command, answered like in Telegram (shared history)
 //   { audio, mime }         → { text, heard }             voice: written down first (transcribe), then answered
 //   { tts }                 → audio/wav                   the answer read aloud (Gemini TTS)
+//   { warm: true }          → { ok }                      load the CRM data / history / memory ahead (the app opened, the mic is on)
+//   { op: 'memory' }        → { items }                   what JUMAVOY remembers; { op: 'forget', id } deletes one record
+//   …, stream: true         → NDJSON: {stage} lines while working, then the answer with done: true
 // Drafts to agents / clients still come to Telegram with «✅ Отправить» — nothing reaches people from the app by itself.
 export const APP_URL = () => env('APP_URL', 'https://mital111222333.github.io/MitalCRM/jumavoy/');
 export async function appKey(chatId: number | string) {
@@ -1090,6 +1108,8 @@ export async function appKey(chatId: number | string) {
 }
 export async function appLink(chatId: number) { return `${APP_URL()}#c=${chatId}&k=${await appKey(chatId)}`; }
 const APP_CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, x-app-chat, x-app-key', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
+// «Jumavoy, …» — the name said first, like «Окей, Google» — is not part of the question
+export const stripWake = (t: string) => { const x = String(t || '').replace(/^\s*(jumavoy|jumavoi|jumavo[iy]|джумавой|жумавой|чумовой|джумовой|жумовой)\s*[,.!:—–-]*\s*/i, '').trim(); return x || String(t || '').trim(); };
 export async function appApi(req: Request) {
   const out = (v: any, status = 200) => new Response(JSON.stringify(v), { status, headers: { ...APP_CORS, 'Content-Type': 'application/json; charset=utf-8' } });
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: APP_CORS });
@@ -1100,33 +1120,81 @@ export async function appApi(req: Request) {
   let diff = want.length ^ key.length; for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ (key.charCodeAt(i) || 0);
   if (diff) return out({ error: 'Ссылка устарела. Получите новую в боте: /app' }, 401);
   const chatId = Number(chat), b = await req.json().catch(() => ({}));
-  try {
-    if (b.tts) {
+  // the app has just opened / the microphone is on: the CRM data, history and memory load while the person speaks
+  if (b.warm) {
+    const job = Promise.all([loadDB(), getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]).catch(() => {});
+    const rt = (globalThis as any).EdgeRuntime; if (rt?.waitUntil) rt.waitUntil(job); else await job;
+    return out({ ok: true });
+  }
+  // the «Память» screen: what JUMAVOY remembers about the owner, and «forget» one record
+  if (b.op === 'memory') {
+    if (!sbOn()) return out({ error: NO_DB }, 500);
+    MEM.delete(chatId);
+    const rows = await memoryOf(chatId);
+    return out({ items: rows.map((r: any) => ({ id: r.id, kind: r.kind, text: r.text, sphere: r.sphere || 'work', until: r.until || undefined, at: r.created_at })) });
+  }
+  if (b.op === 'forget') {
+    const r = await TOOLS.forget.run(null, { id: n(b.id) }, { chatId });
+    return r.error ? out(r, 404) : out(r);
+  }
+  if (b.tts) {
+    try {
       const s = spokenText(String(b.tts)); if (s.length < 2) return out({ error: 'Нечего читать' }, 400);
       const { pcm, rate } = await tts(s);
       return new Response(pcmToWav(pcm, rate) as BodyInit, { headers: { ...APP_CORS, 'Content-Type': 'audio/wav' } });
-    }
-    const t0 = Date.now();
+    } catch (e) { return out({ error: redact((e as Error).message) || 'Ошибка озвучки' }, 500); } finally { await usageSettled(); }
+  }
+  // { stream: true }: newline-separated JSON — {"stage":"Смотрю прайс"} while working, then the answer itself
+  if (b.stream) {
+    const enc = new TextEncoder();
+    const body = new ReadableStream({
+      async start(ctrl) {
+        const send = (v: any) => { try { ctrl.enqueue(enc.encode(JSON.stringify(v) + '\n')); } catch { /* the app went away */ } };
+        const r = await appAnswer(chatId, b, st => send({ stage: st }));
+        send({ ...r.body, done: true, status: r.status });
+        try { ctrl.close(); } catch { /* closed */ }
+      },
+    });
+    return new Response(body, { headers: { ...APP_CORS, 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' } });
+  }
+  const r = await appAnswer(chatId, b);
+  return out(r.body, r.status);
+}
+async function appAnswer(chatId: number, b: any, stage?: (s: string) => void): Promise<{ status: number; body: any }> {
+  const t0 = Date.now(), ms: any = {};
+  try {
     let text = String(b.text || '').trim().slice(0, 4000), heard = b.voice && text ? text : ''; // voice: written down by the phone itself
     if (b.audio) {
-      const h = await transcribe({ inlineData: { mimeType: String(b.mime || 'audio/webm').split(';')[0], data: String(b.audio) } });
-      if (h === null) return out({ error: 'Не удалось распознать голос. Попробуйте ещё раз.' }, 502);
-      if (!h) return out({ text: '🎤 Не расслышал. Повторите, пожалуйста.', heard: '' });
+      stage?.('Расшифровываю голос');
+      const media = { inlineData: { mimeType: String(b.mime || 'audio/webm').split(';')[0], data: String(b.audio) } };
+      const t1 = Date.now();
+      let h = await transcribe(media);
+      const fb = fallbackModel();
+      if (h === null && fb && fb !== 'off') h = await transcribe(media, fb); // one more try on the other model
+      ms.transcribe = Date.now() - t1;
+      if (h === null) return { status: 502, body: { error: 'Не удалось распознать голос. Скажите ещё раз или напишите текстом.' } };
+      if (!h) return { status: 200, body: { text: '🎤 Не расслышал. Повторите, пожалуйста.', heard: '' } };
       heard = text = h;
     }
-    if (!text) return out({ error: 'Пустой вопрос' }, 400);
-    if (/^\/(start|help)\b/.test(text)) return out({ text: HELP });
-    if (/^\/new\b/.test(text)) { await resetHistory(chatId); return out({ text: 'Начали заново. Спрашивайте 🙂' }); }
+    text = stripWake(text); if (heard) heard = stripWake(heard);
+    if (!text) return { status: 400, body: { error: 'Пустой вопрос' } };
+    if (/^\/(start|help)\b/.test(text)) return { status: 200, body: { text: HELP } };
+    if (/^\/new\b/.test(text)) { await resetHistory(chatId); return { status: 200, body: { text: 'Начали заново. Спрашивайте 🙂' } }; }
     const quick = text.startsWith('/') ? await command(text, chatId) : null;
-    if (quick) return out({ text: quick, heard: heard || undefined, ms: Date.now() - t0 });
+    if (quick) return { status: 200, body: { text: quick, heard: heard || undefined, ms: Date.now() - t0 } };
+    stage?.('Думаю');
+    const t2 = Date.now();
     const [db] = await Promise.all([loadDB(), getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
-    const res = await ask(db, chatId, [{ text: `[приложение] ${heard ? `(голосовое сообщение, расшифровка) ${heard}` : text}` }], text, undefined, true);
+    ms.data = Date.now() - t2;
+    const t3 = Date.now();
+    const res = await ask(db, chatId, [{ text: `[приложение] ${heard ? `(голосовое сообщение, расшифровка) ${heard}` : text}` }], text, undefined, true, stage);
+    ms.ai = Date.now() - t3;
     // a keyboard a tool prepared (a task card, a reminder) goes to Telegram with the answer, where its buttons work
     if (KB.has(chatId)) await say(chatId, `📱 Из приложения: ${heard || text}\n\n${res.text}`);
-    return out({ text: res.text, heard: heard || undefined, ms: Date.now() - t0, requests: res.requests, actions: res.actions?.length ? res.actions : undefined, telegram: res.used.some((x: string) => ['message_agent', 'crm_task', 'crm_note', 'message_client', 'oilbook_action'].includes(x)) || undefined });
+    return { status: 200, body: { text: res.text, heard: heard || undefined, ms: Date.now() - t0, timing: ms, requests: res.requests, actions: res.actions?.length ? res.actions : undefined, telegram: res.used.some((x: string) => ['message_agent', 'crm_task', 'crm_note', 'message_client', 'oilbook_action'].includes(x)) || undefined } };
   } catch (e) {
     console.error('app', redact((e as Error)?.stack || e));
-    return out({ error: redact((e as Error).message) || 'Ошибка' }, 500);
+    return { status: 500, body: { error: redact((e as Error).message) || 'Ошибка' } };
   } finally { KB.delete(chatId); await usageSettled(); }
 }
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, x-tg-init', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
@@ -3036,7 +3104,7 @@ export function priceLine(line: string) {
 export function priceRows(notebook: any[]) {
   const map = new Map<string, any>(); let source = '', date = '';
   for (const doc of [...(notebook || [])].sort((a, b) => n(a.id) - n(b.id))) {
-    const found: any[] = []; let section = '', last = '', orphans: any[] = [];
+    const found: any[] = [], orphans: any[] = []; let section = '', last = '';
     const d = (String(doc.content || '').match(/\b(\d{2}\.\d{2}\.\d{4})\b/) || [])[1] || '';
     for (const line of String(doc.content || '').split(/\r?\n/)) {
       const p = priceLine(line);
@@ -3629,13 +3697,31 @@ async function gemini(body: any, model = CFG.model(), canFallback = true): Promi
   }
   const isSmart = model === smartModel() && model !== CFG.model();
   const search = !!body.tools?.some((t: any) => t.google_search);
+  // Gemini 2.5 Flash thinks as long as it likes (10–30 s on a hard question): a cap keeps the answer quick
+  if (/^gemini-2\.5-flash(?!-lite)/.test(model) && !body.generationConfig?.thinkingConfig) {
+    const budget = n(env('GEMINI_THINK_BUDGET', '1024'));
+    body = { ...body, generationConfig: { ...(body.generationConfig || {}), thinkingConfig: { thinkingBudget: budget } } };
+  }
   // the key goes in a header, not in the URL: a network error prints the whole URL, and it reached the logs
   const once1 = () => fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': headerSafe('GEMINI_KEY', CFG.gKey()) }, body: JSON.stringify(body),
   }, 90000);
+  // Flash-Lite usually answers in 1–3 s but now and then hangs for 20 s on the same request. A request still
+  // without an answer after GEMINI_HEDGE_MS (7 s; 0 = off) gets a second identical one, and the first answer wins.
+  const hedged = () => {
+    const h = n(env('GEMINI_HEDGE_MS', '7000'));
+    if (search || !h) return once1();
+    return new Promise<Response>((res, rej) => {
+      let left = 1, settled = false, t: any = 0;
+      const take = (r: Response) => { if (settled) { r.body?.cancel().catch(() => {}); return; } settled = true; clearTimeout(t); res(r); };
+      const fail = (e: any) => { if (--left <= 0 && !settled) { settled = true; clearTimeout(t); rej(e); } };
+      once1().then(take, fail);
+      t = setTimeout(() => { if (settled) return; left++; console.warn('gemini slow:', model, h, 'ms → a second request'); once1().then(take, fail); }, h);
+    });
+  };
   const call = async () => {
     // 500/503 «the model is experiencing high demand» is temporary: two more tries before giving up
-    let r = await once1();
+    let r = await hedged();
     for (const wait of [1500, 4000]) { if (r.status !== 500 && r.status !== 503) break; await r.body?.cancel().catch(() => {}); await sleep(wait); r = await once1(); }
     const d = await r.json().catch(() => ({}));
     if (r.ok || r.status === 429) USAGE_P.push(trackUsage(model, r.status === 429, d.usageMetadata));
@@ -3775,11 +3861,12 @@ function zipStore(files: [string, string][]): Uint8Array {
   for (const x of all) { out.set(x, p); p += x.length; }
   return out;
 }
+// deno-lint-ignore no-control-regex -- control characters are not allowed in XML
 const xesc = (s: any) => String(s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const colLetter = (i: number) => { let s = ''; for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
 export function makeXlsx(sheets: { name: string; rows: any[][] }[]): Uint8Array {
   const used = new Set<string>();
-  const names = sheets.map(s => { let b = String(s.name || 'Лист').replace(/[\[\]:*?/\\]/g, ' ').slice(0, 31).trim() || 'Лист', x = b, k = 2; while (used.has(x.toLowerCase())) x = `${b.slice(0, 28)} ${k++}`; used.add(x.toLowerCase()); return x; });
+  const names = sheets.map(s => { const b = String(s.name || 'Лист').replace(/[\[\]:*?/\\]/g, ' ').slice(0, 31).trim() || 'Лист'; let x = b, k = 2; while (used.has(x.toLowerCase())) x = `${b.slice(0, 28)} ${k++}`; used.add(x.toLowerCase()); return x; });
   const ws = sheets.map(s => {
     const w: number[] = [];
     const rows = s.rows.map((row, ri) => `<row r="${ri + 1}">${row.map((v, ci) => {
@@ -3817,7 +3904,19 @@ async function sendExcel(chatId: number, tool: string, args: any, result: any): 
   return name;
 }
 
-export async function ask(db: any, chatId: number, userParts: any[], qText: string, media?: { file_id: string; mime: string }, app = false) {
+// what the app shows while the answer is being made («Ищу клиента», «Смотрю прайс»…)
+const STAGE: Record<string, string> = {
+  find_client: 'Ищу клиента', client_card: 'Открываю карточку клиента', orders: 'Смотрю заказы', payments: 'Смотрю оплаты',
+  debtors: 'Смотрю должников', collect_today: 'Смотрю, кого собрать сегодня', agent_report: 'Смотрю отчёт агента', agents_overview: 'Смотрю агентов',
+  sleeping_clients: 'Ищу спящих клиентов', stopped_clients: 'Ищу, кто перестал брать', top_products: 'Смотрю продажи товаров', stock: 'Смотрю склад',
+  stock_running_out: 'Смотрю, что заканчивается', price_list: 'Смотрю прайс', promo_calc: 'Считаю акцию', plan_forecast: 'Считаю план',
+  promises: 'Смотрю обещания оплат', crm_explore: 'Смотрю данные CRM', crm_query: 'Ищу в CRM', web_research: 'Ищу в интернете', open_page: 'Открываю страницу',
+  notebook_search: 'Ищу в блокноте', remember: 'Запоминаю', forget: 'Удаляю из памяти', memory_list: 'Смотрю память', reminder_add: 'Ставлю напоминание',
+  reminder_list: 'Смотрю напоминания', task_add: 'Ставлю задачу', task_list: 'Смотрю задачи', weather: 'Смотрю погоду', currency_rates: 'Смотрю курс',
+  news: 'Смотрю новости', calendar_events: 'Смотрю календарь', phone_action: 'Готовлю действие на телефоне', client_info: 'Смотрю досье клиента',
+  client_info_add: 'Записываю о клиенте', personal_debts: 'Смотрю личные долги', personal_debt_add: 'Записываю долг', message_agent: 'Готовлю сообщение',
+};
+export async function ask(db: any, chatId: number, userParts: any[], qText: string, media?: { file_id: string; mime: string }, app = false, progress?: (s: string) => void) {
   const actions: any[] = []; // things to do on the phone (phone_action) — the app does them after the answer
   const [hist, mem, skills] = await Promise.all([getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
   // a correction of the previous answer: the AI is told to fix it and to keep a general rule from it (learning)
@@ -3833,6 +3932,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
   let requests = 0, checked = false;
   for (let step = 0; step < 7; step++) {
     requests++;
+    if (step > 0) progress?.('Пишу ответ');
     const d = await gemini({
       systemInstruction: { parts: [{ text: sys }] }, contents,
       tools: [{ functionDeclarations: decl }], generationConfig: { temperature: 0.1 },
@@ -3862,6 +3962,7 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
     const responses = [], done: { name: string; args: any; result: any }[] = [];
     for (const p of calls) {
       const { name } = p.functionCall, args = { ...(p.functionCall.args || {}) }; used.push(name);
+      progress?.(STAGE[name] || 'Смотрю данные');
       const xls = (args.excel || wantXls) && !WRITES.has(name) && !NO_XLS.has(name);
       if (xls && TOOLS[name]?.params?.limit && args.limit == null) args.limit = 1000; // a file holds the whole list
       let result: any;
@@ -4510,9 +4611,9 @@ export const TRANSCRIBE_PROMPT = `Запиши ДОСЛОВНО, что сказ
 5W-30, 10W-40, 5W-40, 0W-20, ATF, SQ, SN, SP, qizil (red), binafsha (purple), karobka (коробка), dona (штука), litr;
 aksiya, prays-list, narx / narxi (цена), chegirma (скидка), bonus, qarz (долг), to'lov (оплата), qoldiq (остаток), ombor / sklad (склад), zakaz, mijoz (клиент), agent, reja (план), oylik, hisobla (посчитай), yubor (отправь), ayt (скажи).
 Если речи нет или ничего не разобрать — ответь одним словом: ПУСТО`;
-async function transcribe(media: any): Promise<string | null> {
+async function transcribe(media: any, model = CFG.model()): Promise<string | null> {
   try {
-    const d = await gemini({ contents: [{ role: 'user', parts: [media, { text: TRANSCRIBE_PROMPT }] }], generationConfig: { temperature: 0 } });
+    const d = await gemini({ contents: [{ role: 'user', parts: [media, { text: TRANSCRIBE_PROMPT }] }], generationConfig: { temperature: 0 } }, model, model === CFG.model());
     const t = (d.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join(' ').replace(/\s+/g, ' ').trim().replace(/^[«"]|[»"]$/g, '');
     return /^ПУСТО\.?$/i.test(t) ? '' : t.slice(0, 2000);
   } catch (e) { console.warn('transcribe', redact((e as Error).message)); if ((e as Error).message.includes('лимит')) throw e; return null; }

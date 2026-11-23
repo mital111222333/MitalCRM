@@ -2,14 +2,19 @@ package uz.mital.jumavoy;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.role.RoleManager;
 import android.content.ComponentName;
 import android.content.Intent;
-import android.os.Build;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.os.Build;
 import android.os.Bundle;
-import android.app.role.RoleManager;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
+import android.speech.RecognitionService;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
@@ -17,27 +22,42 @@ import android.speech.tts.UtteranceProgressListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
- * The phone's own voice for the web app: speech recognition (Google, on the phone, words appear while speaking, the end
- * of a phrase is found by the recognizer) and text-to-speech. Both are instant and spend no Gemini requests.
+ * The phone's own voice for the web app: speech recognition (words appear while speaking, the end of a phrase is found
+ * by the recognizer) and text-to-speech. Both are instant and spend no Gemini requests.
+ *
+ * Recognizers are tried in turn — Google's service, the phone's default one, the on-device one (Android 12+; first when
+ * there is no internet) — while nothing has been said yet. If none can (e.g. the phone has no Uzbek), the page is told
+ * why (onFail) and records the voice itself for the server.
+ *
  * JS → window.JumavoyNative.listen("ru-RU") / stopListen() / speak(text, "ru-RU") / stopSpeak() / canSpeak(lang) / canListen()
- * Java → window.jvNative.onPartial(text) / onResult(text) / onError(msg) / onLevel(0..1) / onEnd() / onSpeakDone()
+ *      / isOnline() / isAssistant() / openAssistantSettings() / diag()
+ * Java → window.jvNative.onReady() / onPartial(text) / onResult(text) / onLevel(0..1) / onEnd() / onSpeakDone()
+ *      / onFail({code, msg, tried, heard, lang}) / onError(msg) — the last one for nothing said («») and old pages
  */
 public class Voice {
+  static final ComponentName GOOGLE = new ComponentName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.serviceapi.GoogleRecognitionService");
+  static final int E_DEFAULT = 0, E_GOOGLE = 1, E_DEVICE = 2;
+  static final String[] E_NAME = { "система", "Google", "на телефоне" };
   final Activity act;
   final WebView web;
   SpeechRecognizer rec;
   TextToSpeech tts;
   boolean ttsReady;
   String pendingLang;
-  int engine; // 0 the phone's default recognizer, 1 Google's service by name, 2 the on-device one (Android 12+)
+  final List<Integer> plan = new ArrayList<>();
+  int step, session;
+  boolean began; // the person started speaking — another recognizer would lose the words
+  final StringBuilder tried = new StringBuilder();
 
-  @JavascriptInterface public int version() { return 3; }
+  @JavascriptInterface public int version() { return 4; }
 
   Voice(Activity act, WebView web) {
     this.act = act;
@@ -60,6 +80,16 @@ public class Voice {
     act.runOnUiThread(() -> web.evaluateJavascript("window.jvNative && window.jvNative." + fn + " && window.jvNative." + fn + "(" + a + ")", null));
   }
 
+  // ── the internet, the assistant role, a self-check for the «Проверка» screen ──
+  @JavascriptInterface public boolean isOnline() {
+    try {
+      ConnectivityManager cm = act.getSystemService(ConnectivityManager.class);
+      Network nw = cm == null ? null : cm.getActiveNetwork();
+      NetworkCapabilities c = nw == null ? null : cm.getNetworkCapabilities(nw);
+      return c != null && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+    } catch (Exception e) { return true; } // unknown → let the request try
+  }
+
   // is JUMAVOY still the phone's digital assistant? (Google sometimes switches it back to Gemini by itself)
   @JavascriptInterface public boolean isAssistant() {
     if (Build.VERSION.SDK_INT < 29) return true;
@@ -76,7 +106,35 @@ public class Voice {
     });
   }
 
-  @JavascriptInterface public boolean canListen() { return SpeechRecognizer.isRecognitionAvailable(act); }
+  boolean hasGoogle() {
+    try { act.getPackageManager().getServiceInfo(GOOGLE, 0); return true; } catch (Exception e) { return false; }
+  }
+  boolean hasOnDevice() { return Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(act); }
+
+  @JavascriptInterface public String diag() {
+    JSONObject o = new JSONObject();
+    try {
+      o.put("apk", WebFiles.apkName(act));
+      o.put("bridge", version());
+      o.put("android", Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")");
+      o.put("phone", Build.MANUFACTURER + " " + Build.MODEL);
+      o.put("online", isOnline());
+      o.put("assistant", isAssistant());
+      o.put("mic", act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED);
+      o.put("google", hasGoogle());
+      o.put("onDevice", hasOnDevice());
+      o.put("recognition", SpeechRecognizer.isRecognitionAvailable(act));
+      JSONArray rs = new JSONArray();
+      for (ResolveInfo r : act.getPackageManager().queryIntentServices(new Intent(RecognitionService.SERVICE_INTERFACE), 0)) rs.put(r.serviceInfo.packageName);
+      o.put("recognizers", rs);
+      o.put("ttsRu", canSpeak("ru-RU"));
+      o.put("ttsUz", canSpeak("uz-UZ"));
+      o.put("lastTry", tried.toString());
+    } catch (Exception ignored) { }
+    return o.toString();
+  }
+
+  @JavascriptInterface public boolean canListen() { return SpeechRecognizer.isRecognitionAvailable(act) || hasGoogle() || hasOnDevice(); }
 
   @JavascriptInterface public boolean canSpeak(String lang) {
     if (!ttsReady) return false;
@@ -84,6 +142,7 @@ public class Voice {
     return r >= TextToSpeech.LANG_AVAILABLE;
   }
 
+  // ── speech recognition ──
   @JavascriptInterface public void listen(String lang) {
     act.runOnUiThread(() -> {
       if (act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -91,45 +150,48 @@ public class Voice {
         act.requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, MainActivity.MIC_NATIVE);
         return;
       }
-      engine = 0;
-      start(lang);
+      begin(lang);
     });
   }
 
   void permissionResult(boolean ok) {
     if (pendingLang == null) return;
     String l = pendingLang; pendingLang = null;
-    if (ok) { engine = 0; start(l); } else js("onError", "Нет доступа к микрофону. Разрешите его в настройках приложения.");
+    if (ok) begin(l); else js("onError", "Нет доступа к микрофону. Разрешите его в настройках приложения.");
+  }
+
+  void begin(String lang) {
+    plan.clear();
+    boolean online = isOnline(), device = hasOnDevice();
+    if (!online && device) plan.add(E_DEVICE);         // no internet: the on-device recognizer works without it
+    if (hasGoogle()) plan.add(E_GOOGLE);
+    plan.add(E_DEFAULT);                               // (while JUMAVOY is the assistant this is Recognizer.java → Google)
+    if (device && !plan.contains(E_DEVICE)) plan.add(E_DEVICE);
+    step = 0; tried.setLength(0);
+    start(lang);
   }
 
   void start(String lang) {
     if (tts != null) tts.stop();
     if (rec != null) { rec.destroy(); rec = null; }
-    rec = engine == 1 ? SpeechRecognizer.createSpeechRecognizer(act, new ComponentName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.serviceapi.GoogleRecognitionService"))
-      : engine == 2 && Build.VERSION.SDK_INT >= 31 ? SpeechRecognizer.createOnDeviceSpeechRecognizer(act)
-      : SpeechRecognizer.createSpeechRecognizer(act);
+    final int engine = plan.get(step), my = ++session;
+    began = false;
+    try {
+      rec = engine == E_GOOGLE ? SpeechRecognizer.createSpeechRecognizer(act, GOOGLE)
+        : engine == E_DEVICE && Build.VERSION.SDK_INT >= 31 ? SpeechRecognizer.createOnDeviceSpeechRecognizer(act)
+        : SpeechRecognizer.createSpeechRecognizer(act);
+    } catch (Exception e) { failed(lang, engine, SpeechRecognizer.ERROR_CLIENT); return; }
     final String lng = lang;
     rec.setRecognitionListener(new RecognitionListener() {
-      @Override public void onReadyForSpeech(Bundle b) { js("onReady", null); }
-      @Override public void onBeginningOfSpeech() { }
-      @Override public void onRmsChanged(float db) { float v = Math.max(0f, Math.min(1f, (db + 2f) / 12f)); js("onLevel", String.valueOf(v)); }
+      boolean live() { return my == session; }
+      @Override public void onReadyForSpeech(Bundle b) { if (live()) js("onReady", null); }
+      @Override public void onBeginningOfSpeech() { if (live()) began = true; }
+      @Override public void onRmsChanged(float db) { if (live()) { float v = Math.max(0f, Math.min(1f, (db + 2f) / 12f)); js("onLevel", String.valueOf(v)); } }
       @Override public void onBufferReceived(byte[] b) { }
-      @Override public void onEndOfSpeech() { js("onEnd", null); }
-      @Override public void onError(int e) {
-        // the recognizer refused (10 too many requests, 5 client, 8 busy, 11 disconnected, 12/13 language): the next one is tried
-        if ((e == 10 || e == 5 || e == 8 || e == 11 || e == 12 || e == 13) && engine < 2) {
-          engine++;
-          act.runOnUiThread(() -> start(lng));
-          return;
-        }
-        String m = e == SpeechRecognizer.ERROR_NO_MATCH || e == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ? "" // nothing said
-          : e == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ? "Нет доступа к микрофону."
-          : e == SpeechRecognizer.ERROR_NETWORK || e == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ? "Нет интернета для распознавания речи."
-          : "Распознавание речи: ошибка " + e;
-        js("onError", m);
-      }
-      @Override public void onResults(Bundle b) { js("onResult", best(b)); }
-      @Override public void onPartialResults(Bundle b) { String t = best(b); if (!t.isEmpty()) js("onPartial", t); }
+      @Override public void onEndOfSpeech() { if (live()) js("onEnd", null); }
+      @Override public void onError(int e) { if (live()) failed(lng, engine, e); }
+      @Override public void onResults(Bundle b) { if (live()) { tried.append(E_NAME[engine]).append(": ok "); js("onResult", best(b)); } }
+      @Override public void onPartialResults(Bundle b) { if (!live()) return; String t = best(b); if (!t.isEmpty()) { began = true; js("onPartial", t); } }
       @Override public void onEvent(int t, Bundle b) { }
     });
     Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
@@ -138,9 +200,28 @@ public class Voice {
     i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lang);
     i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
     i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-    i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L);
-    i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L);
-    rec.startListening(i);
+    if (engine == E_DEVICE) i.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
+    // a pause to think («…bugun kamandirovkaga… Delpin, Eco Filter») must not end the question
+    i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L);
+    i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L);
+    try { rec.startListening(i); } catch (Exception e) { failed(lang, engine, SpeechRecognizer.ERROR_CLIENT); }
+  }
+
+  void failed(String lang, int engine, int e) {
+    tried.append(E_NAME[engine]).append(": ").append(e).append(' ');
+    // nothing said (7 no match, 6 silence) → simply nothing; no permission → say so
+    if (e == SpeechRecognizer.ERROR_NO_MATCH || e == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) { js("onError", ""); return; }
+    if (e == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) { js("onError", "Нет доступа к микрофону. Разрешите его в настройках приложения."); return; }
+    // the recognizer could not (busy, too many requests, no language, no service, no network…) and nothing was said
+    // yet → the next one; the words are never lost to a switch in the middle of speech
+    if (!began && step + 1 < plan.size()) { step++; act.runOnUiThread(() -> start(lang)); return; }
+    JSONObject o = new JSONObject();
+    try {
+      o.put("code", e); o.put("lang", lang); o.put("heard", began); o.put("tried", tried.toString().trim());
+      o.put("msg", e == SpeechRecognizer.ERROR_NETWORK || e == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ? "Нет интернета для распознавания речи."
+        : e == 12 || e == 13 ? "Телефон не распознаёт этот язык." : "Распознавание речи: ошибка " + e);
+    } catch (Exception ignored) { }
+    js("onFail", o.toString());
   }
 
   static String best(Bundle b) {
@@ -150,6 +231,7 @@ public class Voice {
 
   @JavascriptInterface public void stopListen() { act.runOnUiThread(() -> { if (rec != null) rec.stopListening(); }); }
 
+  // ── the answer read aloud ──
   @JavascriptInterface public void speak(String text, String lang) {
     act.runOnUiThread(() -> {
       if (!ttsReady) { js("onSpeakDone", null); return; }
@@ -166,6 +248,7 @@ public class Voice {
   @JavascriptInterface public void stopSpeak() { act.runOnUiThread(() -> { if (tts != null) tts.stop(); }); }
 
   void destroy() {
+    session++;
     if (rec != null) rec.destroy();
     if (tts != null) tts.shutdown();
   }

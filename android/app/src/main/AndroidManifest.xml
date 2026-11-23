@@ -4,6 +4,8 @@
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
   <uses-permission android:name="android.permission.VIBRATE" />
+  <!-- online / offline: the page queues questions without the internet (WebView needs it for navigator.onLine too) -->
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
   <!-- Android 11+: to find the phone's speech recognizer and text-to-speech engine -->
   <queries>

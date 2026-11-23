@@ -7,7 +7,7 @@ name: android
 on:
   push:
     branches: [main]
-    paths: ['android/**', '.github/workflows/android.yml']
+    paths: ['android/**', 'jumavoy/**', '.github/workflows/android.yml']
   workflow_dispatch:
 permissions:
   contents: write
@@ -26,6 +26,8 @@ jobs:
           KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
           VCODE: ${{ github.run_number }}
         run: |
+          # the page is built into the APK: JUMAVOY opens without the internet (newer copies come from GitHub later)
+          mkdir -p app/src/main/assets/web && cp ../jumavoy/index.html ../jumavoy/manifest.json ../jumavoy/icon-*.png app/src/main/assets/web/
           if [ -n "$KS_PASS" ]; then
             pip install -q pycryptodome cryptography
             python3 tools/signing_key.py "$RUNNER_TEMP/jv.p12" && export KS_FILE="$RUNNER_TEMP/jv.p12"

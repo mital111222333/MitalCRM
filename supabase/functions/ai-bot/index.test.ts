@@ -1700,3 +1700,40 @@ D.test('phone actions: in the app the AI asks for an alarm → the app gets it; 
   const cal = await M.TOOLS.phone_action.run(null, { action: 'calendar', title: 'Встреча с Fozilxon', start: '2099-01-05T15:00' }, { chatId: 111, app: true, actions: [] });
   eq(cal.done_on_phone.end_ms - cal.done_on_phone.start_ms, 3600e3, 'calendar: an hour by default');
 });
+
+const call0 = call; // the AI calls a function (the tests below have their own «call» for the app)
+D.test('app API: «Jumavoy, …» is not part of the question; stream gives stages then the answer; warm; memory screen and forget', async () => {
+  eq(M.stripWake('Jumavoy, bugun kamandirovkaga'), 'bugun kamandirovkaga', 'wake word (latin)');
+  eq(M.stripWake('Джумавой сколько стоит'), 'сколько стоит', 'wake word (cyrillic)');
+  eq(M.stripWake('Jumavoy'), 'Jumavoy', 'only the name stays as it is');
+  await tgPost({ text: '/app' });
+  const k = (lastText().match(/#c=111&k=([0-9a-f]{32})/) || [])[1];
+  const call = (body: any) => M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'POST', headers: { 'content-type': 'application/json', 'x-app-chat': '111', 'x-app-key': k }, body: JSON.stringify(body) }));
+  let q = '';
+  GEM = (b: any) => { q = JSON.stringify(b.contents?.at(-1)); return say('Ok'); };
+  const r = await (await call({ text: 'Jumavoy, qancha qarz bor', voice: true })).json();
+  assert(q.includes('расшифровка) qancha qarz bor') && r.heard === 'qancha qarz bor', 'wake word removed: ' + q);
+  assert(r.timing && typeof r.timing.ai === 'number', 'timing: ' + JSON.stringify(r));
+
+  let step = 0;
+  GEM = () => { step++; return step === 1 ? call0('debtors', {}) : say('Должники: Fozilxon'); };
+  const res = await call({ text: 'кто должен', stream: true });
+  assert(/ndjson/.test(res.headers.get('content-type') || ''), 'ndjson');
+  const lines: any[] = (await res.text()).trim().split('\n').map((l: string) => JSON.parse(l));
+  assert(lines.some((l: any) => l.stage === 'Смотрю должников'), 'stage: ' + JSON.stringify(lines));
+  const last = lines.at(-1);
+  assert(last.done && last.status === 200 && last.text, 'final: ' + JSON.stringify(last));
+
+  eq(await (await call({ warm: true })).json(), { ok: true }, 'warm');
+
+  GEM = () => call0('remember', { text: 'Любит короткие ответы', kind: 'fact' });
+  await call({ text: 'запомни: я люблю короткие ответы' });
+  const m = await (await call({ op: 'memory' })).json();
+  const it = m.items.find((x: any) => /короткие ответы/.test(x.text));
+  assert(it && it.id && it.kind === 'fact', 'memory list: ' + JSON.stringify(m));
+  const f = await call({ op: 'forget', id: it.id });
+  eq(f.status, 200, 'forget');
+  const m2 = await (await call({ op: 'memory' })).json();
+  assert(!m2.items.some((x: any) => x.id === it.id), 'forgotten');
+  eq((await call({ op: 'forget', id: 999999 })).status, 404, 'no such record');
+});

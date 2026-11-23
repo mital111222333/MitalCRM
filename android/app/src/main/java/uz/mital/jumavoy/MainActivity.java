@@ -13,6 +13,10 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.webkit.PermissionRequest;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.ServiceWorkerClient;
+import android.webkit.ServiceWorkerController;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -32,12 +36,21 @@ public class MainActivity extends Activity {
   static final String BASE = "https://mital111222333.github.io/MitalCRM/jumavoy/";
   static final int MIC = 1, MIC_NATIVE = 2;
   WebView web;
+  WebFiles files;
+  long lastUpdate;
   Voice voice;
   PermissionRequest pending;
   float barTop, barBottom; // status / navigation bar heights in CSS px, handed to the page (--sat / --sab)
 
   @Override protected void onCreate(Bundle b) {
     super.onCreate(b);
+    files = new WebFiles(this);
+    // a service worker left by an older version must not stand between the page and the app's own copy
+    try {
+      ServiceWorkerController.getInstance().setServiceWorkerClient(new ServiceWorkerClient() {
+        @Override public WebResourceResponse shouldInterceptRequest(WebResourceRequest r) { return "GET".equals(r.getMethod()) ? files.serve(r.getUrl().toString()) : null; }
+      });
+    } catch (Exception ignored) { }
     web = new WebView(this);
     web.setBackgroundColor(Color.BLACK);
     WebSettings s = web.getSettings();
@@ -52,6 +65,15 @@ public class MainActivity extends Activity {
         return true; // Telegram, WhatsApp, sites → their own apps
       }
       @Override public void onPageFinished(WebView v, String url) { sendInsets(); }
+      // the page itself comes from the phone: opens at once even without the internet (WebFiles)
+      @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+        return "GET".equals(r.getMethod()) ? files.serve(r.getUrl().toString()) : null;
+      }
+      // the WebView's engine crashed or was stopped by Android to free memory: open again instead of closing the app
+      @Override public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail d) {
+        if (web == v) { ((android.view.ViewGroup) v.getParent()).removeView(v); v.destroy(); web = null; recreate(); }
+        return true;
+      }
     });
     web.setWebChromeClient(new WebChromeClient() {
       @Override public void onPermissionRequest(PermissionRequest r) {
@@ -71,7 +93,18 @@ public class MainActivity extends Activity {
     edgeToEdge(root);
     if (b != null) web.restoreState(b);
     open(getIntent(), b == null);
+    updatePage();
   }
+
+  // a newer page from GitHub, in the background, at most every 30 minutes; used at the next opening
+  void updatePage() {
+    long now = System.currentTimeMillis();
+    if (now - lastUpdate < 30 * 60e3) return;
+    lastUpdate = now;
+    new Thread(files::update, "jumavoy-web-update").start();
+  }
+
+  @Override protected void onResume() { super.onResume(); updatePage(); }
 
   @Override protected void onNewIntent(Intent i) {
     super.onNewIntent(i);
@@ -106,7 +139,7 @@ public class MainActivity extends Activity {
   }
 
   void sendInsets() {
-    if (web == null || Build.VERSION.SDK_INT < 30) return;
+    if (web == null || Build.VERSION.SDK_INT < 30) return;  // Android 8–10: the window is not drawn under the bars
     web.evaluateJavascript("(function(s){s.setProperty('--sat','" + barTop + "px');s.setProperty('--sab','" + barBottom
       + "px');window.dispatchEvent(new Event('resize'))})(document.documentElement.style)", null);
   }
@@ -117,13 +150,14 @@ public class MainActivity extends Activity {
   }
 
   void open(Intent i, boolean fresh) {
+    if (web == null) return;
     String link = sharedLink(i);
     if (link != null) { web.loadUrl(BASE + "#" + link); return; }
     if (isAssist(i)) {
       unlockIfNeeded();
       if (fresh || web.getUrl() == null) web.loadUrl(BASE + "?assist=1");
       else web.evaluateJavascript("window.jumavoyAssist && window.jumavoyAssist()", null);
-    } else if (fresh || web.getUrl() == null) web.loadUrl(BASE);
+    } else if (fresh || web.getUrl() == null || files.updated) { files.updated = false; web.loadUrl(BASE); } // a newer page was downloaded → open it
   }
 
   // the assistant gesture works on the lock screen too, but the CRM is shown only after the owner unlocks the phone
@@ -151,9 +185,13 @@ public class MainActivity extends Activity {
     pending = null;
   }
 
-  @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); web.saveState(b); }
+  @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); if (web != null) web.saveState(b); }
 
   @Override protected void onDestroy() { if (voice != null) voice.destroy(); super.onDestroy(); }
 
-  @Override public void onBackPressed() { if (web.canGoBack()) web.goBack(); else super.onBackPressed(); }
+  // «Back» closes an open sheet / the menu of the page first (window.jumavoyBack returns true), then leaves the app
+  @Override public void onBackPressed() {
+    if (web == null) { super.onBackPressed(); return; }
+    web.evaluateJavascript("window.jumavoyBack ? window.jumavoyBack() : false", v -> { if (!"true".equals(v)) { if (web != null && web.canGoBack()) web.goBack(); else moveTaskToBack(true); } });
+  }
 }
