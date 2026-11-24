@@ -168,7 +168,9 @@ Deno.test('a question goes to Gemini with the tools, the tool reads the own cabi
   state.gemini.push({ candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'my_clients', args: { filter: 'debtors' } } }] } }] });
   state.gemini.push({ candidates: [{ content: { role: 'model', parts: [{ text: '**Qarzdorlar:**\n- Fozilxon' }] } }] });
   await M.handle({ update_id: 3, message: { chat: { id: 100, type: 'private' }, text: 'kim qarzdor?' } });
-  const last = state.sent.at(-1).text; eq(last, 'Qarzdorlar:\n• Fozilxon');
+  eq(state.sent.at(-1).text, "💭 O'ylayapman…", 'the waiting message at once');
+  const last = state.edits.at(-1).text; eq(last, 'Qarzdorlar:\n• Fozilxon', 'it becomes the answer');
+  eq(state.edits.at(-1).reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data, 'fu:more', 'a list → «Batafsil» under it');
   const fr = JSON.stringify(state.lastGeminiBody.contents);
   ok(fr.includes('Fozilxon Fargona') && !fr.includes('SECRET CLIENT B'), 'only own clients go to the AI');
   ok(JSON.stringify(state.lastGeminiBody.systemInstruction).includes('Fozil Agentov'));
@@ -320,4 +322,35 @@ Deno.test('23.11: history is 10 pairs, models are the current ones with thinking
   eq(M.withThinking({}, 'gemini-3.6-flash').generationConfig.thinkingConfig, { thinkingLevel: 'low' });
   eq(M.withThinking({ a: 1 }, 'gemini-3.5-flash-lite'), { a: 1 });
   eq(M.cleanHeard('to’lov  o‘g‘il'), "to'lov o'g'il");
+});
+
+Deno.test('24.11 like the owner: Uzbek first, clarifying options as buttons, a tap goes on as the answer, the pinned plan', async () => {
+  reset();
+  const sp = M.systemPrompt(CAB_A, []);
+  ok(/основной — УЗБЕКСКИЙ/.test(sp) && /ДВУСМЫСЛЕННО — СПРОСИ/.test(sp), 'the character');
+  // a clarifying question → buttons
+  state.gemini.push({ candidates: [{ content: { role: 'model', parts: [{ text: 'Qaysi mijoz?\n1) Fozilxon Fargona\n2) Iqbol Fargona' }] } }] });
+  await M.handle({ update_id: 2001, message: { chat: { id: 100, type: 'private' }, text: 'uning qarzi qancha' } });
+  const q = state.edits.at(-1);
+  eq(q.reply_markup.inline_keyboard.map((r: any) => r[0].callback_data), ['ch:1', 'ch:2'], 'options as buttons');
+  // the tap: the option goes to the AI as the agent's answer, the buttons go away
+  state.gemini.push({ candidates: [{ content: { role: 'model', parts: [{ text: 'Fozilxon Fargona: $12 444.52' }] } }] });
+  await M.handle({ update_id: 2002, callback_query: { id: 'c1', from: { id: 100 }, data: 'ch:1', message: { chat: { id: 100 }, message_id: 77, text: q.text } } });
+  ok(JSON.stringify(state.lastGeminiBody.contents.at(-1)).includes('Fozilxon Fargona'), 'the chosen option is his answer');
+  ok(calls.some(c => c.url.endsWith('/editMessageReplyMarkup') && c.body.message_id === 77), 'buttons removed');
+  // a client card → message / reminder buttons
+  eq(M.followKeyboard(['client_card'], 'x')!.inline_keyboard[0].map((b: any) => b.callback_data), ['fu:msg', 'fu:remind']);
+  eq(M.followKeyboard([], 'Salom!'), null, 'small talk: no buttons');
+  // a stranger's button press reads nothing
+  await M.handle({ update_id: 2003, callback_query: { id: 'c2', from: { id: 999 }, data: 'pl:ref', message: { chat: { id: 999 }, message_id: 1 } } });
+  ok(!calls.some(c => c.url.includes('agent_cabinets') && c.url.includes('999')), 'no cabinet for an unlinked chat');
+  // /plan → sent and pinned, the pin remembered; «🔄 Yangilash» redraws it in place
+  calls = [];
+  await M.handle({ update_id: 2004, message: { chat: { id: 100, type: 'private' }, text: '/plan' } });
+  ok(calls.some(c => c.url.endsWith('/pinChatMessage')), 'pinned');
+  ok((await M.setting(100, 'pin')).startsWith(today + ':'), 'the pin is kept');
+  state.edits = [];
+  await M.handle({ update_id: 2005, callback_query: { id: 'c3', from: { id: 100 }, data: 'pl:ref', message: { chat: { id: 100 }, message_id: 5 } } });
+  ok(state.edits.at(-1).text.startsWith('☀️ Xayrli tong') && state.edits.at(-1).message_id === 5, 'refreshed in place');
+  ok(!state.edits.at(-1).text.includes('SECRET'), 'own cabinet only');
 });
