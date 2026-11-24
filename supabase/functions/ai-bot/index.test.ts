@@ -81,6 +81,7 @@ function test1(row: any, k: string, expr: string): boolean {
   const i = expr.indexOf('.'), op = expr.slice(0, i), v = decodeURIComponent(expr.slice(i + 1)), a = row[k];
   if (op === 'is') return v === 'null' ? a == null : String(a) === v;
   if (op === 'in') return v.slice(1, -1).split(',').includes(String(a)); // in.(1,2,3)
+  if (op === 'like') return a != null && new RegExp('^' + v.split('*').map(x => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$').test(String(a));
   if (a == null) return false;
   const c = cmp(k, a, v);
   if (op === 'eq') return c === 0;
@@ -1984,16 +1985,15 @@ D.test('Telegram like the app: the JUMAVOY button (Mini App) signs in by initDat
     const pre = await M.serve(new Request('https://x/functions/v1/ai-bot/app', { method: 'OPTIONS' }));
     assert(/x-tg-init/.test(pre.headers.get('Access-Control-Allow-Headers') || ''), 'CORS lets the header through');
 
-    // 2) /start: the JUMAVOY button next to the field (web_app) and the quick buttons under it
+    // 2) /start (24.11): the button next to the field opens the kanban board, the keyboard under the field is taken away
     SENT.length = 0;
     await tgPost({ text: '/start' });
     const menu = SENT.find(x => x.method === 'setChatMenuButton');
-    eq([menu?.body.chat_id, menu?.body.menu_button?.type, menu?.body.menu_button?.web_app?.url], [111, 'web_app', M.APP_URL()], 'the menu button opens the app');
+    eq([menu?.body.chat_id, menu?.body.menu_button?.type, menu?.body.menu_button?.text, menu?.body.menu_button?.web_app?.url], [111, 'web_app', M.BOARD_BTN, M.tasksUrl()], 'the menu button opens the board');
     const kb = SENT.find(x => x.method === 'sendMessage')?.body.reply_markup;
-    eq(kb?.keyboard?.[0]?.map((b: any) => b.text), Object.keys(M.QUICK_BTN), 'the quick buttons under the field');
-    assert(kb.is_persistent && kb.resize_keyboard, 'small and always there');
+    eq(kb, { remove_keyboard: true }, 'no buttons under the field');
 
-    // 3) a quick button is a command: no Gemini request
+    // 3) an old quick button pressed from an old message is still a command: no Gemini request
     const g0 = GEM_LOG.length;
     await tgPost({ text: '📈 План' });
     eq(GEM_LOG.length, g0, 'no AI for a quick button');
@@ -2071,4 +2071,63 @@ D.test('audit 24.11: chat_recall finds an older talk; the history is re-read (an
   const a3 = await (await app(body)).json();
   assert(a3.repeat && a3.text === a1.text, 'later repeat too');
   eq(remN(), 1, 'still one reminder');
+});
+
+D.test('24.11 Telegram only: the keyboard is taken away once, 📌 pinned plan of the day (tap = done), buttons under answers, choices, Uzbek', async () => {
+  // 1) Uzbek detection
+  for (const t of ['Mitanol 5W-30 narxini tashlab yubor', 'Fozilxon qancha qarz', 'нархи қанча', "bugungi rejani ko'rsat"]) assert(M.isUzbek(t), 'uz: ' + t);
+  for (const t of ['сколько стоит митанол 5w30', 'должники Адхамжона', '/dolg', 'привет']) assert(!M.isUzbek(t), 'ru: ' + t);
+
+  // 2) the pinned plan: today's cards (in progress, due today / overdue, done today) + collection; a tap marks done
+  DB.ai_tasks = []; SENT.length = 0; TG_IDS = true;
+  const t1 = await M.TOOLS.task_add.run(null, { title: "Akbarga qo'ng'iroq", due: T, priority: 2 }, { chatId: 111 });
+  const t2 = await M.TOOLS.task_add.run(null, { title: 'Hisobot', status: 'doing' }, { chatId: 111 });
+  await M.TOOLS.task_add.run(null, { title: 'Keyinroq', due: '2099-01-01' }, { chatId: 111 });
+  try {
+    await tgPost({ text: '/reja' });
+    const pin = SENT.find(s => s.method === 'pinChatMessage'), msg = SENT.find(s => s.method === 'sendMessage' && /📌 BUGUN/.test(s.body.text));
+    assert(pin && msg && pin.body.disable_notification, 'sent and pinned quietly');
+    assert(/🔥Akbarga/.test(msg!.body.text) && /▶️ Hisobot/.test(msg!.body.text) && !/Keyinroq/.test(msg!.body.text) && /Doskada yana 1/.test(msg!.body.text), 'today only: ' + msg!.body.text);
+    assert(/Bugun yig'ish: \$100/.test(msg!.body.text) && /Fozilxon Fargona/.test(msg!.body.text), 'collection from the CRM: ' + msg!.body.text);
+    assert(DB.ai_events.some((e: any) => e.key.startsWith(`pin:111:${T}:`)), 'its message id is kept');
+    const kb = msg!.body.reply_markup.inline_keyboard.flat();
+    assert(kb.some((b: any) => b.callback_data === `dp:done:${t1.id}`) && kb.some((b: any) => b.web_app?.url), 'tap-to-done buttons and the board');
+    // a second /reja the same day redraws the same message instead of pinning a new one
+    SENT.length = 0; await tgPost({ text: '/reja' });
+    assert(!SENT.some(s => s.method === 'pinChatMessage') && SENT.some(s => s.method === 'editMessageText' && /📌 BUGUN/.test(s.body.text)), 'one pin a day');
+    // a tap: done, the pin redrawn in place with the progress
+    SENT.length = 0;
+    await M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: 777001, callback_query: { id: 'q', from: { id: 111 }, data: `dp:done:${t1.id}`, message: { chat: { id: 111 }, message_id: 42, text: 'pin' } } }) }));
+    eq(DB.ai_tasks.find((t: any) => t.id === t1.id).status, 'done', 'tap → done');
+    const ed = SENT.find(s => s.method === 'editMessageText' && s.body.message_id === 42);
+    assert(ed && /1\/2 bajarildi/.test(ed.body.text) && /✅ Akbarga/.test(ed.body.text), 'redrawn: ' + ed?.body.text);
+    assert(!ed!.body.reply_markup.inline_keyboard.flat().some((b: any) => b.callback_data === `dp:done:${t1.id}`), 'a done card is no longer a button');
+    eq(M.dayTasks([{ id: 1, status: 'todo', due: null, title: 'x' }], T).open.length, 0, 'a card without a date is not «today»');
+    void t2;
+
+    // 3) buttons under an answer only when useful; a clarifying question → its options are buttons
+    SENT.length = 0;
+    GEM = () => say('Salom, Saidbonur aka! Hammasi joyida.');
+    await tgPost({ text: 'salom' });
+    assert(!SENT.filter(s => s.method === 'editMessageText').at(-1)!.body.reply_markup, 'small talk: no buttons');
+    SENT.length = 0;
+    GEM = () => say('Qaysi mijozni nazarda tutdingiz?\n1) Fozilxon Fargona\n2) Small Shop');
+    await tgPost({ text: 'uning qarzi qancha' });
+    const q = SENT.filter(s => s.method === 'editMessageText').at(-1)!.body;
+    eq(q.reply_markup?.inline_keyboard?.map((r: any) => r[0].callback_data), ['ch:1', 'ch:2'], 'options as buttons');
+    let asked = '';
+    GEM = (b: any) => { asked = asked || JSON.stringify(b.contents.at(-1)); return say('Fozilxon Fargona: $800'); };
+    await M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: 777002, callback_query: { id: 'q', from: { id: 111 }, data: 'ch:1', message: { chat: { id: 111 }, message_id: 50, text: q.text } } }) }));
+    assert(asked.includes('Fozilxon Fargona'), 'the chosen option goes on as his answer: ' + asked);
+    assert(SENT.some(s => s.method === 'editMessageReplyMarkup' && s.body.message_id === 50), 'the buttons go away after the tap');
+    eq(M.followKeyboard(['price_list'], 'Mitanol $56')!.inline_keyboard[0].map((b: any) => b.callback_data), ['fu:client', 'fu:excel'], 'prices → message for the client, Excel');
+    eq(M.followKeyboard(['debtors'], 'x\n📎 Excel: a.xlsx')!.inline_keyboard[0].map((b: any) => b.callback_data), ['fu:more'], 'no Excel button when the file is already there');
+
+    // 4) an Uzbek question that a Russian template would answer: the AI writes the answer from the same result
+    const g0 = GEM_LOG.length; let n = 0;
+    GEM = () => (++n === 1 ? call('debtors', {}) : say("Qarzdorlar: Fozilxon Fargona — $800"));
+    await tgPost({ text: 'qarzdorlar royxatini korsat' });
+    eq(GEM_LOG.length - g0, 2, 'two requests: the function, then the Uzbek answer');
+    assert(/Qarzdorlar: Fozilxon/.test(SENT.filter(s => s.method === 'editMessageText').at(-1)!.body.text), 'answered in Uzbek');
+  } finally { TG_IDS = false; GEM = () => say('ok'); }
 });

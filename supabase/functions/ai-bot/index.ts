@@ -786,6 +786,8 @@ async function onButton(q: any) {
   if (/^tk:/.test(String(q.data || '')) && chatId) return taskButton(q, chatId, answer);
   if (/^rm:/.test(String(q.data || '')) && chatId) return remindButton(q, chatId, answer);
   if (/^px:/.test(String(q.data || '')) && chatId) return pxButton(q, chatId, answer);
+  if (/^dp:/.test(String(q.data || '')) && chatId) return dayPlanButton(q, chatId, answer);
+  if (/^(fu|ch):/.test(String(q.data || '')) && chatId) return followButton(q, chatId, answer);
   const m = String(q.data || '').match(/^ob:(send|cancel):(\d+)$/); if (!m || !chatId) return answer();
   const now = new Date().toISOString();
   // claimed by a conditional update: a double tap never sends twice
@@ -1013,10 +1015,11 @@ async function taskAdd(chatId: number, a: any) {
   const title = String(a.title || '').trim().slice(0, 300); if (!title) return { error: 'Нет текста задачи' };
   const due = /^\d{4}-\d{2}-\d{2}$/.test(String(a.due || '')) ? a.due : null, status = a.status === 'doing' ? 'doing' : 'todo', now = new Date().toISOString();
   const [row] = await sb('ai_tasks', { method: 'POST', prefer: 'return=representation', body: { chat_id: chatId, title, note: String(a.note || '').slice(0, 2000), status, priority: Math.max(0, Math.min(2, Math.round(n(a.priority)))), due, sphere: sphereOf(a.sphere), progress: 0, started_at: status === 'doing' ? now : null } });
+  pinSoon(chatId);
   return row;
 }
 // one change of a task; the status follows the progress (100 % → done, >0 → in progress) and the other way round
-async function taskPatch(chatId: number, id: number, a: any) {
+async function taskPatch(chatId: number, id: number, a: any, pin = true) {
   const now = new Date().toISOString(), p: any = { updated_at: now };
   if (a.title != null && String(a.title).trim()) p.title = String(a.title).trim().slice(0, 300);
   if (a.note != null) p.note = String(a.note).slice(0, 2000);
@@ -1032,6 +1035,7 @@ async function taskPatch(chatId: number, id: number, a: any) {
     if (st === 'todo') { p.done_at = null; p.started_at = null; if (a.progress == null) p.progress = 0; }
   }
   const rows = await sb(`ai_tasks?id=eq.${id}&chat_id=eq.${chatId}`, { method: 'PATCH', body: p, prefer: 'return=representation' });
+  if (pin && rows?.[0]) pinSoon(chatId);
   return rows?.[0] || null;
 }
 // a task named in words («задачу про Азиза») → its row: by number, else the open task whose title fits best
@@ -1044,6 +1048,98 @@ async function taskFind(chatId: number, a: any) {
 async function sendBoard(chatId: number, sphere?: string) {
   const rows = await taskRows(chatId, sphere);
   return { text: boardText(rows, sphere), reply_markup: boardKeyboard(rows, sphere || '') };
+}
+// ───────────────────────────── 📌 the plan of the day, pinned at the top of the chat ─────────────────────────────
+// One message, pinned every morning (with the brief) or by /reja, and kept up to date IN PLACE: a task done on the board,
+// by a button or in words redraws it; every hour the collection part is refreshed. Today's cards are buttons: a tap = done.
+// Its message id lives in ai_events as pin:<chat>:<date>:<message id> (no migration).
+const WD_UZ: Record<string, string> = { Mon: 'dushanba', Tue: 'seshanba', Wed: 'chorshanba', Thu: 'payshanba', Fri: 'juma', Sat: 'shanba', Sun: 'yakshanba' };
+const PIN_MAX = 8;
+// which cards are «today»: in progress, due today or overdue, a reminder today, and the ones finished today (the progress)
+export function dayTasks(rows: any[], today: string) {
+  const isToday = (iso: any) => !!iso && localDate(iso) === today;
+  const open = rows.filter(t => t.status !== 'done' && (t.status === 'doing' || (t.due && t.due <= today) || (t.remind && !t.remind.sent && isToday(t.remind.at))));
+  const done = rows.filter(t => t.status === 'done' && isToday(t.done_at));
+  const rest = rows.filter(t => t.status !== 'done' && !open.includes(t)).length;
+  return { open: open.sort(taskSort), done, rest };
+}
+export function dayPlanText(rows: any[], collect: any, L = localParts()) {
+  const today = L.date, { open, done, rest } = dayTasks(rows, today), total = open.length + done.length;
+  const pct = total ? Math.round(done.length / total * 100) : 0;
+  const out = [`📌 BUGUN · ${dm(today)}, ${WD_UZ[L.wd] || ''}`];
+  out.push(total ? `${progressBar(pct)} ${done.length}/${total} bajarildi${pct === 100 ? ' 🎉' : ''}` : 'Bugunga vazifa yo\'q — doskadan qo\'shing yoki yozing: «ertaga 10 da ... eslat»');
+  const line = (t: any) => {
+    const late = t.due && t.due < today ? ` · ⚠️ ${dm(t.due)} dan kechikdi` : '';
+    const rem = t.remind && !t.remind.sent ? ` · ⏰ ${nowTime(t.remind.at).slice(-5)}` : '';
+    return `${t.status === 'doing' ? '▶️' : '⬜'} ${PRIO[t.priority || 0]}${t.title}${rem}${late}${t.status === 'doing' && t.progress > 0 ? ` · ${t.progress}%` : ''}`;
+  };
+  if (open.length) out.push(open.slice(0, PIN_MAX + 4).map(line).join('\n'));
+  if (done.length) out.push(done.slice(0, 6).map(t => `✅ ${t.title}`).join('\n') + (done.length > 6 ? `\n… +${done.length - 6}` : ''));
+  if (rest) out.push(`🗂 Doskada yana ${rest} ta vazifa`);
+  if (collect && !collect.error && collect.count) {
+    out.push(`💰 Bugun yig'ish: ${$(collect.due_today_total)}${collect.overdue_total ? ` · kechikkan ${$(collect.overdue_total)}` : ''} (${collect.count} mijoz)\n`
+      + collect.rows.slice(0, 4).map((r: any) => `• ${r.client} — ${$(r.due_today + r.overdue)}${r.promise && /сегодня/.test(r.promise) ? ' · va\'da bugun' : ''}`).join('\n'));
+  }
+  out.push(`🔄 ${L.time} · vazifani bosing — bajarildi`);
+  return out.join('\n\n');
+}
+export function dayPlanKeyboard(rows: any[], today = todayStr()) {
+  const { open } = dayTasks(rows, today);
+  const kb: any[] = open.slice(0, PIN_MAX).map(t => [{ text: `${t.status === 'doing' ? '▶️' : '⬜'} ${short(t.title, 30)}`, callback_data: `dp:done:${t.id}` }]);
+  kb.push([{ text: '🔄 Yangilash', callback_data: 'dp:ref:0' }, { text: '📋 Doska', web_app: { url: tasksUrl() } }]);
+  return { inline_keyboard: kb };
+}
+async function dayPlan(chatId: number, db?: any) {
+  const rows = await taskRows(chatId);
+  const d = db || DBC?.db || await loadDB().catch(() => null);
+  let collect: any = null;
+  try { if (d && !d.meta?.data_error) collect = TOOLS.collect_today.run(d, { limit: 6 }, { chatId }); } catch (e) { console.warn('pin collect', (e as Error).message); }
+  return { text: dayPlanText(rows, collect).slice(0, 4000), reply_markup: dayPlanKeyboard(rows) };
+}
+async function pinOf(chatId: number, date = todayStr()): Promise<number> {
+  const r = await sb(`ai_events?key=like.${q(`pin:${chatId}:${date}:*`)}&select=key&order=created_at.desc&limit=1`).catch(() => []);
+  return n(String(r?.[0]?.key || '').split(':')[3]);
+}
+// a new pinned plan for today (the morning, /reja): yesterday's pin is taken off, the new one goes on quietly
+export async function pinDayPlan(chatId: number, db?: any) {
+  const p = await dayPlan(chatId, db), old = await pinOf(chatId);
+  if (old) { // already there today: brought up to date in place
+    const r = await tg('editMessageText', { chat_id: chatId, message_id: old, text: p.text, reply_markup: p.reply_markup, disable_web_page_preview: true });
+    if (r.ok || /not modified/i.test(r.description || '')) return old;
+  }
+  const m = await tg('sendMessage', { chat_id: chatId, text: p.text, reply_markup: p.reply_markup, disable_web_page_preview: true, disable_notification: true });
+  const id = n(m?.result?.message_id); if (!id) return 0;
+  const prev = await sb(`ai_events?key=like.${q(`pin:${chatId}:*`)}&select=key&order=created_at.desc&limit=3`).catch(() => []);
+  for (const e of prev || []) { const mid = n(String(e.key).split(':')[3]); if (mid && mid !== id) await tg('unpinChatMessage', { chat_id: chatId, message_id: mid }).catch(() => null); }
+  await tg('pinChatMessage', { chat_id: chatId, message_id: id, disable_notification: true });
+  await once(`pin:${chatId}:${todayStr()}:${id}`).catch(() => false);
+  return id;
+}
+// today's pinned plan redrawn (nothing happens on a day without one)
+export async function pinRefresh(chatId: number, db?: any) {
+  const id = await pinOf(chatId); if (!id) return false;
+  const p = await dayPlan(chatId, db);
+  const r = await tg('editMessageText', { chat_id: chatId, message_id: id, text: p.text, reply_markup: p.reply_markup, disable_web_page_preview: true });
+  return !!r.ok;
+}
+// after a task changes anywhere: redraw the pin in the background (one at a time per chat; not in the tests' stubs)
+const PIN_BUSY = new Set<number>();
+function pinSoon(chatId: number) {
+  if (!sbOn() || env('AI_BOT_TEST') || PIN_BUSY.has(chatId)) return;
+  PIN_BUSY.add(chatId);
+  const job = pinRefresh(chatId).catch(e => console.warn('pin', (e as Error).message)).finally(() => PIN_BUSY.delete(chatId));
+  const rt = (globalThis as any).EdgeRuntime; if (rt?.waitUntil) rt.waitUntil(job);
+}
+async function dayPlanButton(q: any, chatId: number, answer: (t?: string) => Promise<any>) {
+  const [, act, id] = String(q.data).split(':');
+  let note = '🔄 Yangilandi';
+  if (act === 'done') {
+    const t = await taskPatch(chatId, +id, { status: 'done' }, false);
+    note = t ? `✅ Bajarildi: ${short(t.title, 60)}` : 'Vazifa o\'chirilgan';
+  }
+  const p = await dayPlan(chatId);
+  await tg('editMessageText', { chat_id: chatId, message_id: q.message.message_id, text: p.text, reply_markup: p.reply_markup, disable_web_page_preview: true });
+  return answer(note);
 }
 // a button under the board: move the card, then redraw the same message
 async function taskButton(q: any, chatId: number, answer: (t?: string) => Promise<any>) {
@@ -1434,7 +1530,7 @@ export async function tasksOp(chatId: number, b: any): Promise<{ status: number;
   const id = n(b.id);
   if (b.op === 'add') { const r: any = await taskAdd(chatId, b); if (r.error) return { status: 400, body: r }; }
   else if (b.op === 'move' || b.op === 'edit') { if (!await taskPatch(chatId, id, b.op === 'move' ? { status: b.status } : b)) return { status: 404, body: { error: 'Задача не найдена' } }; }
-  else if (b.op === 'del') await sb(`ai_tasks?id=eq.${id}&chat_id=eq.${chatId}`, { method: 'DELETE' });
+  else if (b.op === 'del') { await sb(`ai_tasks?id=eq.${id}&chat_id=eq.${chatId}`, { method: 'DELETE' }); pinSoon(chatId); }
   else if (b.op === 'history') return { status: 200, body: { history: await sb(`ai_tasks?chat_id=eq.${chatId}&status=eq.done&order=done_at.desc&limit=1000`), today: todayStr() } };
   else if (b.op && b.op !== 'list') return { status: 400, body: { error: 'Неизвестная операция' } };
   return { status: 200, body: { tasks: await taskRows(chatId), today: todayStr(), done_days: DONE_DAYS } };
@@ -3839,15 +3935,18 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 Плановый период в компании — с 16-го числа по 15-е следующего месяца. «Этот месяц/период» = текущий плановый период, если не сказано «календарный».
 
 ХАРАКТЕР (как Джарвис из «Железного человека»):
-• Ты не справочник, а умный личный ассистент-собеседник: спокойный, уверенный, внимательный, с лёгким юмором к месту. Говоришь живо, как человек, без канцелярита («Ваш запрос обработан», «Согласно данным», «Я — языковая модель»).
-• Обращайся по имени изредка, не в каждом ответе: по-русски «Саидбонур», по-узбекски «Saidbonur aka». Не начинай каждый ответ с приветствия и не повторяй его вопрос.
-• Понимай СМЫСЛ, а не буквы. Голос расшифровывается с ошибками, он говорит быстро, смешивает узбекский и русский, обрывает фразу. Догадайся, что он имеет в виду, по истории разговора и данным. Неточно расслышанное имя клиента, агента или товара передавай функции как есть — она найдёт похожее. Переспрашивай одним коротким вопросом, только если от ответа зависят деньги или сообщение человеку и вариантов несколько; иначе бери самый вероятный и скажи, как понял («Понял как Fozilxon Fargona»).
+• ЯЗЫК: основной язык общения — УЗБЕКСКИЙ (латиница, живой разговорный, как говорят в Фергане, Андижане, Намангане, без книжных слов). Отвечай по-узбекски всегда, кроме случая, когда он сам написал по-русски целиком, — тогда по-русски. Смешанное сообщение → по-узбекски. Названия товаров, брендов и имена клиентов не переводи.
+• Ты не справочник, а живой личный ассистент: спокойный, уверенный, заботливый, с лёгким юмором к месту. Говоришь как человек, а не как программа: без канцелярита («Ваш запрос обработан», «Согласно данным», «So'rovingiz bajarildi», «Я — языковая модель»). Меняй формулировки, не отвечай одинаковыми шаблонными фразами.
+• Обращайся по имени изредка, не в каждом ответе: по-узбекски «Saidbonur aka», по-русски «Саидбонур». Не начинай каждый ответ с приветствия и не повторяй его вопрос.
+• Замечай человека: радуйся вместе с ним успехам (план выполнен, клиент оплатил — коротко отметь), поддержи, если тяжёлый день или плохие цифры, вечером не грузи лишним. Одна тёплая фраза, без слащавости.
+• Понимай СМЫСЛ, а не буквы. Голос расшифровывается с ошибками, он говорит быстро, смешивает узбекский и русский, обрывает фразу. Неточно расслышанное имя клиента, агента или товара передавай функции как есть — она найдёт похожее.
+• ДВУСМЫСЛЕННО — СПРОСИ. Если сообщение можно понять по-разному и от этого меняется ответ или действие (непонятно, какой клиент / агент / товар / период, «это», «он», «тот» без ясной ссылки, голос явно оборвался или бессмыслица, неясно — личное или работа), НЕ угадывай и функции не вызывай: задай ОДИН короткий вопрос и дай 2–4 варианта отдельными строками «1) … 2) …» (бот сделает из них кнопки). Если смысл однозначно ясен из истории разговора — не переспрашивай, просто сделай и коротко скажи, как понял.
 • Короткие продолжения — «а он?», «а за прошлый месяц?», «ещё», «подробнее», «a unichi?», «boshqasi-chi?», «shuni excel qil» — относятся к прошлому вопросу: возьми клиента, агента, товар и период из истории разговора.
-• Думай на шаг вперёд: если это реально полезно, в конце одной строкой предложи следующее действие («Напомнить ему завтра в 10?», «Скинуть в Excel?», «Написать ему черновик?»). Не в каждом ответе.
+• Думай на шаг вперёд и ПРЕДЛАГАЙ сам: если это реально полезно, в конце одной строкой предложи следующее действие, опираясь на цифры и на то, что знаешь о нём («Ertaga 10 da eslataymi?», «Unga xabar yozib beraymi?», «Fozilxon 3 kundan beri to'lamadi — qo'ng'iroq qilasizmi?»). Не в каждом ответе.
+• Помни его привычки и дела: что он любит, как обычно просит, что делал вчера и на неделе (история разговора, факты памяти, chat_recall). Подстраивайся под это молча, без «согласно памяти».
 • Приветствие, «как дела», «rahmat», благодарность, шутка, разговор не о деле — ответь коротко и тепло, как живой человек, функции не вызывай.
 • Не можешь что-то сделать — скажи честно одной фразой и предложи, что можешь.
 • Ты помнишь ВЕСЬ разговор: последние сообщения видишь сам, а более ранний (вчера, на прошлой неделе, «я тебе говорил…», «ты мне называл…») ищи через chat_recall, прежде чем сказать «не помню».
-
 ПРАВИЛА:
 0. ИСТОЧНИК — ТОЛЬКО MitalCRM. Всё о работе (клиенты, агенты, заказы, оплаты, долги, склад, планы, зарплата, дисциплина, договоры, задания, пользователи, регионы) бери только из функций CRM: готовых или crm_explore / crm_query. Не бери это из интернета, новостей, писем, памяти разговора или своих знаний. Пользователь может попросить ЛЮБЫЕ данные платформы — найди и выдай их. ИСКЛЮЧЕНИЕ — OILBOOK, второй бизнес Саидбонура (платформа для точек замены масла, он её владелец и админ): всё про OilBook, его точки, подписки, оплаты подписок, заявки — только функции oilbook_* (суммы там в сумах, не в $). Изменить что-то в OilBook (продлить, включить, отключить, подтвердить чек, одобрить заявку, написать точке) → oilbook_action: это черновик с кнопкой, выполнится после нажатия. Данных о клиентах, машинах и выручке точек OilBook у тебя нет и не будет — так обещано точкам; на такие вопросы так и отвечай.
 1. Любые цифры (суммы, долги, количество) бери ТОЛЬКО из ответов функций. Никогда не считай и не придумывай сам. Прежде чем сказать «таких данных нет», поищи через crm_explore и crm_query; если и там нет — так и скажи.
@@ -3855,7 +3954,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 3. Переводи периоды в даты YYYY-MM-DD сам («за неделю» = последние 7 дней, «вчера», «за октябрь» = 2026-10-01…2026-10-31 и т.п.).
 4. Если в ответе функции есть warning или note — учти это в ответе одной короткой фразой. Если в crm_at есть «⚠️ расчёт CRM устарел» — обязательно передай это предупреждение пользователю.
 5. «Остаток клиента» = его долг (сколько должен). Для этого вызывай client_card.
-6. Отвечай на языке пользователя (русский или узбекский), коротко и по делу — читают с телефона. Без markdown, без таблиц и звёздочек. Списки — через «•». Деньги так: $12 444.
+6. Отвечай по-узбекски (латиница), если он не написал целиком по-русски (см. ЯЗЫК), коротко и по делу — читают с телефона. Без markdown, без таблиц и звёздочек. Списки — через «•». Деньги так: $12 444.
 7. Можешь в конце дать 1 короткий практический совет, если он прямо следует из цифр (например, кого дожать сегодня).
 8. Голосовое приходит уже расшифрованным: «(голосовое сообщение, расшифровка) текст» — отвечай на этот текст, поле heard и строку 🎤 не добавляй (бот покажет сам). Только если пришло само аудио — передай в heard, что услышал.
 9. Для простых вопросов (показать цифры, список, карточку) вызывай функцию БЕЗ explain — бот сам покажет ответ. explain=true только когда нужен твой анализ, сравнение или совет.
@@ -3876,7 +3975,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 23. ЛЮБЫЕ ДАННЫЕ ПЛАТФОРМЫ: если готовой функции под вопрос нет или в её ответе нет нужного поля → crm_explore (без path — карта разделов; с path — поля раздела), затем crm_query с filter / search / sort, итоги — через sum и group_by (их считает код). Примеры: «какие авансы у Адхамжона» → crm_explore path=ext.pay, потом crm_query; «сколько бонусного товара отгрузили в ноябре» → crm_query path=history.order_items, filter="bonus=true; date>=2026-11-01", sum="qty"; «кто из пользователей в Намангане» → crm_query path=users, filter="region~Наманган". Отменённые заказы (status=4) в продажи не входят. Если ответ большой — дай итог и главное, остальное предложи показать.
 24. АКЦИЯ: «посчитай акцию / сколько процентов акция / во сколько обходится» → promo_calc, сам не считай. В items передай ВСЕ товары: купленный и бонусы товаром с bonus=true. Название — как можно точнее (бренд, цвет, вязкость: «Golden Booster Purple 5W-30»). Количество в коробках (karobka) — in_boxes=true (штук в коробке код возьмёт из прайса). price указывай ТОЛЬКО если пользователь сам назвал цену — иначе код возьмёт цену из прайс-листа блокнота; никогда не спрашивай цену, если товар есть в прайсе. Бонус деньгами → money_bonus. Оплата клиента → client_pays; если сказана только скидка — discount_pct. Если не хватает количества или оплаты/скидки — коротко спроси. Вопрос «сможешь посчитать акцию?» без товаров — ответь, что да, цены возьмёшь из прайс-листа сам, и попроси товары, количество, бонусы и скидку/оплату; функции не вызывай.
 25. ЦЕНЫ: «цена / прайс / сколько стоит / почём», по-узбекски «narx, narxi, narxlari, нархи, prays, qancha turadi, necha pul, nechpul» → price_list (цены из прайс-листа). Чужой бренд (Valvoline / «валвалин», Mobil, Shell, Castrol, ROWE, Lukoil…) или товара нет в прайсе MITAL → сразу web_research «цена <товар> в Узбекистане» и ответ с источниками (рыночные цены, не прайс MITAL); «нет данных» без поиска в интернете не отвечай. Это НЕ склад: stock — только когда спрашивают остаток/наличие («qoldiq, omborda nechta, bormi, сколько на складе»).
-26. УЗБЕКСКИЙ: пользователь часто говорит по-узбекски (латиницей или кириллицей) или смешивает с русским — понимай его так же точно, как русский, и отвечай на том же языке. Словарь: hisobla / hisoblab ber — посчитай; yubor / jo'nat — пришли; ayt — скажи; ko'rsat — покажи; narx — цена; qoldiq — остаток; ombor — склад; qarz — долг; to'lov — оплата; chegirma — скидка; karobka — коробка; dona — штука; mijoz — клиент; reja — план; sotuv — продажи; bugun — сегодня; kecha — вчера; ertaga — завтра; hafta — неделя; oy — месяц; qizil — Red; binafsha — Purple. Отвечай на ПОСЛЕДНЕЕ сообщение пользователя: не путай его с прошлыми вопросами из истории.
+26. УЗБЕКСКИЙ: пользователь часто говорит по-узбекски (латиницей или кириллицей) или смешивает с русским — понимай его так же точно, как русский; отвечай по-узбекски (латиница), по-русски — только если он сам пишет по-русски. Словарь: hisobla / hisoblab ber — посчитай; yubor / jo'nat — пришли; ayt — скажи; ko'rsat — покажи; narx — цена; qoldiq — остаток; ombor — склад; qarz — долг; to'lov — оплата; chegirma — скидка; karobka — коробка; dona — штука; mijoz — клиент; reja — план; sotuv — продажи; bugun — сегодня; kecha — вчера; ertaga — завтра; hafta — неделя; oy — месяц; qizil — Red; binafsha — Purple. Отвечай на ПОСЛЕДНЕЕ сообщение пользователя: не путай его с прошлыми вопросами из истории.
 27. ПРОВЕРЯЙ СЕБЯ ПЕРЕД ОТВЕТОМ. Цены, суммы, долги, остатки — только из функций, вызванных для ЭТОГО вопроса; цифры из прошлых ответов в истории могли устареть — вызови функцию снова. Не пиши «сохранил / запомнил / записал», если функция сохранения не вызывалась. Если функция ничего не нашла — попробуй другое написание (латиница / кириллица, без цвета или объёма) или другую функцию (price_list → notebook_search), и только потом говори «не нашёл», называя, где искал.
 28. EXCEL: «пришли в Excel / эксель / xlsx / таблицей файлом», «excel qilib yubor», «jadval fayl» → вызови функцию с данными для отчёта (debtors, agents_overview, agent_report, collect_today, stock, price_list, crm_query…) с excel=true: бот сам сделает файл из её результата и пришлёт. Сам таблицу в тексте не рисуй, цифры в файле считает код.
 29. БАЗА КЛИЕНТОВ: пользователь рассказывает о клиенте то, чего нет в CRM — с кем работает, у кого берёт, какие масла / бренды у него стоят, по каким ценам (наши и чужие), договоры, владелец и телефон, объёмы, конкуренты — → client_info_add: разложи на отдельные факты, ничего не теряй, цены и даты — только названные. Цена, по которой клиент берёт товар (у нас или у другого поставщика), — price side=buy, party = у кого; по которой продаёт своим покупателям — side=sell. Оборот / сколько берёт в месяц — volume. Что любит, характер, что ему важно — preference. Говорят чаще по-узбекски: пойми точно, detail пиши коротко и грамотно (узбекский — латиницей), имена клиентов, брендов и фирм — как названы. Новая цена / новый договор просто записывай: старое само уйдёт в историю. Не remember. «Всё про клиента X», «досье / полная инфа по X», «что знаешь о X», «X haqida nima bilasan», «X bo'yicha ma'lumot» → client_info с client (там и CRM: агент, долг, заказы); «что нового / что изменилось у X», «по какой цене раньше брал» → client_info с client и history=true. «У кого стоит Mobil / кто работает с X» → client_info с query. «Пришли базу клиентов / всю инфу в Excel» → client_info без client, excel=true. Ошибочная запись → client_info_delete.
@@ -4384,7 +4483,10 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
     }
     // simple question → answer from the template right away, without a second Gemini request
     // (a result with retry — e.g. a wrong skill name — goes back to the AI to fix its own mistake)
-    if (step === 0 && done.every(c => !c.args.explain && !c.result?.retry && (TPL[c.name] || c.result?.error))) {
+    // the ready-made templates are in Russian: an Uzbek question gets its answer written by the AI from the same result
+    // (+1 request; TPL_UZ=off keeps the Russian template). A clarifying list of candidates stays a template either way
+    const uzWrite = isUzbek(qText) && env('TPL_UZ') !== 'off' && done.some(c => TPL[c.name] && !c.result?.error && !ambiguity(c.result));
+    if (step === 0 && !uzWrite && done.every(c => !c.args.explain && !c.result?.retry && (TPL[c.name] || c.result?.error))) {
       const heard = qText === '[голосовое]' ? done.map(c => c.args.heard).find(Boolean) : '';
       const body = done.map(c => ambiguity(c.result) || TPL[c.name](c.result)).join('\n\n');
       const xl = files.length ? `\n\n📎 Excel-файл отправлен: ${files.join(', ')}` : done.find(c => c.result?.excel_error)?.result.excel_error ? `\n\n⚠️ ${done.find(c => c.result?.excel_error)!.result.excel_error}` : '';
@@ -4397,6 +4499,16 @@ export async function ask(db: any, chatId: number, userParts: any[], qText: stri
   return { text: 'Вопрос получился слишком сложным — разбейте, пожалуйста, на части.', used, requests, trace };
 }
 
+// is the question in Uzbek? Uzbek letters (ў қ ғ ҳ, o' g'), or Uzbek words and endings that Russian does not have
+const UZ_WORDS = /\b(narx\w*|qancha|nechpul|necha|yubor\w*|jo'nat\w*|ber(ing|ib|chi)?|bugun\w*|kecha\w*|ertaga|qarz\w*|mijoz\w*|ko'rsat\w*|hisobla\w*|qil\w*|bormi|kerak\w*|uchun|bilan|emas|yo'q|nima\w*|qaysi|qayer\w*|qachon|qanday|menga|sizga|shu\w*|bu(ni|yerda)?|ayt\w*|eslat\w*|reja\w*|sotuv\w*|to'lov\w*|qoldiq\w*|ombor\w*|chegirma\w*|karobka\w*|dona|hafta\w*|oy(da|ga|lik)?|rahmat|salom|yaxshi\w*|zo'r|aka|opa|xo'p|ha|mayli|tashla\w*|top\w*|ko'r\w*|nechta|ta)\b/gi;
+const UZ_CYR = /\b(нарх\w*|қанча|юбор\w*|бугун|кеча|эртага|қарз\w*|мижоз\w*|кўрсат\w*|ҳисобла\w*|қил\w*|керак|учун|билан|эмас|йўқ|нима\w*|қайси|менга|айт\w*|эслат\w*|рахмат|раҳмат|яхши|ака|майли|ташла\w*)\b/gi;
+export function isUzbek(text: string) {
+  const t = String(text || '').replace(/^\(голосовое сообщение, расшифровка\)\s*/, '').replace(/^\[[^\]]*\]\s*/, '').trim();
+  if (!t || t.startsWith('/')) return false;
+  if (/[ўқғҳЎҚҒҲ]|\b\w+[og]['ʻ’`]\w/i.test(t)) return true;
+  const words = t.split(/\s+/).length, uz = (t.match(UZ_WORDS) || []).length + (t.match(UZ_CYR) || []).length;
+  return uz >= 2 || (uz >= 1 && words <= 4);
+}
 // «сколько осталось лимитов?», «лимит», «limit qancha» — the bot's own Gemini limit. A CRM limit («кредитный лимит
 // клиента», «лимит агента») is a work question and goes to the AI: it used to be answered with /limits by mistake
 export function isLimitsQuestion(text: string) {
@@ -4409,7 +4521,7 @@ export function isLimitsQuestion(text: string) {
 async function command(text: string, chatId: number): Promise<string | null> {
   // «сколько осталось лимитов?» in plain words is answered without spending a request
   if (/^\/limits?\b/i.test(text) || isLimitsQuestion(text)) return limitsText();
-  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|learn|uchis|pings|app|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|learn|uchis|pings|app|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база|reja|bugun|pin)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
   const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
@@ -4428,6 +4540,10 @@ async function command(text: string, chatId: number): Promise<string | null> {
     let xl = '';
     if (!r.error && !r.empty) { try { const f = await sendExcel(chatId, 'client_info', a, r); if (f) xl = `\n\n📎 Excel: ${f}`; } catch (e) { xl = '\n\n⚠️ Не получилось отправить Excel: ' + redact((e as Error).message); } }
     return (ambiguity(r) || TPL.client_info(r)) + xl;
+  }
+  if (cmd === 'reja' || cmd === 'bugun' || cmd === 'pin') { // 📌 the plan of the day: made / refreshed and pinned at the top
+    const id = await pinDayPlan(chatId, await loadDB().catch(() => null));
+    return id ? '📌 Bugungi reja tepada mahkamlandi — vazifani bosing, bajarildi deb belgilanadi. Har soat o\'zi yangilanadi.' : '⚠️ Rejani mahkamlab bo\'lmadi.';
   }
   if (cmd === 'memory') return run('memory_list', {});
   if (cmd === 'pings') return pingsCommand(chatId, arg);
@@ -4816,6 +4932,7 @@ async function tick() {
   await slot('morning', CFG.hour('MORNING_HOUR', 8), async (db, c) => {
     const w = await morningWorld(c);
     await say(c, await morningBrief(db, c, w));
+    await pinDayPlan(c, db).catch(e => console.warn('pin', (e as Error).message)); // 📌 today's plan at the top of the chat
     // the spoken briefing: a short version as voice, unless voice replies are switched off (/voice off)
     if ((await voiceMode(c)) !== 'off') await sayVoice(c, briefSpeech(db, c, w));
     if (L.wd === 'Mon') await sendExport(db, c).catch(e => console.warn('export', e.message)); // weekly fresh source for NotebookLM
@@ -4825,6 +4942,10 @@ async function tick() {
   await slot('learn', CFG.hour('LEARN_HOUR', 22), async (_db, c) => { const r = await learnFromChat(c); if (r.length) await say(c, learnedText(r)); });
   for (const hr of PX_HOURS) await slot(`watch${hr}`, hr, async (db, c) => { await proactiveRun(db, c, hr); });
   await slot('idea', CFG.hour('IDEA_HOUR', 13), async (db, c) => { await ideaOfDay(db, c); });
+  // the pinned plan: the collection part changes during the day — redrawn once an hour from 9 to 21
+  if (L.h >= 9 && L.h <= 21 && await once(`pinref:${L.date}:${L.h}`).catch(() => false)) {
+    for (const c of chats) await pinRefresh(c, db || DBC?.db).catch(e => console.warn('pin', (e as Error).message));
+  }
   if (L.h === 3 && await once(`cleanup:${L.date}`)) await sb(`ai_events?created_at=lt.${q(new Date(Date.now() - 90 * 864e5).toISOString())}`, { method: 'DELETE' }).catch(() => {});
   return res;
 }
@@ -5252,8 +5373,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /oil — сводка OilBook · /oil точка — карточка точки
 /nb reread — перечитать сохранённые прайсы
 /memory — что я помню · /forget N — забыть
-✨ кнопка «JUMAVOY» слева от поля — приложение прямо в Telegram · /app — ссылка для телефона
-/menu — быстрые кнопки внизу (🔥 Дожать · 💰 Должники · 📈 План · 📋 Задачи)
+📋 кнопка «Doska» слева от поля — канбан-доска задач · /reja — 📌 план дня наверху чата
 /pings — сообщения первым (вкл / выкл / сколько в день)
 /learn — изучить меня по разговорам за день (сам делаю каждый вечер в ${CFG.hour('LEARN_HOUR', 22)}:00) · /learn 30 — за 30 дней
 /reminders — напоминания · /cancel N — отменить
@@ -5269,7 +5389,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 
 const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
   ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['baza', 'База клиентов в Excel / /baza имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'], ['oil', 'OilBook: сводка / /oil точка'],
-  ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['learn', 'Изучить меня по разговорам за день'], ['pings', 'Сообщения первым: вкл / выкл / сколько в день'], ['app', 'Приложение JUMAVOY (в Telegram и на телефоне)'], ['menu', 'Быстрые кнопки внизу'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
+  ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['learn', 'Изучить меня по разговорам за день'], ['pings', 'Сообщения первым: вкл / выкл / сколько в день'], ['reja', '📌 План дня (закреплён наверху)'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
   ['weather', 'Погода: /weather город'], ['kurs', 'Курс ЦБ'], ['news', 'Новости: /news тема'], ['cal', 'Google Календарь: /cal завтра'], ['google', 'Подключить Google'], ['skills', 'Навыки'],
   ['voice', 'Голосовые ответы: авто / on / off'], ['limits', 'Сколько осталось лимитов Gemini'], ['data', 'Свежесть данных'], ['fresh', 'Обновить данные сейчас'], ['new', 'Начать разговор заново'], ['help', 'Что я умею']].map(([command, description]) => ({ command, description }));
 
@@ -5277,10 +5397,61 @@ const COMMANDS = [['brief', 'Утренний план'], ['today', 'Кого д
 // the «✨ JUMAVOY» button next to the message field opens the app page itself inside Telegram (Mini App, signed with
 // initData — see appApi); four buttons under the field answer at once, without the AI (no Gemini request)
 export const QUICK_BTN: Record<string, string> = { '🔥 Дожать': '/today', '💰 Должники': '/dolg', '📈 План': '/plan', '📋 Задачи': '/tasks' };
-export const quickKeyboard = () => ({ keyboard: [Object.keys(QUICK_BTN).map(text => ({ text }))], is_persistent: true, resize_keyboard: true, input_field_placeholder: `Спросите ${CFG.name}…` });
 export const appButton = () => ({ inline_keyboard: [[{ text: `✨ Открыть ${CFG.name}`, web_app: { url: APP_URL() } }]] });
+// 24.11.2026: the owner works in Telegram only (no app / APK) and the buttons under the field got in his way. The button left
+// of the field now opens the kanban board (tasks.html); the four quick buttons are gone (their commands still work)
+export const BOARD_BTN = '📋 Doska';
 async function setAppMenu(chatId?: number) {
-  return await tg('setChatMenuButton', { ...(chatId ? { chat_id: chatId } : {}), menu_button: { type: 'web_app', text: CFG.name, web_app: { url: APP_URL() } } });
+  return await tg('setChatMenuButton', { ...(chatId ? { chat_id: chatId } : {}), menu_button: { type: 'web_app', text: BOARD_BTN, web_app: { url: tasksUrl() } } });
+}
+// once per chat after this update: the old keyboard under the field is taken away (only a message can do that) and the
+// board button is put in place of the app one. Runs on the owner's next message, so no ?setup= is needed
+const UI_V = 'tg_ui_v2';
+const UI_DONE = new Set<number>(); // checked in this copy of the function: no Supabase call on every message
+async function uiUpgrade(chatId: number) {
+  if (UI_DONE.has(chatId)) return; UI_DONE.add(chatId);
+  if (!sbOn() || !await once(`${UI_V}:${chatId}`).catch(() => false)) return;
+  await setAppMenu(chatId);
+  await tg('sendMessage', { chat_id: chatId, text: `🧹 Pastdagi tugmalarni olib tashladim.\nChapdagi «${BOARD_BTN}» tugmasi — vazifalar doskasi (Trello kabi).\n📌 Har kuni ertalab bugungi reja tepada mahkamlanadi — /reja`, reply_markup: { remove_keyboard: true } });
+}
+// ── buttons under an answer, only when they help (and they go away after a tap) ──
+// 1) the answer is a clarifying question with numbered options «1) … 2) …» → each option is a button (a tap = that answer)
+// 2) otherwise, by what the answer was about: prices → a message for the client / Excel; lists → Excel / more detail;
+//    a client → a message / a reminder. Small talk and plain answers get no buttons at all.
+const FU: Record<string, { label: string; ask: string }> = {
+  client: { label: '✉️ Mijozga xabar', ask: 'Oxirgi javob asosida mijozga yuborish uchun qisqa, samimiy xabar yozib ber (o\'zbekcha, lotin). Faqat xabar matnini yoz.' },
+  excel: { label: '📊 Excel', ask: 'shuni excel qilib yubor' },
+  more: { label: '🔎 Batafsil', ask: 'Oxirgi javobni batafsilroq tushuntir: nima ko\'rinyapti, sabab va 2–3 ta aniq qadam.' },
+  remind: { label: '⏰ Ertaga eslat', ask: 'Shu bo\'yicha ertaga soat 10:00 da menga eslat.' },
+};
+const FU_BY: [RegExp, string[]][] = [
+  [/^(price_list|promo_calc)$/, ['client', 'excel']],
+  [/^(client_card|client_info)$/, ['client', 'remind']],
+  [/^(debtors|collect_today|agents_overview|agent_report|orders|payments|top_products|stock|stock_running_out|sleeping_clients|stopped_clients|crm_query|plan_forecast|promises)$/, ['excel', 'more']],
+  [/^(web_research|open_page|news)$/, ['more']],
+];
+export function choiceOptions(text: string) {
+  if (!/\?/.test(text)) return [];
+  const opts = String(text).split('\n').map(l => l.match(/^\s*([1-4])[).]\s+(.{1,80})$/)).filter(Boolean).map(m => m![2].trim());
+  return opts.length >= 2 && opts.length <= 4 ? opts : [];
+}
+export function followKeyboard(used: string[], text: string) {
+  const opts = choiceOptions(text);
+  if (opts.length) return { inline_keyboard: opts.map((o, i) => [{ text: `${i + 1}) ${short(o, 40)}`, callback_data: `ch:${i + 1}` }]) };
+  const keys: string[] = [];
+  for (const u of used) for (const [re, ks] of FU_BY) if (re.test(u)) for (const k of ks) if (!keys.includes(k)) keys.push(k);
+  const list = keys.filter(k => !(k === 'excel' && /📎/.test(text))).slice(0, 3);
+  return list.length ? { inline_keyboard: [list.map(k => ({ text: FU[k].label, callback_data: `fu:${k}` }))] } : null;
+}
+async function followButton(q: any, chatId: number, answer: (t?: string) => Promise<any>) {
+  const [kind, arg] = String(q.data).split(':');
+  let ask = '';
+  if (kind === 'ch') ask = choiceOptions(String(q.message?.text || ''))[+arg - 1] || '';
+  else ask = FU[arg]?.ask || '';
+  if (!ask) return answer('Eskirgan tugma');
+  await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => null);
+  await answer(kind === 'ch' ? ask.slice(0, 60) : 'Bajaryapman…');
+  return handle({ update_id: -Date.now(), message: { chat: { id: chatId }, from: { id: +q.from.id }, text: ask } });
 }
 // the answer «comes alive» like in the app: one message «💭 Думаю…» → «⏳ Смотрю прайс…» → the answer itself
 export const stageText = (head: string, st: string) => `${head ? head + '\n\n' : ''}${st === 'Думаю' ? '💭' : '⏳'} ${st}…`;
@@ -5302,9 +5473,11 @@ async function handle(u: any) {
   if (QUICK_BTN[text]) text = QUICK_BTN[text];
   if (/^\/(start|help|menu)\b/.test(text)) {
     await setAppMenu(chatId);
-    KB.set(chatId, quickKeyboard());
-    return say(chatId, /^\/menu\b/.test(text) ? `Кнопки внизу 👇 Слева от поля — «${CFG.name}»: приложение прямо в Telegram.` : HELP);
+    await once(`${UI_V}:${chatId}`).catch(() => false);
+    KB.set(chatId, { remove_keyboard: true });
+    return say(chatId, /^\/menu\b/.test(text) ? `Pastdagi tugmalar olib tashlandi. Chapdagi «${BOARD_BTN}» — vazifalar doskasi.` : HELP);
   }
+  await uiUpgrade(chatId).catch(e => console.warn('ui upgrade', (e as Error).message));
   if (/^\/new\b/.test(text)) { await resetHistory(chatId); return say(chatId, 'Начали заново. Спрашивайте 🙂'); }
   const vc = text.match(/^\/voice(?:@\w+)?\s*(\S*)/i);
   if (vc) return say(chatId, await voiceCommand(chatId, vc[1]));
@@ -5388,6 +5561,7 @@ async function handle(u: any) {
     console.log('ok', Date.now() - t0, 'ms', 'gemini requests:', res.requests, res.used.join(','), voice ? `stt ${LAST_STT.model} ${LAST_STT.ms} ms` : '');
     if (key && !res.used.some(x => WRITES.has(x))) { ANS.set(key, { at: Date.now(), text: res.text, mem: (await getHistory(chatId)).at(-1)?.parts?.[0]?.text }); if (ANS.size > 200) ANS.clear(); }
     await usageSettled(); // the day's total for the «🔋 Лимит» line
+    if (!KB.has(chatId)) { const fk = followKeyboard(res.used, res.text); if (fk) KB.set(chatId, fk); }
     await finish(res.text + usageLine(res.requests));
     if (await wantsVoice(chatId, !!voice, text)) await sayVoice(chatId, res.text);
   } catch (e) {
@@ -5430,10 +5604,7 @@ async function serve(req: Request) {
       for (const id of CFG.allowed()) {
         const r = await setAppMenu(Number(id)); menu[id] = r.ok ?? r;
         // once per user: the buttons under the field and a word about the app button (a repeated ?setup= sends nothing)
-        if (r.ok && sbOn() && await once(`tg_ui_v1:${id}`).catch(() => false)) {
-          KB.set(Number(id), quickKeyboard());
-          await say(Number(id), `✨ Обновление ${CFG.name}\n\nСлева от поля ввода — кнопка «${CFG.name}»: тот же красивый экран, что в приложении (сфера, голос, задачи, итоги), прямо в Telegram. Без ссылок и без APK.\n\nВнизу — быстрые кнопки: 🔥 Дожать · 💰 Должники · 📈 План · 📋 Задачи (отвечают сразу, без лимита Gemini).\n\nА обычный вопрос теперь видно, пока я думаю: «💭 Думаю…» → «⏳ Смотрю данные…» → ответ.`);
-        }
+        if (r.ok) await uiUpgrade(Number(id)).catch(() => {});
       }
       await tg('setMyName', { name: CFG.name });
       await tg('setMyDescription', { description: `${CFG.name} — личный AI-ассистент: работа MITAL (долги, заказы, агенты, план), личное, семья, друзья, идеи, напоминания, блокнот знаний. Понимает голос и текст на русском и узбекском.` });

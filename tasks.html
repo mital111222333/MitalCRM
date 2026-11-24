@@ -3,74 +3,107 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Задачи JUMAVOY</title>
-<!-- Telegram Mini App: kanban board of JUMAVOY tasks (ai_tasks). Opened from the bot (/tasks → «📋 Доска»).
-     Data goes to <function url>/tasks (passed as ?api=…), signed with Telegram initData. -->
+<title>Доска JUMAVOY</title>
+<!-- Telegram Mini App: kanban board of JUMAVOY tasks (ai_tasks), Trello-style (24.11.2026).
+     Opened by the «📋 Doska» button left of the message field (and from /tasks, reminders, the pinned plan).
+     Data goes to <function url>/tasks (passed as ?api=…), signed with Telegram initData.
+     Columns swipe sideways on a phone; a card is dragged by a long press (touch) or at once (mouse); a tap opens it. -->
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{--bg:var(--tg-theme-secondary-bg-color,#f2f3f5);--card:var(--tg-theme-bg-color,#fff);--tx:var(--tg-theme-text-color,#15171a);--mut:var(--tg-theme-hint-color,#5f6670);--acc:var(--tg-theme-button-color,#1f6fd6);--acc-tx:var(--tg-theme-button-text-color,#fff);--line:rgba(127,127,127,.22);--red:#c9302c;--amber:#e9a23b;--green:#23804f;--todo:#8a94a6}
-*{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+:root{
+  --board1:#0c66e4;--board2:#6e5dc6;
+  --col:#f1f2f4;--card:#fff;--tx:#172b4d;--mut:#626f86;--line:rgba(9,30,66,.14);--shadow:0 1px 1px rgba(9,30,66,.25),0 0 1px rgba(9,30,66,.31);
+  --acc:#0c66e4;--red:#e2483d;--amber:#f5a623;--green:#1f845a;--purple:#8f7ee7;--teal:#2898bd;--pink:#e774bb;--lime:#5b7f24;
+  --head:#fff;--chip:rgba(255,255,255,.22);--chip-on:#fff;--chip-on-tx:#0c66e4;
+}
+.dark{--col:#1d2125;--card:#22272b;--tx:#dee4ea;--mut:#9fadbc;--line:rgba(166,197,226,.16);--shadow:0 1px 1px rgba(0,0,0,.5),0 0 1px rgba(0,0,0,.5);--board1:#0b3a7a;--board2:#3e2f7a;--chip-on-tx:#0b3a7a}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;color:var(--tx);font:14px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:linear-gradient(135deg,var(--board1),var(--board2))}
 button,input,select,textarea{font:inherit;color:inherit}
-.wrap{max-width:1180px;margin:0 auto;padding:12px 16px 24px}
-.top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}
-h1{font-size:20px;margin:0}.stat{color:var(--mut);font-size:13px}
-.bar{height:8px;border-radius:99px;background:var(--line);overflow:hidden;display:flex;margin-bottom:10px}.bar i{height:100%}
-.chips{display:flex;gap:6px;overflow-x:auto;margin-bottom:10px}
-.chip{border:1px solid var(--line);background:var(--card);border-radius:99px;padding:5px 12px;font-size:13px;white-space:nowrap;cursor:pointer}
-.chip[aria-pressed="true"]{background:var(--acc);border-color:var(--acc);color:var(--acc-tx)}
-form.add{display:grid;grid-template-columns:1fr auto;gap:8px;background:var(--card);border-radius:14px;padding:10px;border:1px solid var(--line)}
-form.add input[name=title]{border:0;background:transparent;outline:none;min-width:0}
-.more{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}.more>*{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:6px 8px;font-size:13px}
-.btn{border:0;background:var(--acc);color:var(--acc-tx);border-radius:10px;padding:8px 14px;font-weight:600;cursor:pointer}
-.tabs{display:none;gap:6px;margin:12px 0 0}.tabs button{flex:1;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:7px 4px;font-size:13px}
-.tabs button[aria-selected="true"]{border-color:var(--acc);color:var(--acc);font-weight:600}
-.board{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px;align-items:start}
-.col{border:1px solid var(--line);border-radius:16px;padding:10px;min-height:120px}.col.over{background:rgba(47,128,237,.1)}
-.col h2{font-size:13px;text-transform:uppercase;margin:2px 4px 10px;display:flex;justify-content:space-between;color:var(--mut)}
-.list{display:flex;flex-direction:column;gap:8px}
-.card{background:var(--card);border-radius:12px;padding:10px;border:1px solid var(--line);border-left:3px solid var(--pc,transparent);cursor:grab}
-.card.p1{--pc:var(--amber)}.card.p2{--pc:var(--red)}
-.card .t{font-weight:600;word-break:break-word}.card.done .t{text-decoration:line-through;color:var(--mut)}
-.note{color:var(--mut);font-size:13px;white-space:pre-wrap}
-.meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;font-size:12px;color:var(--mut)}
-.tag{background:var(--bg);border-radius:6px;padding:1px 6px}.tag.rem{color:var(--acc);font-weight:600}.tag.late{color:var(--red)}.tag.today{color:#a86a00}
-.pg{margin-top:8px;display:flex;gap:8px;align-items:center}.pg input{flex:1}.pg span{font-size:12px;color:var(--mut)}
-.acts{display:flex;gap:6px;margin-top:8px}.acts button{flex:1;border:1px solid var(--line);background:var(--bg);border-radius:9px;padding:6px 4px;font-size:13px;cursor:pointer}
-.acts .go{background:var(--acc);color:var(--acc-tx);border-color:var(--acc)}.acts .ok{background:var(--green);color:#fff;border-color:var(--green)}
-.empty,.msg{color:var(--mut);font-size:13px;text-align:center;padding:16px}
-dialog{border:0;border-radius:18px;padding:0;width:min(520px,calc(100vw - 32px));background:var(--card);color:var(--tx)}
-dialog form{padding:16px;display:flex;flex-direction:column;gap:10px}
-dialog label{font-size:12px;color:var(--mut);display:flex;flex-direction:column;gap:4px}
-dialog input,dialog select,dialog textarea{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:8px}
-.foot{display:flex;justify-content:space-between}.del{border:0;background:none;color:var(--red)}
-.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s}.toast.on{opacity:.95}
-@media (max-width:720px){.tabs{display:flex}.board{grid-template-columns:1fr}.col{display:none}.col.show{display:block}}
+.app{height:100%;display:flex;flex-direction:column}
+header{padding:calc(10px + var(--tg-content-safe-area-inset-top,0px)) 14px 8px;color:var(--head)}
+.row{display:flex;align-items:center;gap:10px}
+h1{margin:0;font-size:19px;font-weight:700;flex:1;letter-spacing:.2px}
+.pill{background:var(--chip);border-radius:99px;padding:4px 10px;font-size:12px;font-weight:600;white-space:nowrap}
+.prog{height:6px;border-radius:99px;background:rgba(255,255,255,.25);overflow:hidden;margin:9px 0 9px}.prog i{display:block;height:100%;background:#fff;border-radius:99px;transition:width .35s}
+.chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}.chips::-webkit-scrollbar{display:none}
+.chip{border:0;background:var(--chip);color:#fff;border-radius:99px;padding:6px 12px;font-size:13px;white-space:nowrap;cursor:pointer;font-weight:500}
+.chip[aria-pressed="true"]{background:var(--chip-on);color:var(--chip-on-tx);font-weight:700}
+.board{flex:1;display:flex;gap:12px;overflow-x:auto;overflow-y:hidden;padding:4px 14px calc(14px + var(--tg-safe-area-inset-bottom,0px));scroll-snap-type:x mandatory;scroll-padding:0 14px;align-items:flex-start;scrollbar-width:none}
+.board::-webkit-scrollbar{display:none}
+.col{flex:0 0 min(86vw,320px);max-height:100%;display:flex;flex-direction:column;background:var(--col);border-radius:14px;scroll-snap-align:start;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.col h2{margin:0;padding:12px 12px 8px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px}
+.col h2 .dot{width:10px;height:10px;border-radius:50%;background:var(--c)}
+.col h2 .n{margin-left:auto;color:var(--mut);font-weight:600;font-size:12px;background:var(--line);border-radius:99px;padding:1px 8px}
+.list{flex:1;overflow-y:auto;padding:2px 8px 4px;min-height:40px;display:flex;flex-direction:column;gap:8px;overscroll-behavior:contain}
+.col.over{outline:2px solid #fff;outline-offset:-2px}
+.card{position:relative;background:var(--card);border-radius:10px;padding:8px 10px 8px;box-shadow:var(--shadow);cursor:pointer;user-select:none;-webkit-user-select:none;touch-action:manipulation;transition:transform .12s,box-shadow .12s}
+.card:active{transform:scale(.985)}
+.labels{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.labels:empty{display:none}
+.lb{height:8px;min-width:40px;border-radius:4px;background:var(--c)}
+.lb.txt{height:auto;min-width:0;padding:1px 8px;font-size:11px;font-weight:700;color:#fff}
+.ttl{display:flex;gap:8px;align-items:flex-start}
+.chk{flex:0 0 18px;height:18px;margin-top:1px;border-radius:50%;border:2px solid var(--mut);background:none;padding:0;cursor:pointer;display:grid;place-items:center;font-size:11px;color:#fff;line-height:1}
+.done .chk{background:var(--green);border-color:var(--green)}
+.t{flex:1;word-break:break-word;font-weight:500}.done .t{color:var(--mut);text-decoration:line-through}
+.badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;font-size:12px;color:var(--mut);align-items:center}.badges:empty{display:none}
+.bd{display:inline-flex;align-items:center;gap:3px;border-radius:4px;padding:1px 5px}
+.bd.late{background:var(--red);color:#fff}.bd.today{background:var(--amber);color:#1d1d1d}.bd.ok{background:var(--green);color:#fff}.bd.rem{color:var(--acc);font-weight:600}
+.dark .bd.rem{color:#85b8ff}
+.mini{flex:1;min-width:60px;max-width:110px;height:5px;background:var(--line);border-radius:99px;overflow:hidden}.mini i{display:block;height:100%;background:var(--green)}
+.addc{margin:4px 8px 10px;border:0;background:none;color:var(--mut);text-align:left;padding:8px;border-radius:8px;cursor:pointer;font-weight:500}
+.addc:hover,.addc:active{background:var(--line);color:var(--tx)}
+.composer{margin:4px 8px 10px}.composer textarea{width:100%;border:0;border-radius:10px;padding:8px 10px;background:var(--card);box-shadow:var(--shadow);resize:none;outline:none;min-height:60px}
+.composer .row{margin-top:6px;gap:6px}
+.btn{border:0;background:var(--acc);color:#fff;border-radius:8px;padding:7px 14px;font-weight:600;cursor:pointer}
+.x{border:0;background:none;font-size:20px;color:var(--mut);cursor:pointer;padding:2px 8px}
+.empty{color:var(--mut);font-size:12px;text-align:center;padding:10px 4px}
+.ph{border-radius:10px;background:var(--line);border:2px dashed var(--mut);opacity:.6}
+.ghost{position:fixed;z-index:50;pointer-events:none;transform:rotate(3deg) scale(1.03);box-shadow:0 12px 24px rgba(0,0,0,.3);opacity:.96}
+.dragging-src{opacity:.25}
+body.drag{cursor:grabbing}
+.msg{color:#fff;text-align:center;padding:40px 20px;width:100%}
+/* the card sheet */
+.sheet{position:fixed;inset:0;z-index:40;display:none;background:rgba(0,0,0,.45);align-items:flex-end;justify-content:center}
+.sheet.on{display:flex}
+.sheet form{width:min(560px,100%);max-height:92vh;overflow:auto;background:var(--col);border-radius:18px 18px 0 0;padding:14px 16px calc(16px + var(--tg-safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:12px;animation:up .2s ease-out}
+@keyframes up{from{transform:translateY(40px);opacity:.4}}
+.grab{width:40px;height:4px;border-radius:9px;background:var(--mut);opacity:.5;margin:0 auto}
+.sheet label{font-size:12px;color:var(--mut);display:flex;flex-direction:column;gap:5px;font-weight:600}
+.sheet input,.sheet select,.sheet textarea{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:9px 10px;font-weight:400;color:var(--tx)}
+.sheet input[name=title]{font-size:17px;font-weight:600}
+.seg{display:flex;background:var(--line);border-radius:10px;padding:3px;gap:3px}
+.seg button{flex:1;border:0;background:none;border-radius:8px;padding:7px 4px;font-size:13px;cursor:pointer;color:var(--tx)}
+.seg button[aria-pressed="true"]{background:var(--card);box-shadow:var(--shadow);font-weight:700}
+.foot{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.del{border:0;background:none;color:var(--red);font-weight:600;cursor:pointer;padding:8px 0}
+.toast{position:fixed;left:50%;bottom:calc(22px + var(--tg-safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(20px);background:#1d2125;color:#fff;padding:9px 16px;border-radius:10px;font-size:13px;opacity:0;transition:.2s;z-index:60;pointer-events:none}
+.toast.on{opacity:.96;transform:translateX(-50%)}
+@media (min-width:1000px){.board{justify-content:center}.col{flex-basis:320px}}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="top"><h1>📋 Задачи</h1><span class="stat" id="stat">…</span></div>
-  <div class="bar" id="bar"></div>
-  <div class="chips" id="chips"></div>
-  <form class="add" id="add" autocomplete="off">
-    <input name="title" placeholder="Новая задача…" maxlength="300" required>
-    <button class="btn">Добавить</button>
-    <div class="more"><input name="due" type="date"><select name="priority"><option value="0">Обычная</option><option value="1">❗ Важная</option><option value="2">🔥 Срочная</option></select><select name="sphere"></select></div>
-  </form>
-  <div class="tabs" id="tabs"></div>
+<div class="app">
+  <header>
+    <div class="row"><h1>📋 Доска</h1><span class="pill" id="stat">…</span></div>
+    <div class="prog"><i id="bar" style="width:0"></i></div>
+    <div class="chips" id="chips"></div>
+  </header>
   <main class="board" id="board"><div class="msg">Загружаю…</div></main>
 </div>
-<dialog id="dlg"><form id="edit">
-  <label>Задача<input name="title" maxlength="300" required></label>
-  <label>Заметка<textarea name="note" rows="3"></textarea></label>
-  <label>Срок<input name="due" type="date"></label>
-  <label>Важность<select name="priority"><option value="0">Обычная</option><option value="1">❗ Важная</option><option value="2">🔥 Срочная</option></select></label>
-  <label>Статус<select name="status"><option value="todo">К выполнению</option><option value="doing">В процессе</option><option value="done">Готово</option></select></label>
-  <label>Сфера<select name="sphere"></select></label>
+<div class="sheet" id="sheet"><form id="edit" autocomplete="off">
+  <div class="grab"></div>
+  <input name="title" maxlength="300" required placeholder="Название">
+  <label>Статус<div class="seg" id="segSt"></div></label>
+  <label>Описание<textarea name="note" rows="3" placeholder="Подробности…"></textarea></label>
+  <div class="row" style="gap:10px;align-items:stretch">
+    <label style="flex:1">Срок<input name="due" type="date"></label>
+    <label style="flex:1">Сфера<select name="sphere"></select></label>
+  </div>
+  <label>Важность<div class="seg" id="segPr"></div></label>
   <label>Прогресс: <b id="pv">0%</b><input name="progress" type="range" min="0" max="100" step="10"></label>
-  <div class="foot"><button type="button" class="del" id="del">Удалить</button><span><button type="button" class="chip" id="cancel">Отмена</button> <button class="btn">Сохранить</button></span></div>
-</form></dialog>
+  <div class="foot"><button type="button" class="del" id="del">🗑 Удалить</button><span class="row" style="gap:6px"><button type="button" class="x" id="cancel" aria-label="Закрыть">✕</button><button class="btn">Сохранить</button></span></div>
+</form></div>
 <div class="toast" id="toast"></div>
 <script>
 (() => {
@@ -78,86 +111,194 @@ dialog input,dialog select,dialog textarea{border:1px solid var(--line);backgrou
   // the Telegram signature (initData) goes only to a Supabase function: a changed ?api= link cannot collect it elsewhere
   const API0 = (new URLSearchParams(location.search).get('api') || '').replace(/\/$/, '');
   const API = /^https:\/\/[a-z0-9-]+\.supabase\.co\/functions\/v1\/[\w-]+$/i.test(API0) ? API0 + '/tasks' : '';
-  const COLS = [['todo', 'К выполнению', 'var(--todo)'], ['doing', 'В процессе', 'var(--acc)'], ['done', 'Готово', 'var(--green)']];
-  const SPH = { work: '💼 Работа', personal: '👤 Личное', family: '👨‍👩‍👧 Семья', friends: '🤝 Друзья', ideas: '💡 Идеи' };
-  const ls = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
-  let tasks = [], today = '', sphere = ls.get('tk_sphere') || '', tab = ls.get('tk_tab') || 'doing', editing = null, drag = 0;
+  const COLS = [['todo', 'Нужно сделать', '#8590a2'], ['doing', 'В процессе', '#0c66e4'], ['done', 'Готово', '#1f845a']];
+  const ST = Object.fromEntries(COLS.map(([s, l]) => [s, l]));
+  const SPH = { work: ['💼 Работа', 'var(--teal)'], personal: ['👤 Личное', 'var(--purple)'], family: ['👨‍👩‍👧 Семья', 'var(--pink)'], friends: ['🤝 Друзья', 'var(--lime)'], ideas: ['💡 Идеи', 'var(--amber)'] };
+  const PR = [['0', 'Обычная'], ['1', '❗ Важная'], ['2', '🔥 Срочная']];
+  const ls = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } } };
+  let tasks = [], today = '', filter = ls.get('tk_filter') || '', editing = null, busy = 0;
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const dm = d => d ? d.slice(8, 10) + '.' + d.slice(5, 7) : '';
-  // a card made from a reminder: its time in Tashkent, 🔁 for a repeating one
   const at = iso => { try { return new Intl.DateTimeFormat('ru-RU', { timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(iso)); } catch { return ''; } };
-  const remTag = t => t.remind ? `<span class="tag rem">⏰ ${t.remind.sent && !t.remind.repeat ? 'было ' : ''}${at(t.remind.at)}${t.remind.repeat ? ' 🔁' : ''}</span>` : '';
-  const inView = t => sphere === 'rem' ? !!t.remind : !sphere || (t.sphere || 'work') === sphere;
-  const haptic = ok => { try { ok ? TG.HapticFeedback.notificationOccurred('success') : TG.HapticFeedback.impactOccurred('light'); } catch {} };
-  const toast = t => { if (!t) return; const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('on'), 2000); };
-  if (TG) { TG.ready(); TG.expand(); }
+  const haptic = k => { try { k === 'ok' ? TG.HapticFeedback.notificationOccurred('success') : k === 'sel' ? TG.HapticFeedback.selectionChanged() : TG.HapticFeedback.impactOccurred(k || 'light'); } catch { /* no haptics */ } };
+  const toast = t => { if (!t) return; const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('on'), 1800); };
+  if (TG) {
+    TG.ready(); TG.expand();
+    try { if (TG.colorScheme === 'dark') document.documentElement.classList.add('dark'); TG.setHeaderColor(TG.colorScheme === 'dark' ? '#0b3a7a' : '#0c66e4'); TG.setBackgroundColor(TG.colorScheme === 'dark' ? '#3e2f7a' : '#6e5dc6'); TG.disableVerticalSwipes && TG.disableVerticalSwipes(); } catch { /* old Telegram */ }
+  } else if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.classList.add('dark');
+
   async function api(body) {
-    const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tg-init': (TG && TG.initData) || '' }, body: JSON.stringify(body) });
-    const j = await r.json().catch(() => ({ error: 'Сервер ответил ' + r.status }));
-    if (!r.ok || j.error) throw new Error(j.error || 'Ошибка ' + r.status);
-    tasks = j.tasks; today = j.today; draw();
+    busy++;
+    try {
+      const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tg-init': (TG && TG.initData) || '' }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({ error: 'Сервер ответил ' + r.status }));
+      if (!r.ok || j.error) throw new Error(j.error || 'Ошибка ' + r.status);
+      tasks = j.tasks; today = j.today;
+    } finally { busy--; draw(); }
   }
   const run = (body, ok) => api(body).then(() => toast(ok)).catch(e => toast('⚠️ ' + e.message));
-  document.querySelectorAll('select[name=sphere]').forEach(s => s.innerHTML = Object.entries(SPH).map(([k, v]) => `<option value="${k}">${v}</option>`).join(''));
-  $('#chips').onclick = e => { const b = e.target.closest('[data-s]'); if (b) { sphere = b.dataset.s; ls.set('tk_sphere', sphere); draw(); } };
-  $('#tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; ls.set('tk_tab', tab); draw(); } };
+  // optimistic: the card moves at once, the server confirms (or the board is redrawn from its answer)
+  function move(id, status) {
+    const t = tasks.find(x => x.id === id); if (!t || t.status === status) return draw();
+    t.status = status; if (status === 'done') t.progress = 100; draw();
+    haptic(status === 'done' ? 'ok' : 'medium');
+    run({ op: 'move', id, status }, status === 'done' ? '✅ Готово!' : status === 'doing' ? '▶ В процессе' : '↩ Нужно сделать');
+  }
+
+  const inView = t => filter === 'rem' ? !!t.remind : filter === 'today' ? t.status === 'doing' || (t.due && t.due <= today && t.status !== 'done') || (t.status === 'done' && (t.done_at || '').slice(0, 10) === today) : !filter || (t.sphere || 'work') === filter;
   function card(t) {
-    const late = t.status !== 'done' && t.due && t.due < today, now = t.status !== 'done' && t.due === today;
-    const acts = t.status === 'todo' ? '<button class="go" data-a="doing">▶ В процесс</button><button class="ok" data-a="done">✓ Готово</button>'
-      : t.status === 'doing' ? '<button data-a="todo">↩</button><button class="ok" data-a="done">✓ Готово</button>' : '<button data-a="doing">↺ Вернуть</button>';
-    return `<article class="card p${t.priority || 0} ${t.status}" draggable="true" data-id="${t.id}"><div class="t">${t.priority == 2 ? '🔥 ' : t.priority == 1 ? '❗ ' : ''}${esc(t.title)}</div>
-      ${t.note ? `<div class="note">${esc(t.note)}</div>` : ''}<div class="meta">${remTag(t)}${t.due && !t.remind ? `<span class="tag ${late ? 'late' : now ? 'today' : ''}">${late ? '⚠️ ' : '📅 '}${now ? 'сегодня' : dm(t.due)}</span>` : ''}${(!sphere || sphere === 'rem') && t.sphere && t.sphere !== 'work' ? `<span class="tag">${SPH[t.sphere] || ''}</span>` : ''}<span>#${t.id}</span></div>
-      ${t.status === 'doing' ? `<div class="pg"><input type="range" min="0" max="100" step="10" value="${t.progress || 0}" data-pg><span>${t.progress || 0}%</span></div>` : ''}<div class="acts">${acts}</div></article>`;
+    const done = t.status === 'done', late = !done && t.due && t.due < today, now = !done && t.due === today;
+    const labels = (t.priority == 2 ? '<span class="lb txt" style="--c:var(--red)">Срочно</span>' : t.priority == 1 ? '<span class="lb txt" style="--c:var(--amber)">Важно</span>' : '')
+      + (filter ? '' : `<span class="lb" style="--c:${(SPH[t.sphere || 'work'] || SPH.work)[1]}" title="${esc((SPH[t.sphere || 'work'] || SPH.work)[0])}"></span>`);
+    const rem = t.remind ? `<span class="bd rem">⏰ ${t.remind.sent && !t.remind.repeat ? 'было ' : ''}${at(t.remind.at)}${t.remind.repeat ? ' 🔁' : ''}</span>` : '';
+    const due = t.due && !t.remind ? `<span class="bd ${done ? 'ok' : late ? 'late' : now ? 'today' : ''}">🕑 ${now ? 'сегодня' : dm(t.due)}</span>` : '';
+    const pg = t.status === 'doing' && t.progress > 0 ? `<span class="mini"><i style="width:${t.progress}%"></i></span><span>${t.progress}%</span>` : '';
+    return `<article class="card ${t.status}" data-id="${t.id}"><div class="labels">${labels}</div>
+      <div class="ttl"><button class="chk" data-chk aria-label="${done ? 'Вернуть' : 'Готово'}">${done ? '✓' : ''}</button><div class="t">${esc(t.title)}</div></div>
+      <div class="badges">${rem}${due}${t.note ? '<span title="есть описание">≡</span>' : ''}${pg}</div></article>`;
   }
   function draw() {
+    if (drag.on) return; // never redraw under a finger
     const list = tasks.filter(inView), by = s => list.filter(t => t.status === s);
-    const n = { todo: by('todo').length, doing: by('doing').length, done: by('done').length }, total = list.length || 1;
+    const n = { todo: by('todo').length, doing: by('doing').length, done: by('done').length }, total = list.length;
     const late = list.filter(t => t.status !== 'done' && t.due && t.due < today).length;
-    $('#stat').textContent = list.length ? `готово ${n.done} из ${list.length} · ${Math.round(n.done / total * 100)}%${late ? ' · ⚠️ просрочено ' + late : ''}` : 'задач нет';
-    $('#bar').innerHTML = COLS.slice().reverse().map(([s, , c]) => `<i style="width:${n[s] / total * 100}%;background:${c}"></i>`).join('');
-    $('#chips').innerHTML = [['', 'Все'], ['rem', `⏰ Напоминания · ${tasks.filter(t => t.remind && t.status !== 'done').length}`], ...Object.entries(SPH)].map(([k, v]) => `<button class="chip" data-s="${k}" aria-pressed="${k === sphere}">${v}</button>`).join('');
-    $('#tabs').innerHTML = COLS.map(([s, l]) => `<button data-tab="${s}" aria-selected="${s === tab}">${l} · ${n[s]}</button>`).join('');
-    $('#board').innerHTML = COLS.map(([s, l]) => `<section class="col ${s === tab ? 'show' : ''}" data-col="${s}"><h2><span>${l}</span><span>${n[s]}</span></h2><div class="list">${by(s).map(card).join('') || `<div class="empty">${s === 'done' ? 'Готовые за 7 дней' : 'Пусто'}</div>`}</div></section>`).join('');
+    $('#stat').textContent = total ? `✓ ${n.done}/${total}${late ? ` · ⚠️ ${late}` : ''}` : '0';
+    $('#bar').style.width = (total ? n.done / total * 100 : 0) + '%';
+    const chips = [['', 'Все'], ['today', '📌 Сегодня'], ['rem', `⏰ Напоминания`], ...Object.entries(SPH).map(([k, v]) => [k, v[0]])];
+    $('#chips').innerHTML = chips.map(([k, v]) => `<button class="chip" data-f="${k}" aria-pressed="${k === filter}">${v}</button>`).join('');
+    const keep = [...document.querySelectorAll('.list')].map(l => l.scrollTop), sx = $('#board').scrollLeft;
+    $('#board').innerHTML = COLS.map(([s, l, c]) => `<section class="col" data-col="${s}" style="--c:${c}"><h2><span class="dot"></span>${l}<span class="n">${n[s]}</span></h2>
+      <div class="list">${by(s).map(card).join('') || `<div class="empty">${s === 'done' ? 'Готовые за 7 дней появятся здесь' : 'Пусто — перетащите сюда карточку'}</div>`}</div>
+      ${s === 'done' ? '' : `<button class="addc" data-add="${s}">＋ Добавить карточку</button>`}</section>`).join('');
+    document.querySelectorAll('.list').forEach((l, i) => { l.scrollTop = keep[i] || 0; });
+    $('#board').scrollLeft = sx;
   }
+  $('#chips').onclick = e => { const b = e.target.closest('[data-f]'); if (b) { filter = b.dataset.f; ls.set('tk_filter', filter); haptic('sel'); draw(); } };
+
+  // ── quick add at the bottom of a column (Enter = add, the composer stays open for the next one)
   $('#board').addEventListener('click', e => {
+    const add = e.target.closest('[data-add]');
+    if (add) {
+      const s = add.dataset.add, box = document.createElement('div');
+      box.className = 'composer';
+      box.innerHTML = `<textarea maxlength="300" placeholder="Введите название карточки…"></textarea><div class="row"><button class="btn" data-ok>Добавить</button><button class="x" data-no aria-label="Отмена">✕</button></div>`;
+      add.replaceWith(box);
+      const ta = box.querySelector('textarea'); ta.focus();
+      const send = () => { const title = ta.value.trim(); if (!title) return; ta.value = ''; haptic('light'); run({ op: 'add', title, status: s, sphere: ['', 'rem', 'today'].includes(filter) ? 'work' : filter, due: filter === 'today' ? today : null }, '🆕 Добавлено').then(() => { const b = document.querySelector(`[data-add="${s}"]`); if (b) b.click(); }); };
+      box.querySelector('[data-ok]').onclick = send;
+      box.querySelector('[data-no]').onclick = () => draw();
+      ta.onkeydown = ev => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(); } if (ev.key === 'Escape') draw(); };
+      return;
+    }
+    if (drag.moved) return; // the click that ends a drag
     const c = e.target.closest('.card'); if (!c) return;
-    const a = e.target.closest('[data-a]'), id = +c.dataset.id;
-    if (a) { haptic(a.dataset.a === 'done'); return run({ op: 'move', id, status: a.dataset.a }, a.dataset.a === 'done' ? '✅ Готово!' : a.dataset.a === 'doing' ? '▶ В процессе' : ''); }
-    if (!e.target.closest('.pg')) open(tasks.find(t => t.id === id));
+    const t = tasks.find(x => x.id === +c.dataset.id); if (!t) return;
+    if (e.target.closest('[data-chk]')) return move(t.id, t.status === 'done' ? 'todo' : 'done');
+    open(t);
   });
-  $('#board').addEventListener('input', e => { if (e.target.matches('[data-pg]')) e.target.nextElementSibling.textContent = e.target.value + '%'; });
-  $('#board').addEventListener('change', e => { if (e.target.matches('[data-pg]')) { const v = +e.target.value; run({ op: 'edit', id: +e.target.closest('.card').dataset.id, progress: v }, v >= 100 ? '✅ Готово!' : ''); } });
-  $('#board').addEventListener('dragstart', e => { const c = e.target.closest('.card'); if (c) drag = +c.dataset.id; });
-  $('#board').addEventListener('dragover', e => { const col = e.target.closest('.col'); if (col && drag) { e.preventDefault(); col.classList.add('over'); } });
-  $('#board').addEventListener('dragleave', e => { const col = e.target.closest('.col'); if (col) col.classList.remove('over'); });
-  $('#board').addEventListener('drop', e => {
-    const col = e.target.closest('.col'); if (!col || !drag) return; e.preventDefault();
-    const t = tasks.find(x => x.id === drag), s = col.dataset.col; drag = 0;
-    if (t && t.status !== s) run({ op: 'move', id: t.id, status: s }, s === 'done' ? '✅ Готово!' : ''); else draw();
+
+  // ── drag & drop with pointer events: works with a finger (long press) and a mouse (move a few px)
+  const drag = { on: false, moved: false };
+  let press = null;
+  const board = $('#board');
+  board.addEventListener('pointerdown', e => {
+    const c = e.target.closest('.card'); if (!c || e.target.closest('[data-chk]') || e.button > 0) return;
+    drag.moved = false;
+    press = { id: +c.dataset.id, el: c, x: e.clientX, y: e.clientY, pid: e.pointerId, touch: e.pointerType !== 'mouse' };
+    if (press.touch) press.timer = setTimeout(() => start(e.clientX, e.clientY), 260);
   });
-  $('#add').onsubmit = e => {
-    e.preventDefault(); const f = e.target, title = f.title.value.trim(); if (!title) return;
-    run({ op: 'add', title, due: f.due.value || null, priority: +f.priority.value, sphere: f.sphere.value }, '🆕 Добавлено').then(() => { f.title.value = ''; f.due.value = ''; });
-  };
-  const dlg = $('#dlg'), ef = $('#edit');
-  function open(t) {
-    if (!t) return; editing = t;
-    ef.title.value = t.title; ef.note.value = t.note || ''; ef.due.value = t.due || ''; ef.priority.value = String(t.priority || 0);
-    ef.status.value = t.status; ef.sphere.value = t.sphere || 'work'; ef.progress.value = t.progress || 0; $('#pv').textContent = (t.progress || 0) + '%';
-    dlg.showModal();
+  addEventListener('pointermove', e => {
+    if (!press || e.pointerId !== press.pid) return;
+    const dx = e.clientX - press.x, dy = e.clientY - press.y;
+    if (!drag.on) {
+      if (press.touch) { if (Math.hypot(dx, dy) > 10) { clearTimeout(press.timer); press = null; } return; } // a scroll, not a drag
+      if (Math.hypot(dx, dy) > 6) start(e.clientX, e.clientY); else return;
+    }
+    e.preventDefault(); follow(e.clientX, e.clientY);
+  }, { passive: false });
+  addEventListener('pointerup', e => { if (press && e.pointerId === press.pid) end(e.clientX, e.clientY); });
+  addEventListener('pointercancel', () => { if (press) end(); });
+  // a held finger must not scroll the board while a card is dragged
+  addEventListener('touchmove', e => { if (drag.on) e.preventDefault(); }, { passive: false });
+  board.addEventListener('contextmenu', e => { if (e.target.closest('.card')) e.preventDefault(); });
+  function start(x, y) {
+    if (!press || drag.on) return;
+    const r = press.el.getBoundingClientRect();
+    drag.on = true; drag.moved = true; drag.dx = x - r.left; drag.dy = y - r.top;
+    drag.ghost = press.el.cloneNode(true); drag.ghost.classList.add('ghost'); drag.ghost.style.width = r.width + 'px';
+    document.body.appendChild(drag.ghost);
+    drag.ph = document.createElement('div'); drag.ph.className = 'ph'; drag.ph.style.height = r.height + 'px';
+    press.el.after(drag.ph); press.el.classList.add('dragging-src'); press.el.style.display = 'none';
+    document.body.classList.add('drag'); board.style.scrollSnapType = 'none'; haptic('medium');
+    follow(x, y);
+    drag.raf = requestAnimationFrame(autoScroll);
   }
-  ef.progress.oninput = () => $('#pv').textContent = ef.progress.value + '%';
-  $('#cancel').onclick = () => dlg.close();
+  function colAt(x, y) { const el = document.elementFromPoint(x, y); return el && el.closest('.col'); }
+  function follow(x, y) {
+    drag.x = x; drag.y = y;
+    drag.ghost.style.left = (x - drag.dx) + 'px'; drag.ghost.style.top = (y - drag.dy) + 'px';
+    const col = colAt(x, y);
+    document.querySelectorAll('.col.over').forEach(c => c !== col && c.classList.remove('over'));
+    if (!col) return;
+    col.classList.add('over');
+    const list = col.querySelector('.list'), cards = [...list.querySelectorAll('.card:not(.dragging-src)')];
+    const before = cards.find(c => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; });
+    const empty = list.querySelector('.empty'); if (empty) empty.remove();
+    if (before) list.insertBefore(drag.ph, before); else list.appendChild(drag.ph);
+  }
+  // near the left / right edge the board scrolls to the next column; near the top / bottom the column scrolls
+  function autoScroll() {
+    if (!drag.on) return;
+    const W = innerWidth, edge = 40;
+    if (drag.x < edge) board.scrollLeft -= 12; else if (drag.x > W - edge) board.scrollLeft += 12;
+    const col = colAt(drag.x, drag.y), list = col && col.querySelector('.list');
+    if (list) { const r = list.getBoundingClientRect(); if (drag.y < r.top + 30) list.scrollTop -= 10; else if (drag.y > r.bottom - 30) list.scrollTop += 10; }
+    drag.raf = requestAnimationFrame(autoScroll);
+  }
+  function end(x, y) {
+    clearTimeout(press && press.timer);
+    const p = press; press = null;
+    if (!drag.on) return;
+    cancelAnimationFrame(drag.raf);
+    const col = x != null ? colAt(x, y) : null;
+    drag.ghost.remove(); drag.ph.remove(); document.body.classList.remove('drag'); board.style.scrollSnapType = '';
+    drag.on = false;
+    setTimeout(() => { drag.moved = false; }, 50);
+    if (col && p) move(p.id, col.dataset.col); else draw();
+  }
+
+  // ── the card sheet
+  const sheet = $('#sheet'), ef = $('#edit');
+  ef.sphere.innerHTML = Object.entries(SPH).map(([k, v]) => `<option value="${k}">${v[0]}</option>`).join('');
+  const seg = (box, items, val) => { box.innerHTML = items.map(([k, l]) => `<button type="button" data-v="${k}" aria-pressed="${k === val}">${l}</button>`).join(''); box.dataset.v = val; };
+  $('#segSt').onclick = $('#segPr').onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; const box = e.currentTarget; box.dataset.v = b.dataset.v; box.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b)); haptic('sel'); };
+  function open(t) {
+    editing = t;
+    ef.title.value = t.title; ef.note.value = t.note || ''; ef.due.value = t.due || ''; ef.sphere.value = t.sphere || 'work';
+    ef.progress.value = t.progress || 0; $('#pv').textContent = (t.progress || 0) + '%';
+    seg($('#segSt'), COLS.map(([s]) => [s, ST[s]]), t.status); seg($('#segPr'), PR, String(t.priority || 0));
+    sheet.classList.add('on'); haptic('light');
+  }
+  const close = () => { sheet.classList.remove('on'); editing = null; };
+  sheet.onclick = e => { if (e.target === sheet) close(); };
+  $('#cancel').onclick = close;
+  ef.progress.oninput = () => { $('#pv').textContent = ef.progress.value + '%'; };
   ef.onsubmit = e => {
     e.preventDefault(); if (!editing) return;
-    const body = { op: 'edit', id: editing.id, title: ef.title.value, note: ef.note.value, due: ef.due.value || null, priority: +ef.priority.value, sphere: ef.sphere.value };
-    if (ef.status.value !== editing.status) body.status = ef.status.value; else body.progress = +ef.progress.value;
-    dlg.close(); run(body, 'Сохранено');
+    const st = $('#segSt').dataset.v, body = { op: 'edit', id: editing.id, title: ef.title.value, note: ef.note.value, due: ef.due.value || null, priority: +$('#segPr').dataset.v, sphere: ef.sphere.value };
+    if (st !== editing.status) body.status = st; else if (+ef.progress.value !== (editing.progress || 0)) body.progress = +ef.progress.value;
+    close(); run(body, st === 'done' && editing?.status !== 'done' ? '✅ Готово!' : 'Сохранено');
   };
-  $('#del').onclick = () => { if (editing && confirm(editing.remind ? 'Удалить карточку? Напоминание тоже отменится.' : 'Удалить задачу?')) { dlg.close(); run({ op: 'del', id: editing.id }, editing.remind ? '❌ Напоминание отменено' : '🗑 Удалено'); } };
-  if (!TG || !TG.initData || !API.startsWith('http')) { $('#board').innerHTML = '<div class="msg">Откройте доску из бота JUMAVOY: /tasks → «📋 Доска».</div>'; $('#add').hidden = true; $('#stat').textContent = ''; return; }
+  $('#del').onclick = () => {
+    if (!editing) return;
+    const t = editing, go = () => { close(); run({ op: 'del', id: t.id }, t.remind ? '❌ Напоминание отменено' : '🗑 Удалено'); };
+    const text = t.remind ? 'Удалить карточку? Напоминание тоже отменится.' : 'Удалить карточку?';
+    if (TG && TG.showConfirm) TG.showConfirm(text, ok => ok && go()); else if (confirm(text)) go();
+  };
+
+  if (!TG || !TG.initData || !API.startsWith('http')) { $('#board').innerHTML = '<div class="msg">Откройте доску из бота JUMAVOY: кнопка «📋 Doska» слева от поля ввода.</div>'; $('#stat').textContent = ''; return; }
   run({ op: 'list' });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) run({ op: 'list' }); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !busy && !drag.on) run({ op: 'list' }); });
 })();
 </script>
 </body>
