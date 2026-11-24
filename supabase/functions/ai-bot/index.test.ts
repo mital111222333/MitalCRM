@@ -7,6 +7,7 @@ const D = (globalThis as any).Deno;
 const ENV: Record<string, string> = {
   AI_BOT_TEST: '1', TG_TOKEN: 'T', TG_SECRET: 'sec', ALLOWED_USERS: '111', GEMINI_KEY: 'g', GH_TOKEN: 'gh',
   SUPABASE_URL: 'https://sb.test', SUPABASE_SERVICE_ROLE_KEY: 'service', TZ_NAME: 'Asia/Tashkent', QUIET_DAYS: 'none',
+  GEMINI_SPENT_MIN: '0', // the model ladder's rest after a daily 429 has its own test
   CRM_STALE_HOURS: '1000000', // the fixture CRM summary has a fixed date; the stale warning has its own test
 };
 for (const [k, v] of Object.entries(ENV)) D.env.set(k, v);
@@ -452,7 +453,8 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   D.env.delete('GEMINI_SMART_MODEL');
 
   // the conversation really is stored: every question has its answer row
-  eq(DB.ai_messages.filter(r => r.role === 'user').length, DB.ai_messages.filter(r => r.role === 'model').length, 'question/answer pairs stored');
+  // (chat_id −1 holds the bot's own settings / undo copies / background tasks — not a conversation)
+  eq(DB.ai_messages.filter(r => r.chat_id > 0 && r.role === 'user').length, DB.ai_messages.filter(r => r.chat_id > 0 && r.role === 'model').length, 'question/answer pairs stored');
   assert(DB.ai_messages.length >= 10, 'messages stored: ' + DB.ai_messages.length);
 
   // no access to mitalcrm-data (GitHub 404) → a clear message, never answers with zeros
@@ -2188,3 +2190,144 @@ D.test('24.11 a task for an agent goes straight into his MitalCRM account (agent
   } finally { delete DB.profiles; delete DB.agent_cabinets; }
 });
 function ok(v: any, m: string) { assert(v, m); }
+
+D.test('25.11 ideas from Mark LVII: routines (time in words, quiet hours, late catch-up, own routines)', async () => {
+  // when an own routine fires next (Tashkent = UTC+5; 25.11.2026 is a Wednesday)
+  const at8 = Date.parse('2026-11-25T03:00:00Z'); // 08:00 in Tashkent
+  eq(new Date(M.nextFire({ type: 'daily', time: '9:00' }, at8)!).toISOString(), '2026-11-25T04:00:00.000Z', 'daily 9:00 → today 9:00');
+  eq(new Date(M.nextFire({ type: 'daily', time: '07:30' }, at8)!).toISOString(), '2026-11-26T02:30:00.000Z', 'already passed → tomorrow');
+  eq(new Date(M.nextFire({ type: 'weekly', time: '17:00', days: [5] }, at8)!).toISOString(), '2026-11-27T12:00:00.000Z', 'Friday 17:00');
+  eq(new Date(M.nextFire({ type: 'monthly', day: 31, time: '09:00' }, at8)!).toISOString(), '2026-11-30T04:00:00.000Z', 'day 31 = the last day of November');
+  eq(new Date(M.nextFire({ type: 'interval', minutes: 30, start: '08:00', end: '09:00' }, at8)!).toISOString(), '2026-11-25T03:30:00.000Z', 'every 30 min from 8:00');
+  eq(M.nextFire({ type: 'once', at: '2026-11-24T10:00' }, at8), null, 'a past one-off never fires');
+  eq([M.hhmm('8'), M.hhmm('8.30'), M.hhmm('25:00'), M.hhmm('20:5')], ['08:00', '08:30', '', '20:05'], 'times in words');
+  // built-in routines: changed time, grace window, quiet hours
+  const cfg = { builtin: { morning: { times: ['08:30'] }, watch: { times: ['06:00', '12:00'] } }, quiet: { from: '23:00', to: '07:00' }, custom: [], seq: 0 };
+  const keys = (time: string) => M.builtinDue(cfg, { date: '2026-11-25', time }).map((x: any) => x.key);
+  assert(!keys('08:10').includes('morning:2026-11-25') && keys('08:40').includes('morning:2026-11-25'), 'the morning plan at 8:30, not 8:00');
+  assert(keys('11:20').includes('morning:2026-11-25'), 'missed → still sent within 3 hours');
+  assert(!keys('11:40').includes('morning:2026-11-25'), 'more than 3 hours late → skipped');
+  assert(!keys('06:30').includes('watch6:2026-11-25') && keys('07:00').includes('watch6:2026-11-25'), 'quiet hours hold «пишу первым» back until 7:00');
+  // in words through the tools; stored without a migration
+  const ctx = { chatId: 111 };
+  assert(/08:30/.test((await M.TOOLS.routine_set.run(null, { name: 'morning', time: '8:30' }, ctx)).text), 'brief moved');
+  assert(/o'chirildi/.test((await M.TOOLS.routine_set.run(null, { name: 'idea', on: false }, ctx)).text), 'idea of the day off');
+  assert(/23:00–07:00/.test((await M.TOOLS.quiet_hours.run(null, { from: '23', to: '7' }, ctx)).text), 'quiet hours set');
+  const c1 = await M.TOOLS.routine_add.run(null, { what: 'say', text: 'suv ich', type: 'daily', time: '09:00' }, ctx);
+  const c2 = await M.TOOLS.routine_add.run(null, { what: 'do', text: 'bugungi yig\'ish ro\'yxatini yubor', type: 'weekly', time: '17:00', days: [5] }, ctx);
+  const c3 = await M.TOOLS.routine_add.run(null, { what: 'do', text: 'eski ish', type: 'daily', time: '10:00' }, ctx);
+  assert(/R1/.test(c1.text) && /R2/.test(c2.text) && /R3/.test(c3.text), 'own routines numbered: ' + c1.text);
+  assert((await M.TOOLS.routine_add.run(null, { what: 'do', text: 'x', type: 'weekly', time: '17:00' }, ctx)).error, 'weekly without days → asks which days');
+  const list = (await M.TOOLS.routine_list.run(null, {}, ctx)).text;
+  assert(/Ertalabki reja — 08:30/.test(list) && /⏸ 💡/.test(list) && /R2 ⚙️ bajaradi/.test(list) && /Tinch soatlar: 23:00–07:00/.test(list), 'routine list: ' + list);
+  const row = DB.ai_messages.find(r => r.chat_id === -1 && r.tools === 'rt:cfg'); assert(row, 'settings kept in the kv rows');
+  // the routines are due: R1 2 min ago (say), R2 10 min ago (do — runs the instruction with the tools), R3 3 hours ago (too late)
+  const st = JSON.parse(row.text), ago = (m: number) => new Date(Date.now() - m * 60e3).toISOString();
+  st.custom[0].next = ago(2); st.custom[1].next = ago(10); st.custom[2].next = ago(180); row.text = JSON.stringify(st);
+  SENT.length = 0; GEM = () => say('Bugun 3 ta mijozdan yig\'ish kerak');
+  const res: any = {}; await M.runOwnRoutines(res);
+  eq(res.routines, 2, 'two routines ran');
+  assert(sentTexts().includes('⏰ suv ich'), 'say routine: ' + sentTexts().join(' | '));
+  assert(sentTexts().some((t: string) => t.startsWith('🗓 R2') && /3 ta mijoz/.test(t)), 'do routine answered with the AI: ' + sentTexts().join(' | '));
+  assert(!sentTexts().some((t: string) => /eski ish/.test(t)), 'a 3-hour-late do routine is skipped');
+  const after = JSON.parse(DB.ai_messages.find(r => r.chat_id === -1 && r.tools === 'rt:cfg').text);
+  assert(after.custom.every((r: any) => Date.parse(r.next) > Date.now()), 'every routine moved to its next time');
+  SENT.length = 0; await M.runOwnRoutines({}); eq(sentTexts().length, 0, 'nothing twice');
+  await M.TOOLS.routine_delete.run(null, { id: 3 }, ctx);
+  eq(JSON.parse(DB.ai_messages.find(r => r.chat_id === -1 && r.tools === 'rt:cfg').text).custom.length, 2, 'R3 deleted');
+  await tgPost({ text: '/rutin' }); assert(/Rutinalar/.test(lastText()) && /R1/.test(lastText()), '/rutin without the AI: ' + lastText());
+  // the conversation is not touched by the kv rows
+  assert(!(await M.kvList('rt:')).some((x: any) => x.v == null), 'kv rows parse');
+});
+
+D.test('25.11 ideas from Mark LVII: background research — rounds, checked quotes, sources, budget, quota pause, control', async () => {
+  DB.ai_tasks = DB.ai_tasks || []; SENT.length = 0;
+  const ctx = { chatId: 111 };
+  const t = await M.TOOLS.bg_start.run(null, { goal: 'Farg\'onada moy narxlarini o\'rgan', minutes: 5 }, ctx);
+  assert(t.id && !t.scheduled, 'started: ' + JSON.stringify(t));
+  assert(/Boshladim/.test(M.TPL.bg_start(t)), 'one line that it has started');
+  const card = DB.ai_tasks.find((x: any) => x.id === t.id); eq([card.status, card.title.startsWith('🔬')], ['doing', true], 'a card «in progress» on the board');
+  let round = 0, toolsSeen: string[] = [], finalHadTools = true;
+  GEM = (b: any) => {
+    if (!JSON.stringify(b.systemInstruction || '').includes('фоновый исследователь')) return say('ok');
+    round++;
+    if (round === 1) { toolsSeen = b.tools[0].functionDeclarations.map((d: any) => d.name); return { candidates: [{ content: { role: 'model', parts: [{ text: 'Narxlarni o\'qiyapman' }, { functionCall: { name: 'open_page', args: { url: 'https://news.example/a' } } }] } }] }; }
+    if (round === 2) return { candidates: [{ content: { role: 'model', parts: [
+      { functionCall: { name: 'note_finding', args: { claim: 'Narxlar 7% oshdi', quote: 'Цены на моторные масла выросли на 7% в ноябре', url: 'https://news.example/a' } } },
+      { functionCall: { name: 'note_finding', args: { claim: 'Narxlar tushdi', quote: 'цены упали на пятьдесят процентов за неделю', url: 'https://news.example/a' } } }] } }] };
+    finalHadTools = !!b.tools;
+    return say('Xulosa: narxlar 7% oshdi [1].\n**Muhim:** bitta manba [2], boshqasi [9].');
+  };
+  const res: any = {}; await M.runBackground(res);
+  eq((await M.kvGet('bg:' + t.id)).v.state, 'running', 'two rounds a minute, the state saved between ticks');
+  await M.runBackground(res); // the next minute: goes on from the checkpoint
+  assert(toolsSeen.includes('note_finding') && toolsSeen.includes('web_research') && toolsSeen.includes('crm_query'), 'research tools given');
+  assert(!toolsSeen.some(x => /wallet_|task_|message_|crm_task|remember|forget|reminder|chat_recall|oilbook_action/.test(x)), 'no acting tools and no memory: ' + toolsSeen.join());
+  const kv = (await M.kvGet('bg:' + t.id)).v;
+  eq([kv.state, kv.findings.map((f: any) => f.ok)], ['done', [true, false]], 'the quote on the page is checked by code');
+  const rep = sentTexts().find((x: string) => x.startsWith('🔬 Fon vazifa tayyor')) || '';
+  assert(/narxlar 7% oshdi \[1\]/.test(rep) && /\[2\]|\[1\]/.test(rep) && /\[\?\]/.test(rep) && !/\*\*/.test(rep), 'citations renumbered, a dangling one → [?]: ' + rep);
+  assert(/Manbalar/.test(rep) && /news\.example\/a ✅ 1\/2/.test(rep) && /Gemini: \d+ so'rov/.test(rep), 'sources with what was checked: ' + rep);
+  eq(DB.ai_tasks.find((x: any) => x.id === t.id).status, 'done', 'the card is «done»');
+  // the budget: a task out of time gets one last round with no functions — the report from what was found
+  const t2 = await M.TOOLS.bg_start.run(null, { goal: 'Andijon bozorini o\'rgan', minutes: 2 }, ctx);
+  const row2 = DB.ai_messages.find(r => r.chat_id === -1 && r.tools === 'bg:' + t2.id), s2 = JSON.parse(row2.text);
+  s2.deadline = new Date(Date.now() - 1000).toISOString(); row2.text = JSON.stringify(s2);
+  round = 10; await M.runBackground({});
+  eq([(await M.kvGet('bg:' + t2.id)).v.state, finalHadTools], ['done', false], 'time is up → report without functions');
+  // out of Gemini quota → a pause of 5 minutes, not a failure
+  const t3 = await M.TOOLS.bg_start.run(null, { goal: 'Namangan bo\'yicha tahlil', minutes: 5 }, ctx);
+  GEM = (b: any) => JSON.stringify(b.systemInstruction || '').includes('фоновый исследователь') ? { __status: 429, body: { error: { code: 429, message: 'per day', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } } } : say('ok');
+  await M.runBackground({});
+  const s3 = (await M.kvGet('bg:' + t3.id)).v;
+  eq([s3.state, s3.attempts, Date.parse(s3.wait_until) > Date.now()], ['waiting', 0, true], 'quota → waiting');
+  // control in words: a new instruction, «yetarli, yoz», status, cancel
+  assert(/hisobga olaman/.test((await M.TOOLS.bg_control.run(null, { action: 'steer', note: 'dollarda ham' }, ctx)).text), 'steer');
+  eq((await M.kvGet('bg:' + t3.id)).v.steer, ['dollarda ham'], 'the note is kept for the next round');
+  assert(/hisobot yozib/.test((await M.TOOLS.bg_control.run(null, { action: 'finish', id: t3.id }, ctx)).text), 'finish now');
+  const st = (await M.TOOLS.bg_control.run(null, { action: 'status' }, ctx)).text;
+  assert(/#\d+/.test(st) && /tayyor/.test(st), 'status list: ' + st);
+  assert(/to'xtatildi/.test((await M.TOOLS.bg_control.run(null, { action: 'cancel', id: t3.id }, ctx)).text), 'cancel');
+  eq((await M.kvGet('bg:' + t3.id)).v.state, 'cancelled', 'cancelled');
+  // a round that died with its tick: counted; after 3 interruptions the task is failed and the owner told
+  const t4 = await M.TOOLS.bg_start.run(null, { goal: 'uzilish sinovi', minutes: 5 }, ctx);
+  const row4 = DB.ai_messages.find(r => r.chat_id === -1 && r.tools === 'bg:' + t4.id), s4 = JSON.parse(row4.text);
+  s4.busy_at = new Date(Date.now() - 5 * 60e3).toISOString(); s4.attempts = 2; row4.text = JSON.stringify(s4);
+  SENT.length = 0; await M.runBackground({});
+  eq((await M.kvGet('bg:' + t4.id)).v.state, 'failed', 'interrupted 3 times → failed');
+  assert(sentTexts().some((x: string) => /uzildi/.test(x)), 'the owner is told');
+  // scheduled for later: waits on the board in «К выполнению»
+  const t5 = await M.TOOLS.bg_start.run(null, { goal: 'kechasi taqqosla', minutes: 10, at: new Date(Date.now() + 3 * 3600e3).toLocaleString('sv-SE', { timeZone: 'Asia/Tashkent' }).slice(0, 16).replace(' ', 'T') }, ctx);
+  eq([t5.scheduled, DB.ai_tasks.find((x: any) => x.id === t5.id).status], [true, 'todo'], 'scheduled task waits');
+  await tgPost({ text: '/fon' }); assert(/navbatda/.test(lastText()), '/fon shows the queue: ' + lastText());
+  assert(M.quoteOnPage('выросли  на 7%,  в ноябре', 'Цены на моторные масла выросли на 7% в ноябре.') && !M.quoteOnPage('упали', 'выросли'), 'quote check normalizes spaces and punctuation');
+});
+
+D.test('25.11 ideas from Mark LVII: ↩️ undo a deletion; a daily-limited model rests instead of being asked again', async () => {
+  DB.ai_wallet = [{ id: 900, chat_id: 111, kind: 'expense', amount: 5000, currency: 'UZS', category: 'Taksi', sphere: 'personal', day: T, note: '', trip: '' }];
+  const r = await M.TOOLS.wallet_delete.run(null, { id: 900 }, { chatId: 111 });
+  eq([r.deleted, DB.ai_wallet.length], [900, 0], 'deleted');
+  const u = DB.ai_messages.filter(x => x.chat_id === -1 && String(x.tools).startsWith('undo:111:')).at(-1); assert(u, 'the deleted row is kept');
+  SENT.length = 0;
+  const press = (data: string) => M.serve(new Request('https://x/functions/v1/ai-bot', { method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'sec' }, body: JSON.stringify({ update_id: 88000 + Math.floor(Math.random() * 1e5), callback_query: { id: 'q', from: { id: 111 }, data, message: { chat: { id: 111 }, message_id: 3, text: '🗑 Удалил #900' } } }) }));
+  await press('un:' + u.id);
+  eq([DB.ai_wallet.length, DB.ai_wallet[0]?.amount, DB.ai_wallet[0]?.category], [1, 5000, 'Taksi'], '↩️ puts it back');
+  assert(SENT.some(s => s.method === 'editMessageText' && /Qaytarildi/.test(s.body.text)), 'the message says so');
+  await press('un:' + u.id); assert(SENT.some(s => s.method === 'answerCallbackQuery' && /allaqachon/.test(s.body.text)), 'a second tap restores nothing');
+  eq(DB.ai_wallet.length, 1, 'not twice');
+  // through the chat: the answer to a deletion carries the button
+  GEM = () => call('wallet_delete', { id: DB.ai_wallet[0].id });
+  SENT.length = 0; await tgPost({ text: 'oxirgi yozuvni o\'chir' });
+  const msg = SENT.filter(s => s.method === 'sendMessage' || s.method === 'editMessageText').at(-1);
+  assert(JSON.stringify(msg?.body.reply_markup || {}).includes('un:'), 'the ↩️ button under the answer: ' + JSON.stringify(msg?.body));
+  // the model ladder: after «per day» the main model rests, the next questions go straight to the fallback
+  D.env.set('GEMINI_SPENT_MIN', '60'); D.env.set('GEMINI_FALLBACK_MODEL', 'gemini-fb-ladder');
+  let mainCalls = 0;
+  GEM = (_b: any, url: string) => { if (/gemini-fb-ladder/.test(url)) return say('Zapas javob berdi'); mainCalls++; return { __status: 429, body: { error: { code: 429, message: 'per day', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } } }; };
+  await tgPost({ text: 'savol bir' }); assert(/Zapas javob berdi/.test(lastText()), 'fallback answers: ' + lastText());
+  const first = mainCalls;
+  await tgPost({ text: 'savol ikki' }); assert(/Zapas javob berdi/.test(lastText()), 'fallback again');
+  eq(mainCalls, first, 'the spent model is not asked again');
+  assert(DB.ai_events.some(e => /^spent:.+:\d{4}-\d{2}-\d{2}:\d+$/.test(e.key)), 'the rest is kept for a cold start');
+  D.env.set('GEMINI_SPENT_MIN', '0'); D.env.delete('GEMINI_FALLBACK_MODEL');
+});
