@@ -209,11 +209,16 @@ const AC = {
       let stock = null; try { stock = await CRMLocal.request('GET', '/api/wh/stock'); } catch { /* no stock */ }
       let disc = null; try { if (typeof DS !== 'undefined' && LX.has()) disc = DS.model(); } catch { /* no LINKO data */ }
       const names = d.agents.map(a => a.agent), missing = [];
+      // tasks JUMAVOY put straight into a cabinet (src 'j') stay there until botinbox.js has turned them into CRM tasks
+      const made = new Set(typeof ATK !== 'undefined' ? ATK.all().map(t => String(t.inbox || '')).filter(Boolean) : []), keep = {};
+      try { const { data: cur } = await sb.from('agent_cabinets').select('agent_id, tasks:data->tasks'); for (const c of cur || []) keep[c.agent_id] = (Array.isArray(c.tasks) ? c.tasks : []).filter(t => t.src === 'j' && !made.has(String(t.id))); } catch { /* none kept */ }
       AC._lastDb ||= {}; let n = 0;
       for (const p of want) {
         const agent = names.find(x => AC.norm(x) === AC.norm(p.linko_name));
         if (!agent) { missing.push(p.full_name); continue; }
-        const snap = await AC.snapshot(agent, d, stock, disc), key = JSON.stringify({ ...snap, at: '' });
+        const snap = await AC.snapshot(agent, d, stock, disc);
+        if (keep[p.id]?.length) snap.tasks = [...keep[p.id], ...(snap.tasks || [])];
+        const key = JSON.stringify({ ...snap, at: '' });
         if (!force && AC._lastDb[p.id] === key) continue;
         const { error: e2 } = await sb.from('agent_cabinets').upsert({ agent_id: p.id, data: snap, updated_at: new Date().toISOString(), updated_by: me.id });
         if (e2) throw e2;

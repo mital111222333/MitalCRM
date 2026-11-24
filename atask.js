@@ -51,6 +51,8 @@ const ATK = {
     if (m.act === 'done') {
       const done = { at: m.at, comment: m.comment || '', photo: m.photo || '' };
       if (m.src === 'x') { const t = ATK.all().find(x => String(x.id) === String(m.id) && x.agent === m.agent); if (t && t.status !== 'closed') { t.status = 'done'; t.done = done; return true; } return false; }
+      // a task JUMAVOY put straight into the agent's cabinet (src 'j' = its crm_inbox id) → the CRM task made from it
+      if (m.src === 'j') { const t = ATK.all().find(x => String(x.inbox) === String(m.id) && x.agent === m.agent); if (t && t.status !== 'closed') { t.status = 'done'; t.done = done; return true; } return false; }
       if (m.src === 'ag') { await CRMLocal.request('POST', '/api/ag/tasks', { id: Number(m.id), agent_done: true }).catch(() => {}); ATK.marks()[m.id] = done; return true; }
       return false;
     }

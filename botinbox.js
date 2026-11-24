@@ -51,7 +51,7 @@ const BOTIN = {
     if (r.kind === 'atask') {
       if (!p.agent || !p.title) return 'пропущено: нет агента или текста';
       const id = ATK.all().reduce((m, t) => Math.max(m, t.id || 0), 0) + 1;
-      ATK.all().push({ id, agent: p.agent, kind: 'task', title: String(p.title).slice(0, 150), text: String(p.text || '').slice(0, 500), link: '', due: p.due || UI.localDate(Date.now()), created: r.created_at || new Date().toISOString(), status: 'open', done: null, back: null, by: 'JUMAVOY' });
+      ATK.all().push({ id, agent: p.agent, kind: 'task', title: String(p.title).slice(0, 150), text: String(p.text || '').slice(0, 500), link: '', due: p.due || UI.localDate(Date.now()), created: r.created_at || new Date().toISOString(), status: 'open', done: null, back: null, by: 'JUMAVOY', inbox: r.id });
       if (!p.notified) try { await ATK.notify(p.agent, `🆕 <b>Новое задание</b>\n${esc(p.title)}${p.text ? '\n' + esc(p.text) : ''}\nСрок: ${UI.dateRu(p.due)}`); } catch { /* Telegram not reachable */ }
       return 'задание добавлено';
     }

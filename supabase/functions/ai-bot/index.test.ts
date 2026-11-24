@@ -2172,3 +2172,19 @@ D.test('👛 wallet: expenses and income in words, a trip, month totals, report,
   assert(M.dayPlanKeyboard([], '2026-01-01').inline_keyboard.flat().some((x: any) => /wallet\.html/.test(x.web_app?.url || '')), 'in the pinned plan');
   assert(M.toolsFor('benzinga 200 ming ketdi', '').some((x: any) => x.name === 'wallet_add'), 'declared for an Uzbek expense');
 });
+
+D.test('24.11 a task for an agent goes straight into his MitalCRM account (agent_cabinets → «Задания»)', async () => {
+  DB.profiles = [{ id: 'p-adx', linko_name: 'Adxamjon  Umarov', is_active: true, role: 'agent' }, { id: 'p-off', linko_name: 'Other', is_active: true, role: 'agent' }];
+  DB.agent_cabinets = [{ agent_id: 'p-adx', data: { agent: 'Adxamjon Umarov', tasks: [{ src: 'x', id: 3, title: 'old', status: 'open' }] } }, { agent_id: 'p-off', data: { tasks: [] } }];
+  try {
+    ok(await M.cabinetTask('adxamjon umarov', { id: 41, title: 'Fozilxondan $500 olish', text: 'bugun', due: '2026-11-26' }), 'pushed');
+    const t = DB.agent_cabinets[0].data.tasks;
+    eq(t.map((x: any) => `${x.src}:${x.id}`), ['j:41', 'x:3'], 'on top, the old ones kept');
+    eq([t[0].status, t[0].due, t[0].by], ['open', '2026-11-26', 'JUMAVOY'], 'an open task');
+    eq(DB.agent_cabinets[1].data.tasks.length, 0, 'another agent untouched');
+    await M.cabinetTask('Adxamjon Umarov', { id: 41, title: 'again', text: '', due: '' });
+    eq(DB.agent_cabinets[0].data.tasks.filter((x: any) => x.src === 'j').length, 1, 'the same task is not doubled');
+    eq(await M.cabinetTask('Nobody', { id: 1, title: 'x', text: '', due: '' }), false, 'no such agent → false');
+  } finally { delete DB.profiles; delete DB.agent_cabinets; }
+});
+function ok(v: any, m: string) { assert(v, m); }

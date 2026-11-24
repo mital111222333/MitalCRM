@@ -82,6 +82,17 @@ function reset() {
     if (path.includes('text=eq.')) return J(rem.filter((r: any) => r.text === '§plan'));
     return J(rem.filter((r: any) => !r.sent_at && Date.parse(r.due_at) <= Date.now()));
   }
+  // a tiny PostgREST for the agent's own board and wallet (eq / gte / lte / or, limit)
+  const tbl = path.split('?')[0];
+  if (tbl === 'team_tasks' || tbl === 'team_wallet') {
+    const st = (state[tbl] ||= []), sp = new URLSearchParams(path.split('?')[1] || '');
+    const t1 = (r: any, k: string, e: string) => { const i = e.indexOf('.'), op = e.slice(0, i), v = decodeURIComponent(e.slice(i + 1)), a = r[k]; if (a == null) return false; const c = String(a).localeCompare(v, 'en', { numeric: true }); return op === 'eq' ? String(a) === v : op === 'gte' ? c >= 0 : op === 'lte' ? c <= 0 : false; };
+    const hit = () => st.filter((r: any) => [...sp].every(([k, v]) => ['select', 'order', 'limit'].includes(k) ? true : k === 'or' ? v.slice(1, -1).split(',').some(c => { const j = c.indexOf('.'); return t1(r, c.slice(0, j), c.slice(j + 1)); }) : t1(r, k, v)));
+    if (method === 'POST') { const row = { id: (state.seq = (state.seq || 0) + 1), created_at: new Date().toISOString(), ...body }; st.push(row); return J([row], 201); }
+    if (method === 'PATCH') { const h = hit(); for (const r of h) Object.assign(r, body); return J(h); }
+    if (method === 'DELETE') { const h = hit(); state[tbl] = st.filter((r: any) => !h.includes(r)); return J(h); }
+    const h = hit(); return J(sp.get('limit') ? h.slice(0, +sp.get('limit')!) : h);
+  }
   if (path.startsWith('team_users?select=chat_id')) return J(state.users.filter((u: any) => u.profiles.is_active).map((u: any) => ({ chat_id: u.chat_id })));
   if (path === 'rpc/team_usage_add') return J(1);
   if (path.startsWith('rpc/team_cron_check')) return J(body.p === 'good');
@@ -353,4 +364,38 @@ Deno.test('24.11 like the owner: Uzbek first, clarifying options as buttons, a t
   await M.handle({ update_id: 2005, callback_query: { id: 'c3', from: { id: 100 }, data: 'pl:ref', message: { chat: { id: 100 }, message_id: 5 } } });
   ok(state.edits.at(-1).text.startsWith('☀️ Xayrli tong') && state.edits.at(-1).message_id === 5, 'refreshed in place');
   ok(!state.edits.at(-1).text.includes('SECRET'), 'own cabinet only');
+});
+
+Deno.test('24.11 the agent\'s OWN board and wallet: tools, Mini App signed by the team bot, nobody else\'s rows', async () => {
+  reset();
+  const ctx = { chatId: 100 };
+  const t = await M.TOOLS.task_add.run(CAB_A, { title: "Iqbolga qo'ng'iroq", due: today, priority: 2 }, ctx);
+  ok(t.added, 'added'); eq(state.team_tasks[0].user_id, A, 'his own login');
+  eq((await M.TOOLS.task_set.run(CAB_A, { query: 'iqbol', status: 'done' }, ctx)).status, 'done', 'by words');
+  const w = await M.TOOLS.wallet_add.run(CAB_A, { amount: 200000, category: 'benzin', trip: 'Namangan' }, ctx);
+  eq([w.currency, w.category, w.month_expense, state.team_wallet[0].sphere], ['UZS', 'Бензин', 200000, 'work'], 'an expense on a trip');
+  eq((await M.TOOLS.wallet_report.run(CAB_A, {}, ctx)).totals.UZS.expense, 200000, 'report');
+  // another agent's rows never show
+  state.team_wallet.push({ id: 999, user_id: B, kind: 'expense', amount: 5, currency: 'UZS', category: 'Еда', day: today });
+  eq((await M.walletOp(A, { op: 'list' })).body.rows.length, 1, 'only his rows');
+  eq((await M.walletOp(A, { op: 'del', id: 999 })).status, 200); ok(state.team_wallet.some((r: any) => r.id === 999), 'cannot delete another agent\'s row');
+  // the Mini App: a valid team-bot signature of a linked agent → his rows; the owner-bot / forged / unlinked → 401
+  const enc = new TextEncoder();
+  const hm = async (key: Uint8Array, data: string) => new Uint8Array(await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', key as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), enc.encode(data)));
+  const sign = async (user: number, token = '123:test-token') => {
+    const p = new URLSearchParams({ auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify({ id: user }) });
+    const dcs = [...p.entries()].sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join('\n');
+    p.set('hash', [...await hm(await hm(enc.encode('WebAppData'), token), dcs)].map(x => x.toString(16).padStart(2, '0')).join(''));
+    return p.toString();
+  };
+  const call = (init: string, path = 'tasks') => M.serve(new Request(`https://x/functions/v1/team-bot/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tg-init': init }, body: JSON.stringify({ op: 'list' }) }));
+  const r1 = await call(await sign(100)); const j1 = await r1.json();
+  eq([r1.status, j1.tasks.length], [200, 1], 'his board');
+  eq((await call(await sign(100), 'wallet')).status, 200, 'his wallet');
+  eq((await call(await sign(100, '999:other-bot'))).status, 401, 'signed by another bot');
+  eq((await call(await sign(555))).status, 401, 'an unlinked Telegram');
+  eq((await call(await sign(300))).status, 401, 'a switched-off agent');
+  // buttons: board / wallet under such answers and in the pinned plan
+  ok(JSON.stringify(M.followKeyboard(['wallet_add'], 'x')).includes('wallet.html?api='), 'wallet button');
+  ok(M.tasksUrl().includes(encodeURIComponent('/functions/v1/team-bot')), 'the board talks to the team bot, not the owner\'s');
 });

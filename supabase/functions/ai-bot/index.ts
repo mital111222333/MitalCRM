@@ -802,6 +802,18 @@ async function onButton(q: any) {
   await tg('editMessageText', { chat_id: chatId, message_id: q.message.message_id, text: `${q.message.text || ''}\n\n${note}`.slice(0, 4096), disable_web_page_preview: true });
   await answer(note);
 }
+// a task put straight into the agent's cabinet row (agent_cabinets: what his MitalCRM account and his JUMAVOY show).
+// src 'j' + the crm_inbox id: the CRM keeps it there until botinbox.js has made the real task (atask.js knows the pair)
+const normName = (s: any) => String(s || '').toLowerCase().replace(/[’ʻʼ`´‘]/g, "'").replace(/\s+/g, ' ').trim();
+export async function cabinetTask(agent: string, t: { id: number; title: string; text: string; due: string }) {
+  const ppl = await sb('profiles?role=eq.agent&select=id,linko_name,is_active');
+  const p = (ppl || []).find((x: any) => x.is_active !== false && normName(x.linko_name) === normName(agent)); if (!p) return false;
+  const [cab] = await sb(`agent_cabinets?agent_id=eq.${p.id}&select=data`); if (!cab?.data) return false;
+  const tasks = (Array.isArray(cab.data.tasks) ? cab.data.tasks : []).filter((x: any) => !(x.src === 'j' && x.id === t.id));
+  tasks.unshift({ src: 'j', id: t.id, kind: 'task', title: String(t.title).slice(0, 150), text: String(t.text || '').slice(0, 500), link: '', due: t.due || '', status: 'open', overdue: false, back: '', by: 'JUMAVOY' });
+  await sb(`agent_cabinets?agent_id=eq.${p.id}`, { method: 'PATCH', body: { data: { ...cab.data, tasks }, updated_at: new Date().toISOString() } });
+  return true;
+}
 async function sendDraft(row: any): Promise<string> {
   if (row.kind === 'oilbook') {
     const r = await ob('action', row.payload);
@@ -818,11 +830,15 @@ async function sendDraft(row: any): Promise<string> {
   // crm_task: into the CRM first, then the agent is told at once (the CRM will not tell him again: notified)
   if (!db.crmOwner) throw new Error('не найден владелец CRM');
   const p = row.payload;
-  await sb('crm_inbox', { method: 'POST', body: { owner_id: db.crmOwner, kind: 'atask', payload: { agent: row.target, title: p.title, text: p.text || '', due: p.due, notified: !!(token && p.chat) } } });
-  if (!token || !p.chat) return `✅ Задание записано — появится в CRM, когда она откроется. В Telegram агенту не ушло: ${!token ? 'в CRM не подключён бот' : 'у агента нет чата с ботом CRM'}`;
+  const [ib] = await sb('crm_inbox', { method: 'POST', prefer: 'return=representation', body: { owner_id: db.crmOwner, kind: 'atask', payload: { agent: row.target, title: p.title, text: p.text || '', due: p.due, notified: !!(token && p.chat) } } });
+  // 24.11: the task goes straight into the agent's own account (MitalCRM → «Задания», and his JUMAVOY) — not only after the
+  // owner's CRM opens. The CRM later turns it into a normal task (botinbox.js) and keeps it until then (agentcab.js)
+  const inCab = ib?.id ? await cabinetTask(row.target, { id: ib.id, title: p.title, text: p.text || '', due: p.due }).catch(e => { console.warn('cabinet task', (e as Error).message); return false; }) : false;
+  const where = inCab ? 'уже в его аккаунте MitalCRM → «Задания»' : 'появится в его аккаунте MitalCRM, когда откроется ваша CRM';
+  if (!token || !p.chat) return `✅ Задание для ${row.target} записано — ${where}. В Telegram агенту не ушло: ${!token ? 'в CRM не подключён бот' : 'у агента нет чата с ботом CRM'}`;
   try { await crmBot(token, 'sendMessage', { chat_id: p.chat, text: `🆕 Новое задание\n${p.title}${p.text ? '\n' + p.text : ''}\nСрок: ${dm(p.due)}` }); }
-  catch (e) { return `✅ Задание записано в CRM, но агенту в Telegram не ушло: ${(e as Error).message}`; }
-  return `✅ Задание дано ${row.target} (${at}) — агент получил его в Telegram, в CRM появится при открытии`;
+  catch (e) { return `✅ Задание для ${row.target} записано — ${where}, но в Telegram агенту не ушло: ${(e as Error).message}`; }
+  return `✅ Задание дано ${row.target} (${at}) — ${where}, и он получил его в Telegram`;
 }
 // ───────────────────────────── OilBook: второй бизнес (платформа для точек замены масла) ─────────────────────────────
 // Админка OilBook (Railway) отдаёт JUMAVOY то же, что владелец видит в /admin: подписки, оплаты, заявки, общую аналитику.
