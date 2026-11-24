@@ -186,6 +186,8 @@ function fast_(all) {
   const P = PropertiesService.getScriptProperties();
   const to = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd'), from = planFrom_(to), data = {}, errors = {};
   runJobs_(jobs, from, to, data, errors);
+  // the real debt of every client — LINKO «Баланс на конец» (the debtors list alone gives a different, wrong total)
+  if (data.debtors) try { data.bal = balRows_(all_(BAL_PATH_(from, to))); } catch (e) { errors.bal = mask_(e.message || e); }
   try { stop_(data); } catch (e) { Logger.log('Стоп-отгрузка: ' + mask_(e.message || e)); }
   try { inst_(data); } catch (e) { Logger.log('Рассрочка: ' + mask_(e.message || e)); }
   if (!Object.keys(data).length) return;
@@ -212,6 +214,22 @@ function extra_(all) {
   Logger.log('Доп. данные сохранены: ' + Object.keys(data).map(k => k + ' ' + data[k].length).join(', ') + (Object.keys(errors).length ? ' · ошибки: ' + Object.keys(errors).map(k => k + ' (' + String(errors[k]).slice(0, 80) + ')').join(', ') : ''));
 }
 function get2_(o, k) { if (o == null) return undefined; if (Object.prototype.hasOwnProperty.call(o, k)) return o[k]; return k.split('.').reduce((v, p) => (v == null ? undefined : v[p]), o); }
+// LINKO client balance (Статистика → Клиенты) of the plan period: [{ id, name, b }], b — «Баланс на конец» in USD
+// (minus — the client owes, plus — he paid in advance). The sum of all b is exactly LINKO's «Долги клиентов» (e.g. 137 258,18).
+function BAL_PATH_(from, to) { return 'stats/client_balances_expanded/?only_out_stock=False&is_only_delivered=False&last_status=False&exclude_closed_clients=false&only_payment_with_invoice=false&begin_date=' + from + '&end_date=' + to + '&page=1&page_size=500'; }
+function balRows_(list) {
+  return (list || []).filter(c => c && typeof c === 'object' && 'currencies' in c).map(c => {
+    const u = (c.currencies || []).filter(x => instUsd_(x.name))[0] || {};
+    return { id: c.client_id != null ? c.client_id : c.id, name: String(c.name || '').trim(), b: Math.round(n_(u.end_balance) * 100) / 100 };
+  });
+}
+// { normalized name → what the client owes (0 if he owes nothing) }, or null when there is no balance yet (then the old debtors numbers are used)
+function balDebt_(bal) {
+  if (!Array.isArray(bal) || !bal.length) return null;
+  const m = {}; bal.forEach(r => { const k = instNorm_(r.name); m[k] = (m[k] || 0) + n_(r.b); });
+  Object.keys(m).forEach(k => { m[k] = m[k] < 0 ? Math.round(-m[k] * 100) / 100 : 0; });
+  return m;
+}
 function pick_(row, keys) { if (!keys || !keys.length || row == null || typeof row !== 'object') return row; const o = {}; keys.forEach(k => { const v = get2_(row, k); if (v !== undefined && v !== null && v !== '') o[k] = v; }); return o; }
 
 // never let a key get into a message: LINKO key, GPS key and GitHub key are replaced by ***
@@ -276,7 +294,9 @@ function live_(snap) {
     const F = read('linko-fast.json'), norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
     if (F && F.data && F.data.debtors) {
       const debt = {};
-      F.data.debtors.forEach(d => { const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(x => /usd|\$|долл/i.test(x.name || ''))[0] || cs[0] || {}; debt[norm(d['client.name'])] = Math.round(Math.abs(n_(c.debt_total)) * 100) / 100; }); // до цента, как в LINKO
+      const B = balDebt_(F.data.bal);
+      if (B) Object.keys(B).forEach(k => { debt[norm(k)] = B[k]; }); // «Баланс на конец» LINKO — до цента
+      else F.data.debtors.forEach(d => { const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(x => /usd|\$|долл/i.test(x.name || ''))[0] || cs[0] || {}; debt[norm(d['client.name'])] = Math.round(Math.abs(n_(c.debt_total)) * 100) / 100; });
       let sum = 0, cnt = 0;
       (snap.clients || []).forEach(c => { const k = norm(c.name); c.debt = k in debt ? debt[k] : 0; sum += c.debt; if (c.debt > 0) cnt++; });
       sum = Math.round(sum * 100) / 100;
@@ -695,6 +715,7 @@ function now_() {
   const lists = [];
   branches.forEach(br => lists.push({ key: 'st' + br, br: br, url: 'stock/all_balances/?in_way=true&page=1&branch=' + br + '&page_size=500&show_in=amount' }));
   jobs.forEach(j => lists.push({ key: 'job:' + j.id, job: j, url: j.path.replace(/\{from\}/g, from).replace(/\{to\}/g, today) }));
+  lists.push({ key: 'bal', url: BAL_PATH_(from, today) }); // the real debts (fast.data.bal), the same as the 5-minute run
   const balUrl = CFG.LINKO_API + 'stats/client_balances_expanded/export/?token=' + CFG.LINKO_TOKEN + '&' + q;
   const got = pages_(lists, [{ url: balUrl, headers: auth_(), muteHttpExceptions: true, followRedirects: true }]);
   const files = [], br = got.raw[0];
@@ -727,6 +748,7 @@ function now_() {
     const r = got.out[l.key], box = l.job.every && l.job.every < CFG.EXTRA_MIN ? fast : extra;
     if (!r || r.error) box.errors[l.job.id] = (r && r.error) || 'нет ответа'; else box.data[l.job.id] = r.rows.map(x => pick_(x, l.job.pick));
   });
+  if (fast.data.debtors && got.out.bal && !got.out.bal.error && got.out.bal.rows.length) fast.data.bal = balRows_(got.out.bal.rows);
   if (Object.values(got.out).some(r => r && /ключ/.test(r.error || ''))) throw new Error('LINKO не принял ключ (401): возьмите новый ключ LINKO и вставьте в скрипт');
   Logger.log('Обновление по кнопке: ' + (Date.now() - t0) + ' мс, файлов ' + files.length + ', разделов ' + (Object.keys(fast.data).length + Object.keys(extra.data).length));
   return { at: at, ms: Date.now() - t0, latest: { at: at, from: from, to: today, files: files }, fast: fast, extra: extra };
@@ -831,15 +853,17 @@ function stop_(data) {
   const R = JSON.parse(r.getContentText()); if (!R || !R.on) return;
   const norm = s => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
   const own = {}; Object.keys(R.clients || {}).forEach(k => { own[norm(k)] = R.clients[k]; });
-  const debt = {};
+  const debt = {}, B = balDebt_(data.bal);
   data.debtors.forEach(d => {
     const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(x => /usd|\$|долл/i.test(x.name || ''))[0] || cs[0] || {};
     const raw = [c.debt_first, c.debt_second, c.debt_third, c.debt_fourth].map(v => Math.abs(n_(v)));
-    const total = Math.abs(n_(c.debt_total)) || raw.reduce((a, b) => a + b, 0);
+    // the real debt is the balance; LINKO's age buckets only say how old it is (never more than he really owes)
+    const total = B ? B[norm(d['client.name'])] || 0 : Math.abs(n_(c.debt_total)) || raw.reduce((a, b) => a + b, 0);
     let left = total; const b = raw.map(v => { const t = Math.min(v, left); left -= t; return t; }); // оплаты закрывают самые старые заказы
     if (left > 1e-9) b[0] += left;
     debt[norm(d['client.name'])] = { total: total, old: b.slice(R.age || 2).reduce((a, v) => a + v, 0) };
   });
+  if (B) Object.keys(B).forEach(k => { if (B[k] > 0.005 && !debt[k]) debt[k] = { total: B[k], old: 0 }; }); // owes by the balance, not in LINKO's debtors list
   const P = PropertiesService.getScriptProperties(), seen = JSON.parse(P.getProperty('stopSeen') || '[]'), first = !P.getProperty('stopSeen');
   const fresh = [];
   data.orders.forEach(o => {
@@ -986,7 +1010,7 @@ function inst_(data) {
   let M = {}; try { M = instMonths_(L, R, today); } catch (e) { Logger.log('Договоры, закупки по месяцам: ' + mask_(e.message || e)); }
   // the last payment of each client in the plan period (for «когда последний раз платил»)
   const lastPay = {}; (data.pays || []).forEach(x => { const k = instNorm_(get2_(x, 'client.name')), d = String(x.created_date || '').slice(0, 10); if (n_(x.amount) > 0 && d && (!lastPay[k] || d > lastPay[k])) lastPay[k] = d; });
-  const S = instCalc_(R, L, data.debtors, M, today, lastPay);
+  const S = instCalc_(R, L, data.debtors, M, today, lastPay, data.bal);
   const P = PropertiesService.getScriptProperties();
   const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify([S.clients, S.contracts, S.texts]), Utilities.Charset.UTF_8));
   if (hash !== P.getProperty('instHash')) { saveToGithub_('inst-state.json', JSON.stringify(S)); P.setProperty('instHash', hash); }
@@ -1100,17 +1124,27 @@ function instPlan_(o, left, days, parts, today, own) {
     age: age, term: days, over: over, b: over <= 0 ? 'g' : over <= 30 ? 'o' : 'r' };
 }
 // P — the last payment day of each client in the plan period (from linko-fast), by normalized name
-function instCalc_(R, L, debtors, M, today, P) {
+// bal — the LINKO client balance (balRows_): when it is there, each client's debt is his «Баланс на конец», exactly as in LINKO
+function instCalc_(R, L, debtors, M, today, P, bal) {
   const own = {}, ctOf = {}, alias = R.alias || {}, agentOf = {}, ordT = R.orders || {};
   Object.keys(R.clients || {}).forEach(k => { own[instNorm_(k)] = R.clients[k]; });
   Object.keys(R.agentOf || {}).forEach(k => { agentOf[instNorm_(k)] = R.agentOf[k]; });
   (R.contracts || []).forEach(c => (c.accounts || []).forEach(a => { ctOf[instNorm_(a)] = c; }));
   const byC = {}; L.forEach(o => { if (instUsd_(o.cur)) (byC[instNorm_(o.c)] = byC[instNorm_(o.c)] || []).push(o); });
-  const clients = [];
-  debtors.forEach(d => {
-    const name = String(d['client.name'] || ''), k = instNorm_(name), x = own[k] || {}, ct = ctOf[k];
+  const clients = [], B = balDebt_(bal), seen = {};
+  // who owes: with the balance — every client with a minus balance (also one missing from LINKO's debtors list),
+  // a client of the debtors list who is not in the balance or is at zero owes nothing (LINKO counts it the same way)
+  const list = (debtors || []).map(d => ({ d: d, name: String(d['client.name'] || '') }));
+  if (B) {
+    list.forEach(e => { seen[instNorm_(e.name)] = 1; });
+    (bal || []).forEach(r => { const k = instNorm_(r.name); if (!seen[k] && B[k] > 0.5) { seen[k] = 1; list.push({ d: { 'client.name': r.name }, name: r.name }); } });
+  }
+  // paid in advance — LINKO subtracts it from «Долги клиентов»; net — that LINKO number itself (all balances together)
+  let adv = 0, net = 0; if (B) (bal || []).forEach(r => { net -= n_(r.b); if (n_(r.b) > 0) adv += n_(r.b); });
+  list.forEach(e => {
+    const d = e.d, name = e.name, k = instNorm_(name), x = own[k] || {}, ct = ctOf[k];
     const cs = Array.isArray(d.currencies) ? d.currencies : [], c = cs.filter(v => /usd|\$|долл/i.test(v.name || ''))[0] || cs[0] || {};
-    const D = Math.abs(n_(c.debt_total)) || [c.debt_first, c.debt_second, c.debt_third, c.debt_fourth].reduce((a, v) => a + Math.abs(n_(v)), 0);
+    const D = B ? B[k] || 0 : Math.abs(n_(c.debt_total)) || [c.debt_first, c.debt_second, c.debt_third, c.debt_fourth].reduce((a, v) => a + Math.abs(n_(v)), 0);
     if (!(D > 0.5) || x.ex) return;
     const days = Number(x.days || (ct && ct.days) || R.days || 30), parts = Math.max(1, Number(x.parts || (ct && ct.parts) || R.parts || 4));
     // an order given for its own term (set in the CRM on the order): the parts stay weekly — 60 days of a 30-day / 4-part client → 8 parts
@@ -1145,7 +1179,7 @@ function instCalc_(R, L, debtors, M, today, P) {
   });
   clients.sort((a, b) => b.r - a.r || b.o - a.o || b.late - a.late || b.debt - a.debt);
   const contracts = instContracts_(R, M, today);
-  return { at: new Date().toISOString(), day: today, days: R.days || 30, parts: R.parts || 4, clients: clients, contracts: contracts, texts: instTexts_(R, clients, contracts, today) };
+  return { at: new Date().toISOString(), day: today, days: R.days || 30, parts: R.parts || 4, clients: clients, contracts: contracts, adv: B ? instR2_(adv) : null, net: B ? instR2_(net) : null, texts: instTexts_(R, clients, contracts, today) };
 }
 // contracts: the purchase plan of each month (c.plan[i]; a contract without it — the same c.monthly every month)
 // against what the contract's accounts bought that month
@@ -1425,8 +1459,10 @@ function instReport_(R, S, F, X, today) {
   const sheets = [];
 
   // 1) Сводка
+  // the total exactly as LINKO shows it («Долги клиентов» = all balances: debts minus advances); an old state without it — the debtors' sum
+  const net = S.net != null ? S.net : sum(cl, 'debt'), adv = S.adv || 0;
   const kpi = [
-    ['Долг клиентов всего', sum(cl, 'debt'), cl.length + ' кл.', 6], ['Просрочено по рассрочке', sum(cl, 'late'), cl.filter(c => c.late > 0.5).length + ' кл. — лист «Оплатить сегодня»', 3],
+    ['Долг клиентов (как в LINKO)', net, adv > 0.5 ? 'должники ' + cl.length + ' кл. — $' + Math.round(sum(cl, 'debt')) + ', минус авансы клиентов $' + Math.round(adv) : cl.length + ' кл.', 6], ['Просрочено по рассрочке', sum(cl, 'late'), cl.filter(c => c.late > 0.5).length + ' кл. — лист «Оплатить сегодня»', 3],
     ['Срок оплаты сегодня', sum(cl, 'today'), cl.filter(c => c.today > 0.5).length + ' кл.', 6], ['🔴 61+ дней — вернуть товар / забрать деньги', sum(cl, 'r'), long.length + ' кл. — лист «Должники по срокам»', 3], ['🟠 31–60 дней — забрать деньги', sum(cl, 'o'), cl.filter(c => c.o > 0.5).length + ' кл.', 3], ['🟢 До 30 дней — в сроке', sum(cl, 'g'), cl.filter(c => c.g > 0.5).length + ' кл.', 6],
     ['Продажи с ' + dm(from), sum(ords, 's'), ords.length + ' заказов', 6], ['Оплаты с ' + dm(from), sum(pays, 's'), pays.length + ' оплат', 6],
     ['Продажи вчера (' + dm(yday) + ')', sum(ords.filter(o => o.d === yday), 's'), ords.filter(o => o.d === yday).length + ' заказов', 6], ['Оплаты вчера (' + dm(yday) + ')', sum(pays.filter(p => p.d === yday), 's'), pays.filter(p => p.d === yday).length + ' оплат', 6],
@@ -1498,7 +1534,7 @@ function instReport_(R, S, F, X, today) {
   sheets.push({ name: 'Договоры', cols: [32, 22, 14, 12, 12, 12, 14, 12, 14, 14, 22], rows: r8, freeze: 1 });
 
   const f = v => '$' + Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  const caption = '📊 Отчёт на ' + dRu(today) + '\nДолг клиентов ' + f(sum(cl, 'debt')) + ' · просрочено ' + f(sum(cl, 'late')) + ' (' + cl.filter(c => c.late > 0.5).length + ' кл.)\nСрок сегодня ' + f(sum(cl, 'today')) + ' · 🔴 61+ дн.: ' + long.length + ' кл. — ' + f(sum(cl, 'r')) + ' · 🟠 31–60: ' + f(sum(cl, 'o')) +
+  const caption = '📊 Отчёт на ' + dRu(today) + '\nДолг клиентов ' + f(net) + ' · просрочено ' + f(sum(cl, 'late')) + ' (' + cl.filter(c => c.late > 0.5).length + ' кл.)\nСрок сегодня ' + f(sum(cl, 'today')) + ' · 🔴 61+ дн.: ' + long.length + ' кл. — ' + f(sum(cl, 'r')) + ' · 🟠 31–60: ' + f(sum(cl, 'o')) +
     '\nВчера: продажи ' + f(sum(ords.filter(o => o.d === yday), 's')) + ', оплаты ' + f(sum(pays.filter(p => p.d === yday), 's')) + '\nПодробно — в файле' + (R.crm ? ' и в CRM: ' + R.crm + '#/debt' : '');
   return { blob: xlsx_(sheets, 'MITAL_отчёт_' + dm(today).replace('.', '-') + '.xlsx'), caption: caption };
 }

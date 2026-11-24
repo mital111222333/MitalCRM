@@ -271,14 +271,24 @@ function build(crm: any, fast: any, extra: any, inst: any, arcs: any[], arcPaths
   const dedupRets = new Map<string, any>(); for (const r of rets.values()) dedupRets.set(`${r.date}|${r.client}|${r.sum}`, r);
 
   const debtors = new Map<string, any>();
+  // the real debt of a client is his LINKO balance (fast.data.bal, «Баланс на конец»): the debtors list alone gives a wrong total
+  // (e.g. $144 299 instead of LINKO's $137 258). The age buckets only say how old it is: payments close the oldest first.
+  const bk = (s: any) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+  const balOf = new Map<string, number>(); for (const r of fast?.data?.bal || []) balOf.set(bk(r.name), (balOf.get(bk(r.name)) || 0) + n(r.b));
+  const hasBal = balOf.size > 0;
   for (const d of fast?.data?.debtors || ext.lx?.d?.debtors || []) {
     const usd = (d.currencies || []).find((c: any) => /usd/i.test(c.name)) || {};
+    const raw = [usd.debt_fourth, usd.debt_third, usd.debt_second, usd.debt_first].map((v: any) => Math.abs(n(v))); // oldest first
+    const total = hasBal ? Math.max(0, -(balOf.get(bk(d['client.name'])) || 0)) : n(usd.debt_total);
+    let over = raw.reduce((a: number, v: number) => a + v, 0) - total; const b = raw.map(v => { const t = Math.min(v, Math.max(0, over)); over -= t; return v - t; });
+    if (over < -1e-9) b[3] += -over; // owes more than LINKO's buckets show: count it as the newest
     debtors.set(d['client.name'], {
-      total: r2(n(usd.debt_total)), d0_7: r2(n(usd.debt_first)), d8_30: r2(n(usd.debt_second)), d31_120: r2(n(usd.debt_third)), d120: r2(n(usd.debt_fourth)),
+      total: r2(total), d0_7: r2(b[3]), d8_30: r2(b[2]), d31_120: r2(b[1]), d120: r2(b[0]),
       phone: d['client.phone'] || '', address: d['client.address'] || d['market.address'] || '', guide: d['client.guide'] || '',
       agent: agentOf(d['client.name'], person(d, 'client.responsible_agent')),
     });
   }
+  if (hasBal) { const have = new Set([...debtors.keys()].map(bk)); for (const r of fast?.data?.bal || []) if (n(r.b) < -0.5 && !have.has(bk(r.name))) { have.add(bk(r.name)); debtors.set(r.name, { total: r2(-n(r.b)), d0_7: r2(-n(r.b)), d8_30: 0, d31_120: 0, d120: 0, phone: '', address: '', guide: '', agent: agentOf(r.name, '') }); } }
   const instClients = new Map<string, any>((inst?.clients || []).map((c: any) => [c.name, c]));
   const lastUp = (S.ag?.uploads || []).slice(-1)[0] || null;
   const stock: Record<string, any> = {};

@@ -51,7 +51,7 @@ EXT_PAGES.debt = async el => {
       ${UI.tile('🔴 61+ дней', m(sum(all, 'r')), { sub: `${cnt(all, 'r')} кл. · из них старше 120 дн.: ${old120.length} — вернуть товар или забрать деньги`, tone: sum(all, 'r') ? 'bad' : 'good' })}
       ${UI.tile('🟠 31–60 дней', m(sum(all, 'o')), { sub: `${cnt(all, 'o')} кл. — забрать деньги на этой неделе`, tone: sum(all, 'o') ? 'warn' : 'good' })}
       ${UI.tile('🟢 До 30 дней', m(sum(all, 'g')), { sub: `${cnt(all, 'g')} кл. — в сроке, сегодня срок частей ${m(sum(all, 'today'))}` })}
-      ${UI.tile('Долг всего', m(sum(all, 'debt')), { sub: `${all.length} кл. · расчёт ${new Date(st.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` })}</div>
+      ${UI.tile('Долг всего', m(st.net ?? sum(all, 'debt')), { sub: `${st.adv > 0.5 ? `должники ${m(sum(all, 'debt'))} − авансы ${m(st.adv)} · ` : ''}${all.length} кл. · расчёт ${new Date(st.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` })}</div>
     <div class="bar" style="flex-wrap:wrap"><nav class="tabs">${[['', 'Все'], ['r', '🔴 61+'], ['o', '🟠 31–60'], ['g', '🟢 до 30']].map(([k, t]) => `<a href="#" data-dbb="${k}" class="${DEBT.b === k ? 'on' : ''}">${t}</a>`).join('')}</nav>
       <select id="dbAg"><option value="">Все агенты</option>${agents.map(x => `<option ${x.a === DEBT.agent ? 'selected' : ''}>${esc(x.a)}</option>`).join('')}</select>
       <input id="dbQ" placeholder="Найти клиента" value="${esc(DEBT.q)}" style="min-width:180px">
