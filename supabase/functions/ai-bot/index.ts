@@ -353,7 +353,8 @@ const MEM = new Map<number, { at: number; rows: any[] }>();
 async function memoryOf(chatId: number): Promise<any[]> {
   if (!sbOn()) return [];
   const c = MEM.get(chatId); if (c && Date.now() - c.at < 60e3) return c.rows;
-  const rows = await sb(`ai_memory?chat_id=eq.${chatId}&or=(until.is.null,until.gte.${todayStr()})&order=id&limit=300`).catch(e => { console.warn('memory', e.message); return []; });
+  // the newest 600 (it used to be the OLDEST 300: once memory grew, new facts were never seen by the AI)
+  const rows = (await sb(`ai_memory?chat_id=eq.${chatId}&or=(until.is.null,until.gte.${todayStr()})&order=id.desc&limit=600`).catch(e => { console.warn('memory', e.message); return []; })).reverse();
   MEM.set(chatId, { at: Date.now(), rows }); return rows;
 }
 // «once»: the first caller for a key wins (a brief or alert is never sent twice, even if two ticks overlap)
@@ -740,14 +741,14 @@ function balanceFor(db: any, from?: string, to?: string) {
 }
 const WRITES = new Set(['task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'reminder_add', 'reminder_set', 'reminder_cancel', 'personal_debt_add', 'personal_debt_delete','notebooklm_export', 'send_contract_files', 'send_once_contract', 'save_photo', 'send_saved_file', 'message_agent', 'crm_task', 'crm_note', 'message_client',
   'skill_add', 'skill_delete', 'calendar_add', 'oilbook_action', 'client_info_add', 'client_info_delete', 'wallet_add', 'wallet_edit', 'wallet_delete', 'wallet_report',
-  'routine_list', 'routine_set', 'routine_add', 'routine_delete', 'quiet_hours', 'bg_start', 'bg_control']);
+  'routine_list', 'routine_set', 'routine_add', 'routine_delete', 'quiet_hours', 'bg_start', 'bg_control', 'conv_forget']);
 // tools that do not need the CRM data: when GitHub / LINKO is down they keep working (reminders, personal money, tasks,
 // notebook, the outside world, Google); every other tool then answers with the data error instead of zeros
 const NO_CRM = new Set(['chat_recall', 'task_add', 'task_set', 'task_delete', 'task_list', 'remember', 'forget', 'memory_list', 'bot_help', 'reminder_add', 'reminder_list', 'reminder_set', 'reminder_cancel',
   'personal_debt_add', 'personal_debts', 'personal_debt_delete', 'phone_action', 'notebook_search', 'save_photo', 'send_saved_file', 'web_research', 'open_page', 'weather', 'promo_calc', 'price_list',
   'currency_rates', 'news', 'skill_use', 'skill_add', 'skill_list', 'skill_delete', 'calendar_events', 'calendar_add', 'gmail_search', 'gmail_read', 'contacts_search',
   'oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action', 'client_info_add', 'client_info', 'client_info_delete', 'wallet_add', 'wallet_report', 'wallet_edit', 'wallet_delete',
-  'routine_list', 'routine_set', 'routine_add', 'routine_delete', 'quiet_hours', 'bg_start', 'bg_control']);
+  'routine_list', 'routine_set', 'routine_add', 'routine_delete', 'quiet_hours', 'bg_start', 'bg_control', 'conv_forget']);
 
 // ───────────────────────────── actions ─────────────────────────────
 // Anything that reaches another person is only a DRAFT until the owner presses «✅ Отправить» (ai_outbox + inline buttons → onButton).
@@ -4348,7 +4349,26 @@ const BG_TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: an
   },
 };
 
-Object.assign(TOOLS, RT_TOOLS, BG_TOOLS);
+// «забудь, что я говорил про X»: the episodes about it (and open threads with those words) go; facts — forget
+const MEM_TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, ctx: any) => any }> = {
+  conv_forget: {
+    desc: 'ЗАБЫТЬ РАЗГОВОР: «забудь, что я говорил про …», «unut, … haqida gaplashganimizni» — убрать из памяти разговоров эпизоды на эту тему (и открытые темы с этими словами). query — о чём (имена, слова). Факты о нём удаляет forget.',
+    params: { query: { type: 'string' } },
+    async run(_db, a, ctx) {
+      if (!sbOn()) return { error: NO_DB };
+      const words = memWords(a.query); if (!words.length) return { error: 'Nima haqidagi suhbatni unutay?' };
+      const idx = await epIndex(ctx.chatId, true);
+      const hit = idx.items.filter((x: any) => { const w = new Set(String(x.w || '').split(' ')); return words.every(t => wFits(w, t)); });
+      for (const x of hit) { const r = await kvGet(x.k).catch(() => null); if (r) await kvDelId(r.id); }
+      idx.items = idx.items.filter((x: any) => !hit.includes(x)); idx.kv = await kvPut(`epidx:${ctx.chatId}`, { items: idx.items }, idx.kv);
+      const { kv, s } = await convState(ctx.chatId), before = (s.open || []).length;
+      s.open = (s.open || []).filter((x: any) => !words.every(t => wFits(new Set(memWords(x.t)), t)));
+      if (s.open.length !== before) await kvPut(`conv:${ctx.chatId}`, s, kv);
+      return { text: hit.length || s.open.length !== before ? `🧹 Unutdim: «${a.query}» haqidagi ${hit.length} ta suhbat epizodi${s.open.length !== before ? ` va ${before - s.open.length} ta ochiq mavzu` : ''}.` : `«${a.query}» haqida suhbat xotirasida hech narsa topilmadi.` };
+    },
+  },
+};
+Object.assign(TOOLS, RT_TOOLS, BG_TOOLS, MEM_TOOLS);
 
 // ───────────────────────────── Gemini ─────────────────────────────
 // every function also takes two service fields: explain (the user wants analysis / advice → the AI writes the answer itself)
@@ -4387,7 +4407,7 @@ export const TOOL_GROUPS: [RegExp, string[]][] = [
   [/будильн|разбуди|таймер|позвони|набери|звонок|смс|sms|маршрут|навигац|довези|как доехать|открой|запусти|календар|фонар|громк|тише|без звука|вайфай|wi-?fi|блютуз|bluetooth|поделись|отправь в|whatsapp|ватсап|вацап|ссылк|budilnik|uyg.?ot|taymer|qo.?ng.?iroq|telefon qil|yo.?l\b|xarita|och\b|ochib|chiroq|ovoz/i, ['phone_action', 'find_client', 'client_card', 'calendar_add']],
   [/занял|одолж|в долг|дал |вернул|должен мне|мне должн|долг|qarz|berdim|oldim|qaytar/i, ['personal_debt_add', 'personal_debts', 'personal_debt_delete']],
   [/расход|приход|потрат|трат|заплатил|купил|ушло|кошел|бюджет|доход|зарплат|командиров|бензин|заправ|обед|такси|xarajat|sarf|to.?ladim|sotib|ketdi|hamyon|kirim|chiqim|daromad|komandir|benzin|tushlik|taksi|ming|mln|сум|so.?m/i, ['wallet_add', 'wallet_report', 'wallet_edit', 'wallet_delete']],
-  [/запомн|забуд|забыть|помниш|памят|обо мне|знаешь|eslab|esla|unut|yodla|xotira/i, ['remember', 'forget', 'memory_list', 'chat_recall']],
+  [/запомн|забуд|забыть|помниш|памят|обо мне|знаешь|eslab|esla|unut|yodla|xotira/i, ['remember', 'forget', 'memory_list', 'chat_recall', 'conv_forget']],
   [/говорили|обсуждал|спрашивал|я (тебе )?говорил|ты (мне )?(говорил|сказал|называл|отвечал|советовал)|в прошлый раз|раньше|вчера|позавчера|на прошлой неделе|разговор|переписк|gaplash|so.?ragan|aytgan|aytding|kecha|o.?tgan (safar|hafta)/i, ['chat_recall']],
   [/фото|файл|документ|блокнот|пришли|прайс|notebooklm|rasm|fayl|hujjat|yubor/i, ['save_photo', 'send_saved_file', 'notebook_search', 'notebooklm_export']],
   [/oilbook|oil ?book|точк|замен\S* масл|moyxona|moy almashtir/i, ['oilbook_summary', 'oilbook_shops', 'oilbook_shop', 'oilbook_payments', 'oilbook_registrations', 'oilbook_action']],
@@ -4420,7 +4440,7 @@ const num = (v: any) => String(r2(n(v)));
 const m2 = (v: any) => '$' + n(v).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/\s/g, ' ');
 
 // templates that are already written in Uzbek: an Uzbek question gets them as they are (no translation request)
-const UZ_TPL = new Set(['routine_list', 'routine_set', 'routine_add', 'routine_delete', 'quiet_hours', 'bg_start', 'bg_control']);
+const UZ_TPL = new Set(['conv_forget', 'routine_list', 'routine_set', 'routine_add', 'routine_delete', 'quiet_hours', 'bg_start', 'bg_control', 'conv_forget']);
 const TPL: Record<string, (r: any) => string> = {
   price_list: r => {
     if (r.error) return '⚠️ ' + r.error;
@@ -4633,7 +4653,7 @@ const TPL: Record<string, (r: any) => string> = {
       'Последние:\n' + lines(r.rows, (x: any) => `#${x.id} ${dm(x.day)} ${x.kind === 'приход' ? '+' : '−'}${money(x.amount, x.currency)} ${W_ICON[x.category] || ''} ${x.note || x.category}${x.trip ? ' · 🧳 ' + x.trip : ''}`, 10)].filter(Boolean).join('\n\n');
   },
   wallet_edit: r => `✏️ Исправил #${r.edited}: ${r.kind === 'income' ? '+' : '−'}${money(r.amount, r.currency)} · ${W_ICON[r.category] || ''} ${r.category}${r.trip ? ` · 🧳 ${r.trip}` : ''}${r.note ? ` («${r.note}»)` : ''} · ${dm(r.day)}${sphTag(r.sphere)}`,
-  routine_list: r => r.text, routine_set: r => r.text, routine_add: r => r.text, routine_delete: r => r.text, quiet_hours: r => r.text, bg_control: r => r.text,
+  conv_forget: r => r.text, routine_list: r => r.text, routine_set: r => r.text, routine_add: r => r.text, routine_delete: r => r.text, quiet_hours: r => r.text, bg_control: r => r.text,
   bg_start: r => r.scheduled
     ? `🔬 Fon vazifa #${r.id} navbatga qo'yildi: «${short(r.goal, 90)}» — ${nowTime(r.start_at)} da boshlayman, ${r.minutes} daqiqa ishlayman va hisobot yuboraman.\nHolat: /fon · doskada 📋 «🔬 …»`
     : `🔬 Boshladim (#${r.id}): «${short(r.goal, 90)}» — fonda ${r.minutes} daqiqa ishlayman, siz bemalol gaplashavering. Hisobot o'zi keladi.\nHolat: /fon · «yetarli, yoz» — hozir yakunlayman · «to'xtat» — bekor`,
@@ -4707,17 +4727,7 @@ export async function learnFromChat(chatId: number, hours = 24): Promise<any[]> 
     generationConfig: { temperature: 0, responseMimeType: 'application/json' } });
   let facts: any[] = [];
   try { facts = JSON.parse((d.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('').replace(/^```(?:json)?|```$/g, '').trim()).facts || []; } catch { return []; }
-  const have = new Set(mem.map((m: any) => norm(String(m.text).replace(LEARN_MARK, ''))));
-  const out: any[] = [];
-  for (const f of facts.slice(0, 6)) {
-    const text = String(f?.text || '').replace(/\s+/g, ' ').trim();
-    if (text.length < 4 || text.length > 300 || have.has(norm(text))) continue;
-    if (/\b\d{12,}\b|парол|password|parol/i.test(text)) continue; // never a card / document number or a password
-    const old = mem.find((m: any) => m.id === Number(f?.replaces) && String(m.text).startsWith(LEARN_MARK));
-    const [row] = await sb('ai_memory', { method: 'POST', prefer: 'return=representation', body: { chat_id: chatId, kind: 'fact', text: LEARN_MARK + text, sphere: sphereOf(f?.sphere) } });
-    if (old) await sb(`ai_memory?id=eq.${old.id}&chat_id=eq.${chatId}`, { method: 'DELETE' }).catch(() => {});
-    have.add(norm(text)); out.push({ id: row.id, text, sphere: sphereOf(f?.sphere), replaced: old ? old.text.replace(LEARN_MARK, '') : undefined });
-  }
+  const out = await saveLearned(chatId, facts, mem);
   MEM.delete(chatId);
   return out;
 }
@@ -4727,10 +4737,14 @@ export const learnedText = (rows: any[]) => rows.length
 
 function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
   const L = localParts(), t = L.date, wd = WD_RU[L.wd] || L.wd;
-  const rules = mem.filter(m => m.kind === 'rule'), facts = mem.filter(m => m.kind === 'fact');
+  const rules = mem.filter(m => m.kind === 'rule'), allFacts = mem.filter(m => m.kind === 'fact');
+  // all facts the owner told himself; learned ones (🧠) newest first while they fit ~9000 signs (the rest: memory_list)
+  let budget = 9000 - allFacts.filter(f => !String(f.text).startsWith(LEARN_MARK)).reduce((k, f) => k + String(f.text).length + 30, 0);
+  const keepL = new Set(allFacts.filter(f => String(f.text).startsWith(LEARN_MARK)).reverse().filter(f => (budget -= String(f.text).length + 30) >= 0).map(f => f.id));
+  const facts = allFacts.filter(f => !String(f.text).startsWith(LEARN_MARK) || keepL.has(f.id)), hidden = allFacts.length - facts.length;
   const tag = (m: any) => `[${SPH[m.sphere || 'work'].split(' ')[1]}]`;
   const memText = (rules.length ? `\nПРАВИЛА, КОТОРЫМ ТЕБЯ НАУЧИЛ ПОЛЬЗОВАТЕЛЬ (выполняй всегда, кроме случаев, когда они противоречат правилу 1):\n${rules.map(r => `#${r.id} ${tag(r)} ${r.text}`).join('\n')}\n` : '')
-    + (facts.length ? `\nФАКТЫ ИЗ ПАМЯТИ — ЧТО ТЫ ЗНАЕШЬ О ПОЛЬЗОВАТЕЛЕ И ЕГО ДЕЛАХ (сообщил он сам; 🧠 — ты узнал из разговоров; в [скобках] сфера). Подбирай ответы под него (правило 33):\n${facts.map(f => `#${f.id} ${tag(f)} ${f.text}${f.until ? ` (актуально до ${f.until})` : ''} [записано ${day(f.created_at)}]`).join('\n')}\n` : '');
+    + (facts.length ? `\nФАКТЫ ИЗ ПАМЯТИ — ЧТО ТЫ ЗНАЕШЬ О ПОЛЬЗОВАТЕЛЕ И ЕГО ДЕЛАХ (сообщил он сам; 🧠 — ты узнал из разговоров; в [скобках] сфера). Подбирай ответы под него (правило 33):\n${facts.map(f => `#${f.id} ${tag(f)} ${f.text}${f.until ? ` (актуально до ${f.until})` : ''} [записано ${day(f.created_at)}]`).join('\n')}${hidden ? `\n(ещё ${hidden} старых фактов 🧠 — memory_list)` : ''}\n` : '');
   return `Ты — ${CFG.name}, личный AI-помощник Саидбонура (как Джарвис). Его сферы: работа — он супервайзер продаж компании MITAL (моторные масла Mitanol, Liman OIL, фильтры ECO FILTER; регионы Фергана, Наманган, Андижан), а также личное, семья, друзья и бизнес-идеи.
 Плановый период в компании — с 16-го числа по 15-е следующего месяца. «Этот месяц/период» = текущий плановый период, если не сказано «календарный».
 
@@ -4738,6 +4752,7 @@ function systemPrompt(db: any, mem: any[] = [], skills: any[] = []) {
 • ЯЗЫК: основной язык общения — УЗБЕКСКИЙ (латиница, живой разговорный, как говорят в Фергане, Андижане, Намангане, без книжных слов). Отвечай по-узбекски всегда, кроме случая, когда он сам написал по-русски целиком, — тогда по-русски. Смешанное сообщение → по-узбекски. Названия товаров, брендов и имена клиентов не переводи.
 • Ты не справочник, а живой личный ассистент: спокойный, уверенный, заботливый, с лёгким юмором к месту. Говоришь как человек, а не как программа: без канцелярита («Ваш запрос обработан», «Согласно данным», «So'rovingiz bajarildi», «Я — языковая модель»). Меняй формулировки, не отвечай одинаковыми шаблонными фразами.
 • Обращайся по имени изредка, не в каждом ответе: по-узбекски «Saidbonur aka», по-русски «Саидбонур». Не начинай каждый ответ с приветствия и не повторяй его вопрос.
+• ПАМЯТЬ — главное, что делает тебя ассистентом, а не ботом. Ты помнишь разговор: последние сообщения, блок «ПАМЯТЬ О РАЗГОВОРАХ» в конце (что было раньше сегодня, в последние дни, открытые темы, похожие прошлые разговоры) и факты о нём. Веди себя как человек, который помнит: связывай новый вопрос с тем, что обсуждали («ertalab Fozil haqida gaplashgandik — …»), не переспрашивай то, что он уже сказал, продолжай начатую тему. Не пересказывай память без повода и не говори «согласно памяти / истории». Открытая тема, которая прямо касается вопроса, — напомни одним предложением, к месту. Он ссылается на разговор, которого нет в памяти, — вызови chat_recall, не выдумывай. «Забудь, что я говорил про …» → conv_forget (и forget для фактов).
 • Замечай человека: радуйся вместе с ним успехам (план выполнен, клиент оплатил — коротко отметь), поддержи, если тяжёлый день или плохие цифры, вечером не грузи лишним. Одна тёплая фраза, без слащавости.
 • Понимай СМЫСЛ, а не буквы. Голос расшифровывается с ошибками, он говорит быстро, смешивает узбекский и русский, обрывает фразу. Неточно расслышанное имя клиента, агента или товара передавай функции как есть — она найдёт похожее.
 • ДВУСМЫСЛЕННО — СПРОСИ. Если сообщение можно понять по-разному и от этого меняется ответ или действие (непонятно, какой клиент / агент / товар / период, «это», «он», «тот» без ясной ссылки, голос явно оборвался или бессмыслица, неясно — личное или работа), НЕ угадывай и функции не вызывай: задай ОДИН короткий вопрос и дай 2–4 варианта отдельными строками «1) … 2) …» (бот сделает из них кнопки). Если смысл однозначно ясен из истории разговора — не переспрашивай, просто сделай и коротко скажи, как понял.
@@ -4802,27 +4817,38 @@ ${skills.length ? `\nНАВЫКИ (название — когда примен�
 // The copy in memory is trusted only for HIST_FRESH_MS: Telegram and the app can be answered by two different copies of
 // the function at once, and a copy that kept its own history forever did not know what was said in the other one
 // («I told you in the app a minute ago…» → it did not remember). After that the history is read from Supabase again.
-const HIST = new Map<number, { at: number; fresh: number; items: any[] }>();
+const HIST = new Map<number, { at: number; fresh: number; items: any[]; ids?: number[]; first?: number }>();
+const HIST_P = new Map<number, Promise<any[]>>(); // one read at a time per chat (the answer and the memory block ask at once)
 const HIST_MS = (n(env('HIST_HOURS')) || 12) * 3600e3, HIST_PAIRS = n(env('HIST_PAIRS')) || 10, NEW_MARK = '/new';
 const HIST_FRESH_MS = 20e3;
-async function getHistory(chatId: number): Promise<any[]> {
+function getHistory(chatId: number): Promise<any[]> {
   const h = HIST.get(chatId);
-  if (h && (Date.now() - h.fresh < HIST_FRESH_MS || !sbOn())) return Date.now() - h.at < HIST_MS ? h.items : [];
-  let items: any[] = [];
-  if (sbOn()) {
-    const rows = await sb(`ai_messages?chat_id=eq.${chatId}&created_at=gte.${q(new Date(Date.now() - HIST_MS).toISOString())}&order=id.desc&limit=${HIST_PAIRS * 2 + 1}&select=role,text`).catch(() => []);
-    const list = rows.reverse(), cut = list.map((r: any) => r.role === 'user' && r.text === NEW_MARK).lastIndexOf(true);
-    items = list.slice(cut + 1).map((r: any) => ({ role: r.role, parts: [{ text: r.text }] }));
-    while (items.length && items[0].role !== 'user') items.shift();
-  }
-  HIST.set(chatId, { at: Date.now(), fresh: Date.now(), items });
-  return items;
+  if (h && (Date.now() - h.fresh < HIST_FRESH_MS || !sbOn())) return Promise.resolve(Date.now() - h.at < HIST_MS ? h.items : []);
+  if (HIST_P.has(chatId)) return HIST_P.get(chatId)!;
+  const p = (async () => {
+    let kept: any[] = [];
+    if (sbOn()) {
+      const rows = await sb(`ai_messages?chat_id=eq.${chatId}&created_at=gte.${q(new Date(Date.now() - HIST_MS).toISOString())}&order=id.desc&limit=${HIST_PAIRS * 2 + 1}&select=id,role,text`).catch(() => []);
+      const list = rows.reverse(), cut = list.map((r: any) => r.role === 'user' && r.text === NEW_MARK).lastIndexOf(true);
+      kept = list.slice(cut + 1);
+      while (kept.length && kept[0].role !== 'user') kept.shift();
+    }
+    const items = kept.map((r: any) => ({ role: r.role, parts: [{ text: r.text }] })), ids = kept.map((r: any) => n(r.id));
+    // first = the first message of the window: everything before it is written down as episodes (see convCompress)
+    HIST.set(chatId, { at: Date.now(), fresh: Date.now(), items, ids, first: ids[0] || undefined });
+    return items;
+  })().finally(() => HIST_P.delete(chatId));
+  HIST_P.set(chatId, p);
+  return p;
 }
 async function remember(chatId: number, qText: string, a: string, tools = '') {
-  const items = [...await getHistory(chatId), { role: 'user', parts: [{ text: qText }] }, { role: 'model', parts: [{ text: a }] }].slice(-HIST_PAIRS * 2);
-  HIST.set(chatId, { at: Date.now(), fresh: Date.now(), items });
+  const items0 = await getHistory(chatId), ids0 = HIST.get(chatId)?.ids || [];
   // a bulk insert needs the same keys in every row (PostgREST PGRST102), so the question row has tools: null too
-  if (sbOn()) await sb('ai_messages', { method: 'POST', prefer: 'return=minimal', body: [{ chat_id: chatId, role: 'user', text: qText.slice(0, 8000), tools: null }, { chat_id: chatId, role: 'model', text: a.slice(0, 8000), tools: tools || null }] }).catch(e => console.warn('log', e.message));
+  const rows: any[] = sbOn() ? await sb('ai_messages', { method: 'POST', prefer: 'return=representation', body: [{ chat_id: chatId, role: 'user', text: qText.slice(0, 8000), tools: null }, { chat_id: chatId, role: 'model', text: a.slice(0, 8000), tools: tools || null }] }).catch(e => { console.warn('log', e.message); return []; }) : [];
+  const keep = HIST_PAIRS * 2, items = [...items0, { role: 'user', parts: [{ text: qText }] }, { role: 'model', parts: [{ text: a }] }].slice(-keep);
+  const ids = [...ids0, ...(rows || []).map((r: any) => n(r.id))].slice(-keep);
+  HIST.set(chatId, { at: Date.now(), fresh: Date.now(), items, ids, first: ids.length === items.length ? ids[0] : HIST.get(chatId)?.first });
+  if (rows?.length) convAfter(chatId); // what has left the window is written down as an episode, in the background
 }
 async function resetHistory(chatId: number) {
   HIST.set(chatId, { at: Date.now(), fresh: Date.now(), items: [] });
@@ -4854,8 +4880,270 @@ export async function chatRecall(chatId: number, a: any) {
   // several words: only the talks with (nearly) all of them — «Fozilxon обещал» is not every message about Fozilxon
   const top = Math.max(0, ...pairs.map(x => x.score)), min = words.length >= 2 ? Math.max(1, top - (words.length >= 4 ? 1 : 0)) : 1;
   const best = words.length ? pairs.filter(x => x.score >= min).slice(-limit) : pairs.slice(-limit);
-  return { period: `${dm(from)}–${dm(to)}`, query: a.query || undefined, found: words.length ? pairs.filter(x => x.score >= min).length : pairs.length, shown: best.length, talk: best.map(({ score: _s, ...x }) => x),
-    note: best.length ? 'Это прошлые реплики (история разговора). Отвечай по ним, с датой.' : 'В этот период такого разговора нет — так и скажи, предложи другой период или слова.' };
+  // the episodes of the period (written-down talk: the gist, found by keywords and meaning)
+  let episodes: any[] = [];
+  if (MEM_ON()) {
+    const idx = await epIndex(chatId).catch(() => ({ items: [] as any[] }));
+    const inP = idx.items.filter((x: any) => x.d >= from && x.d <= to);
+    const qv = a.query && inP.some((x: any) => x.e) ? await embed(String(a.query), 'RETRIEVAL_QUERY') : null;
+    const pick = a.query ? rankEpisodes(inP, String(a.query), qv, '9999-12-31', 5).map(r => r.x) : inP.slice(-5);
+    episodes = (await Promise.all(pick.map((x: any) => kvGet(x.k).catch(() => null)))).map(r => r?.v).filter(Boolean).map((e: any) => ({ when: `${dm(e.d)} ${e.t0 || ''}`.trim(), summary: e.summary }));
+  }
+  return { episodes: episodes.length ? episodes : undefined, period: `${dm(from)}–${dm(to)}`, query: a.query || undefined, found: words.length ? pairs.filter(x => x.score >= min).length : pairs.length, shown: best.length, talk: best.map(({ score: _s, ...x }) => x),
+    note: best.length || episodes.length ? 'Это прошлые реплики и записанные эпизоды (episodes — суть разговора) (история разговора). Отвечай по ним, с датой.' : 'В этот период такого разговора нет — так и скажи, предложи другой период или слова.' };
+}
+
+// ═════════════════════════════ 🧠 conversation memory: episodes, open threads, recall ═════════════════════════════
+// The owner: «memory is what makes an assistant out of a bot». Before 25.11 the AI saw the last 10 question/answer pairs of
+// the last 12 hours, facts about the owner were learned once a day at 22:00, and anything older was only found if the AI
+// thought of calling chat_recall. A busy day has far more than 10 pairs — the morning's talk was gone by lunch.
+// Now (ideas from Mark LVII: sliding-window compression of the session, a «last time we talked about…» session summary,
+// a core in the prompt + recall of the rest — built here with an episodic memory and hybrid search):
+//  • EPISODES: the talk that leaves the window of the last pairs is not dropped but written down by a small request
+//    (MEM_MODEL, thinking minimal) as an episode: what was discussed, decided, promised, how it ended + search keywords.
+//    A chunk is MEM_CHUNK_PAIRS pairs (4), or less when the talk paused (> 90 min) or the day changed; when the owner has
+//    been quiet for 2 hours the tick writes down the rest of the session too. History before this update is written down
+//    by the tick bit by bit (backfill, one chunk a minute).
+//  • FACTS ARE LEARNED RIGHT AWAY: the same request picks out stable facts about the owner (🧠, like the 22:00 learning) —
+//    «o'g'limning ismi Ali» is known an hour later, not only after the evening.
+//  • OPEN THREADS: what he was going to do, promised, is waiting for — a list kept up to date by every episode («Fozilga
+//    qo'ng'iroq qilaman» → open; «Fozil to'ladi» → closed). In the morning plan, and in the prompt.
+//  • EVERY ANSWER sees: today's earlier talk (episodes + the not yet written-down pairs), the last 3 days in short, the open
+//    threads, and up to 2 older episodes that fit the question (AUTO-RECALL: keywords ∪ meaning — Gemini embeddings,
+//    256 numbers per episode stored as int8; MEM_EMBED=off → keywords only). No «I don't remember» while it sits on disk.
+// Storage without a migration (kv rows, chat_id −1): conv:<chat> (written up to which message, open threads),
+// ep:<chat>:<date>:<first message id> (an episode), epidx:<chat> (keywords + vectors of all episodes, for the search).
+// MEM_EPISODES=off switches it all off (the tests of other features do that).
+const MEM_ON = () => env('MEM_EPISODES') !== 'off' && sbOn();
+const EP_PAIRS = () => Math.max(2, n(env('MEM_CHUNK_PAIRS')) || 4);
+const EP_GAP_MS = 90 * 60e3, EP_CLOSE_MS = 120 * 60e3;
+const MEM_P: Promise<any>[] = [];
+export async function memSettled() { while (MEM_P.length) await Promise.allSettled(MEM_P.splice(0)); }
+function memJob(p: Promise<any>) {
+  const job = p.catch(e => console.warn('memory', redact((e as Error).message)));
+  MEM_P.push(job);
+  const rt = (globalThis as any).EdgeRuntime; if (rt?.waitUntil) rt.waitUntil(job);
+}
+// ── meaning search: Gemini embeddings (own free quota, does not spend the chat's requests). Normalized, 256 numbers,
+// kept as int8 base64 (344 chars an episode). Refused (no access / unknown model) → off until Google's reset; 429 → 10 min
+let EMB_OFF = 0;
+export async function embed(text: string, task: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY'): Promise<number[] | null> {
+  const m = env('MEM_EMBED', 'gemini-embedding-001');
+  if (m === 'off' || Date.now() < EMB_OFF || !CFG.gKey()) return null;
+  try {
+    const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${m}:embedContent`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': headerSafe('GEMINI_KEY', CFG.gKey()) },
+      body: JSON.stringify({ model: `models/${m}`, content: { parts: [{ text: String(text).slice(0, 8000) }] }, taskType: task, outputDimensionality: 256 }),
+    }, 5000);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { EMB_OFF = Date.now() + (r.status === 429 ? 10 * 60e3 : quotaResetMs()); console.warn('embed', m, r.status, String(d?.error?.message || '').slice(0, 160)); return null; }
+    const v: number[] = d?.embedding?.values;
+    if (!Array.isArray(v) || v.length < 8) return null;
+    const len = Math.hypot(...v) || 1;
+    return v.map(x => x / len);
+  } catch (e) { console.warn('embed', redact((e as Error).message)); return null; }
+}
+export const q8 = (v: number[]) => { const b = new Uint8Array(v.length); v.forEach((x, i) => { b[i] = Math.max(-127, Math.min(127, Math.round(x * 127))) & 255; }); return btoa(String.fromCharCode(...b)); };
+export function cos8(qv: number[], s: string) {
+  const raw = atob(s); let dot = 0;
+  for (let i = 0; i < raw.length && i < qv.length; i++) dot += qv[i] * (((raw.charCodeAt(i) << 24) >> 24) / 127);
+  return dot;
+}
+// a search word fits a stored word when equal, or one starts with the other (both ≥ 4 letters: «aksiyasi» ~ «aksiya»)
+const wFits = (w: Set<string>, t: string) => w.has(t) || (t.length >= 4 && [...w].some(z => z.length >= 4 && (z.startsWith(t) || t.startsWith(z))));
+const memWords = (s: any) => [...new Set(latin(String(s || '')).replace(/[^a-z0-9'\s-]/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !RECALL_STOP.has(w)).map(stemOf))];
+const EP_PROMPT = `Ты — модуль памяти личного ассистента ${CFG.name}. Ниже кусок разговора владельца (Саидбонур, супервайзер продаж MITAL; П:) с ассистентом (А:). Ассистент должен помнить этот разговор как человек.
+Верни ТОЛЬКО JSON:
+{"summary":"…","keywords":["…"],"open":["…"],"facts":[{"text":"…","sphere":"work","replaces":null}]}
+summary — 2–5 предложений по-русски, фактами, в прошедшем времени: о чём говорили, что владелец сказал важного (имена людей и клиентов, суммы и сроки из ЕГО слов, договорённости, решения, просьбы), что ответил/сделал ассистент, чем закончилось. Без воды и общих слов («обсудили вопросы»). Цифры отчётов CRM не переписывай — только суть («смотрели должников Наманган, главный — Fozilxon»).
+keywords — 5–15 слов для поиска: имена людей и клиентов (как написано и латиницей), товары, места, темы.
+open — ПОЛНЫЙ актуальный список открытых тем ПОСЛЕ этого куска: что владелец собирался сделать, обещал, ждёт; что просил проверить или напомнить позже. Возьми прошлый список (ниже): выполненное и неактуальное убери, новое добавь. Каждый пункт ≤ 120 знаков, с датой/сроком, если названы. Не больше 8. Задачи и напоминания, которые ассистент уже записал в систему, сюда не нужны.
+facts — НОВЫЕ устойчивые факты о владельце (≤ 4), которые он САМ сказал: вкусы, привычки, распорядок, люди вокруг (имена, кто есть кто), цели, решения, как ему удобнее получать ответы. НЕ записывай: цифры CRM, разовые задачи, слова ассистента, догадки, пароли, номера карт и документов, здоровье, политику, религию. Уже записанное в памяти не повторяй; если новый факт меняет старый 🧠 — его номер в replaces. В третьем лице, по-русски: «Сына зовут Али». sphere: work | personal | family | friends | ideas.`;
+const epKey = (chatId: number, date: string, from: number) => `ep:${chatId}:${date}:${from}`;
+async function convState(chatId: number) {
+  const r = await kvGet(`conv:${chatId}`).catch(() => null);
+  return { kv: r?.id || 0, s: { upto: 0, open: [] as { t: string; d: string }[], at: '', ...(r?.v || {}) } };
+}
+const IDX = new Map<number, { at: number; kv: number; items: any[] }>();
+export const memCacheReset = () => IDX.clear(); // tests: the index was written around convCompress
+async function epIndex(chatId: number, fresh = false) {
+  const c = IDX.get(chatId); if (c && !fresh && Date.now() - c.at < 60e3) return c;
+  const r = await kvGet(`epidx:${chatId}`).catch(() => null);
+  const v = { at: Date.now(), kv: r?.id || 0, items: Array.isArray(r?.v?.items) ? r!.v.items : [] };
+  IDX.set(chatId, v); return v;
+}
+// facts from a talk → memory (🧠), shared by the episodes and the 22:00 learning
+async function saveLearned(chatId: number, facts: any[], mem: any[]) {
+  const have = new Set(mem.map((m: any) => norm(String(m.text).replace(LEARN_MARK, ''))));
+  const out: any[] = [];
+  for (const f of (facts || []).slice(0, 6)) {
+    const text = String(f?.text || '').replace(/\s+/g, ' ').trim();
+    if (text.length < 4 || text.length > 300 || have.has(norm(text))) continue;
+    if (/\b\d{12,}\b|парол|password|parol/i.test(text)) continue; // never a card / document number or a password
+    const old = mem.find((m: any) => m.id === Number(f?.replaces) && String(m.text).startsWith(LEARN_MARK));
+    const [row] = await sb('ai_memory', { method: 'POST', prefer: 'return=representation', body: { chat_id: chatId, kind: 'fact', text: LEARN_MARK + text, sphere: sphereOf(f?.sphere) } });
+    if (old) await sb(`ai_memory?id=eq.${old.id}&chat_id=eq.${chatId}`, { method: 'DELETE' }).catch(() => {});
+    have.add(norm(text)); out.push({ id: row.id, text, sphere: sphereOf(f?.sphere), replaced: old ? old.text.replace(LEARN_MARK, '') : undefined });
+  }
+  if (out.length) MEM.delete(chatId);
+  return out;
+}
+// the next chunk of talk to write down: the oldest messages not yet written down that are older than the window of the
+// last pairs (close = the session is over: the window too). A chunk ends at a pause, at a new day or after the pair limit;
+// a chunk still growing (no pause after it, fewer pairs than the limit) waits.
+export function nextChunk(rows: any[], firstRaw: number, close: boolean, pairs = EP_PAIRS()) {
+  const list = rows.filter(r => r.text !== NEW_MARK && (close || r.id < firstRaw));
+  if (!list.length) return null;
+  const out: any[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i], prev = out.at(-1);
+    if (prev && (Date.parse(r.created_at) - Date.parse(prev.created_at) > EP_GAP_MS || localParts(new Date(r.created_at)).date !== localParts(new Date(prev.created_at)).date)) return { rows: out, closed: true };
+    out.push(r);
+    if (out.filter(x => x.role === 'user').length >= pairs * 1.5 && r.role === 'model') return { rows: out, closed: true }; // a long run of talk without pauses
+  }
+  const after = rows.find(r => r.id > out.at(-1).id); // the first message after the chunk (may be inside the window)
+  const paused = !!after && Date.parse(after.created_at) - Date.parse(out.at(-1).created_at) > EP_GAP_MS;
+  const users = out.filter(x => x.role === 'user').length;
+  return close || paused || users >= pairs ? { rows: out, closed: true } : { rows: out, closed: false };
+}
+// write one chunk down: the episode, its keywords and meaning vector, the open threads, the facts
+export async function convCompress(chatId: number, o: { close?: boolean; max?: number } = {}) {
+  if (!MEM_ON()) return 0;
+  let made = 0;
+  for (let k = 0; k < (o.max || 1); k++) {
+    const { kv, s } = await convState(chatId);
+    if (s.pause_until && Date.parse(s.pause_until) > Date.now()) break; // Gemini was out of quota: not on every answer
+    await getHistory(chatId);
+    const firstRaw = HIST.get(chatId)?.first ?? Number.MAX_SAFE_INTEGER;
+    const rows: any[] = await sb(`ai_messages?chat_id=eq.${chatId}&id=gt.${n(s.upto)}&order=id.asc&limit=80&select=id,role,text,created_at`).catch(() => []);
+    const ch = nextChunk(rows, firstRaw, !!o.close);
+    if (!ch?.closed || !ch.rows.length) break;
+    const from = ch.rows[0].id, to = ch.rows.at(-1).id;
+    if (!ch.rows.some((r: any) => r.role === 'user')) { s.upto = to; await kvPut(`conv:${chatId}`, s, kv); continue; }
+    if (!await once(`epc:${chatId}:${from}`)) break; // another copy of the function is writing this one down
+    try {
+      const date = localParts(new Date(ch.rows[0].created_at)).date;
+      const talk = ch.rows.map((r: any) => `${r.role === 'user' ? 'П' : 'А'} ${localParts(new Date(r.created_at)).time}: ${String(r.text).replace(/\s+/g, ' ').slice(0, r.role === 'user' ? 700 : 450)}`).join('\n');
+      MEM.delete(chatId);
+      const mem = await memoryOf(chatId);
+      const known = mem.filter((m: any) => m.kind === 'fact').slice(-80).map((m: any) => `#${m.id} ${m.text}`).join('\n') || '(пусто)';
+      const prevOpen = (s.open || []).map((x: any) => `• ${x.t}`).join('\n') || '(нет)';
+      const d = await gemini({
+        contents: [{ role: 'user', parts: [{ text: `${EP_PROMPT}\n\nДата разговора: ${date} (${WD_RU[localParts(new Date(ch.rows[0].created_at)).wd] || ''}).\n\nОТКРЫТЫЕ ТЕМЫ ДО ЭТОГО:\n${prevOpen}\n\nУЖЕ В ПАМЯТИ (факты):\n${known}\n\nРАЗГОВОР:\n${talk}` }] }],
+        generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+      }, env('MEM_MODEL') || CFG.model(), true, 'minimal');
+      let j: any = {};
+      try { j = JSON.parse(partsText(d).replace(/^```(?:json)?|```$/g, '').trim()); } catch { j = { summary: partsText(d).slice(0, 600) }; }
+      const summary = String(j.summary || '').replace(/\s+/g, ' ').trim().slice(0, 900);
+      if (!summary) throw new Error('пустое резюме');
+      const keywords = (Array.isArray(j.keywords) ? j.keywords : []).map((x: any) => String(x).slice(0, 40)).slice(0, 15);
+      const ep = { d: date, from, to, at: ch.rows.at(-1).created_at, t0: localParts(new Date(ch.rows[0].created_at)).time, summary, keywords, pairs: ch.rows.filter((r: any) => r.role === 'user').length };
+      const key = epKey(chatId, date, from);
+      await kvPut(key, ep);
+      const vec = await embed(`${summary}\n${keywords.join(', ')}`, 'RETRIEVAL_DOCUMENT');
+      const idx = await epIndex(chatId, true);
+      idx.items = [...idx.items.filter((x: any) => x.k !== key), { k: key, d: date, w: memWords(`${keywords.join(' ')} ${summary}`).slice(0, 60).join(' '), ...(vec ? { e: q8(vec) } : {}) }].slice(-3000);
+      idx.kv = await kvPut(`epidx:${chatId}`, { items: idx.items }, idx.kv); idx.at = Date.now();
+      // open threads: the list as of this chunk; a thread keeps the date it was first seen
+      const was = new Map((s.open || []).map((x: any) => [norm(x.t), x.d]));
+      s.open = (Array.isArray(j.open) ? j.open : []).map((t: any) => String(t).replace(/\s+/g, ' ').trim().slice(0, 140)).filter(Boolean).slice(0, 8).map((t: string) => ({ t, d: was.get(norm(t)) || date }));
+      s.upto = to; s.at = new Date().toISOString();
+      await kvPut(`conv:${chatId}`, s, kv);
+      const learned = await saveLearned(chatId, Array.isArray(j.facts) ? j.facts.slice(0, 4) : [], mem);
+      if (learned.length) console.log('memory: learned', learned.map(x => x.text).join(' | '));
+      made++;
+    } catch (e) {
+      await unonce(`epc:${chatId}:${from}`);
+      // out of quota → a 10-minute pause; a chunk the model twice could not write down is skipped (it stays in chat_recall)
+      // — otherwise every next answer would spend a request on the same failure
+      const m = (e as Error).message;
+      if (/лимит|limit|перегружен|Слишком много|429/i.test(m)) s.pause_until = new Date(Date.now() + 10 * 60e3).toISOString();
+      else { s.fails = s.fails_from === from ? n(s.fails) + 1 : 1; s.fails_from = from; if (s.fails >= 2) { s.upto = to; s.fails = 0; console.warn('memory: chunk skipped', from, to); } }
+      await kvPut(`conv:${chatId}`, s, kv).catch(() => {});
+      throw e;
+    }
+  }
+  return made;
+}
+// after every answer: write down what has left the window (in the background, the answer does not wait)
+function convAfter(chatId: number) { if (MEM_ON() && chatId > 0) memJob(convCompress(chatId, { max: 1 })); }
+// the minute tick: a session that has been quiet for 2 hours is written down to the end; old history is written down
+// bit by bit (one chunk a minute) until it is caught up
+async function convTick(chatId: number) {
+  if (!MEM_ON()) return 0;
+  const [last] = await sb(`ai_messages?chat_id=eq.${chatId}&order=id.desc&limit=1&select=id,created_at`).catch(() => []);
+  if (!last) return 0;
+  const { s } = await convState(chatId);
+  if (n(s.upto) >= last.id) return 0;
+  const quiet = Date.now() - Date.parse(last.created_at) > EP_CLOSE_MS;
+  return await convCompress(chatId, { close: quiet, max: 2 });
+}
+// older episodes that fit the question: keywords (stems, Cyrillic = Latin) ∪ meaning (cosine of the vectors)
+export function rankEpisodes(items: any[], question: string, qv: number[] | null, before: string, k = 2) {
+  const words = memWords(question); if (!words.length && !qv) return [];
+  return items.filter(x => x.d < before).map(x => {
+    const w = new Set(String(x.w || '').split(' ')), lex = words.filter(t => wFits(w, t)).length;
+    const c = qv && x.e ? cos8(qv, x.e) : 0;
+    return { x, score: lex + (c > 0.55 ? (c - 0.55) * 10 : 0), lex, c };
+  }).filter(r => r.lex >= 2 || (r.lex >= 1 && r.c > 0.6) || r.c > 0.72).sort((a, b) => b.score - a.score).slice(0, k);
+}
+const epLine = (e: any) => `[${dm(e.d)} ${e.t0 || ''}] ${e.summary}`;
+// the block of the system prompt that makes the bot remember the talk
+export async function convContext(chatId: number, question = '') {
+  if (!MEM_ON()) return '';
+  const today = todayStr(), days = [today, addDays(today, -1), addDays(today, -2), addDays(today, -3)];
+  const [{ s }, hist, idx, ...byDay] = await Promise.all([convState(chatId), getHistory(chatId), epIndex(chatId), ...days.map(d => kvList(`ep:${chatId}:${d}:`).catch(() => []))]);
+  void hist;
+  const firstRaw = HIST.get(chatId)?.first ?? Number.MAX_SAFE_INTEGER;
+  const out: string[] = [];
+  const todays = (byDay[0] as any[]).map(x => x.v).filter((e: any) => e.from < firstRaw).sort((a: any, b: any) => a.from - b.from);
+  if (todays.length) out.push(`Сегодня раньше:\n${todays.map(epLine).join('\n').slice(-3000)}`);
+  // what has left the window but is not written down yet (a minute or two) — word for word, short
+  if (firstRaw < Number.MAX_SAFE_INTEGER) {
+    const gap: any[] = await sb(`ai_messages?chat_id=eq.${chatId}&id=gt.${n(s.upto)}&id=lt.${firstRaw}&order=id.desc&limit=16&select=role,text,created_at`).catch(() => []);
+    const lines = gap.reverse().filter((r: any) => r.text !== NEW_MARK && Date.now() - Date.parse(r.created_at) < 3 * 864e5)
+      .map((r: any) => `${r.role === 'user' ? 'Он' : 'Ты'} ${localParts(new Date(r.created_at)).time}: ${String(r.text).replace(/\s+/g, ' ').slice(0, r.role === 'user' ? 300 : 160)}`);
+    if (lines.length) out.push(`Чуть раньше (до последних сообщений):\n${lines.join('\n')}`);
+  }
+  const recent = byDay.slice(1).map((list: any, i: number) => {
+    const eps = (list as any[]).map(x => x.v).sort((a: any, b: any) => a.from - b.from);
+    return eps.length ? `${dm(days[i + 1])}${i === 0 ? ' (вчера)' : ''}: ${eps.map((e: any) => e.summary).join(' ').slice(0, 900)}` : '';
+  }).filter(Boolean);
+  if (recent.length) out.push(`Последние дни:\n${recent.join('\n')}`);
+  const open = (s.open || []).filter((x: any) => daysBetween(x.d, today) <= 10);
+  if (open.length) out.push(`Открытые темы (он собирался / ждёт / просил проверить):\n${open.map((x: any) => `• ${x.t} (с ${dm(x.d)})`).join('\n')}`);
+  // auto-recall: older episodes about the same people / things as the question
+  const q0 = String(question || '').replace(/^\(голосовое сообщение, расшифровка\)\s*/, '').trim();
+  if (q0 && !q0.startsWith('/') && idx.items.length) {
+    const want = idx.items.some((x: any) => x.e) && q0.split(/\s+/).length >= 3;
+    const qv = want ? await embed(q0, 'RETRIEVAL_QUERY') : null;
+    const top = rankEpisodes(idx.items, q0, qv, days[3]);
+    const eps = (await Promise.all(top.map(t => kvGet(t.x.k).catch(() => null)))).map(r => r?.v).filter(Boolean);
+    if (eps.length) out.push(`Возможно связано с вопросом (из прошлых разговоров):\n${eps.map(epLine).join('\n')}`);
+  }
+  if (!out.length) return '';
+  return `\n\nПАМЯТЬ О РАЗГОВОРАХ (это ты сам помнишь — опирайся естественно, как человек; не пересказывай без повода и не говори «согласно памяти»):\n${out.join('\n\n')}`;
+}
+// /xotira: what the bot remembers of the talk (transparency, like Mark's memory panel)
+export async function convReport(chatId: number) {
+  if (!MEM_ON()) return 'Suhbat xotirasi o\'chirilgan (MEM_EPISODES=off).';
+  const today = todayStr(), days = [today, addDays(today, -1), addDays(today, -2)];
+  const [{ s }, idx, ...byDay] = await Promise.all([convState(chatId), epIndex(chatId, true), ...days.map(d => kvList(`ep:${chatId}:${d}:`).catch(() => []))]);
+  const out = [`🧠 Suhbat xotirasi — ${idx.items.length} ta epizod${idx.items.some((x: any) => x.e) ? ' (ma\'no bo\'yicha qidiruv yoqilgan)' : ''}`];
+  days.forEach((d, i) => {
+    const eps = (byDay[i] as any[]).map(x => x.v).sort((a: any, b: any) => a.from - b.from);
+    if (eps.length) out.push(`${i === 0 ? 'Bugun' : i === 1 ? 'Kecha' : dm(d)}:\n${eps.map((e: any) => `• ${e.t0} — ${short(e.summary, 260)}`).join('\n')}`);
+  });
+  out.push((s.open || []).length ? `🧵 Ochiq mavzular:\n${s.open.map((x: any) => `• ${x.t}`).join('\n')}` : '🧵 Ochiq mavzu yo\'q');
+  out.push('Men haqimdagi faktlar: /memory · eski suhbatni so\'rang: «kecha nima haqida gaplashgandik?»');
+  return out.join('\n\n');
+}
+// the morning plan: the open threads from the talk (0 requests)
+export async function openThreadsBrief(chatId: number) {
+  if (!MEM_ON()) return '';
+  const { s } = await convState(chatId), t = todayStr();
+  const open = (s.open || []).filter((x: any) => daysBetween(x.d, t) <= 10);
+  return open.length ? `🧵 Ochiq mavzular (suhbatdan):\n${lines(open, (x: any) => `• ${x.t}`, 6)}` : '';
 }
 
 // ───── Gemini usage: every request is counted (ai_usage), /limits shows what is left ─────
@@ -5245,13 +5533,14 @@ const STAGE: Record<string, string> = {
 };
 export async function ask(db: any, chatId: number, userParts: any[], qText: string, media?: { file_id: string; mime: string }, app = false, progress?: (s: string) => void) {
   const actions: any[] = []; // things to do on the phone (phone_action) — the app does them after the answer
-  const [hist, mem, skills] = await Promise.all([getHistory(chatId), memoryOf(chatId), skillsOf(chatId)]);
+  const [hist, mem, skills, conv] = await Promise.all([getHistory(chatId), memoryOf(chatId), skillsOf(chatId),
+    convContext(chatId, qText).catch(e => { console.warn('memory block', redact((e as Error).message)); return ''; })]);
   // a correction of the previous answer: the AI is told to fix it and to keep a general rule from it (learning)
   const fix = hist.length > 0 && isCorrection(qText);
   const contents: any[] = [...hist, { role: 'user', parts: fix ? [...userParts, { text: CORRECTION_NOTE }] : userParts }];
   // hard questions and corrections think on the smart model (free, smaller quota); the rest stays on the main one
   const model = (fix || isHardQuestion(qText)) && smartOn() ? smartModel() : CFG.model();
-  const used: string[] = [], sys = systemPrompt(db, mem, skills), files: string[] = [];
+  const used: string[] = [], sys = systemPrompt(db, mem, skills) + conv, files: string[] = [];
   const wantXls = EXCEL_Q.test(qText);
   const prevQ = [...hist].reverse().find((h: any) => h.role === 'user')?.parts?.map((p: any) => p.text || '').join(' ') || '';
   const media0 = userParts.some((p: any) => p.inlineData || p.fileData);
@@ -5371,7 +5660,7 @@ export function isLimitsQuestion(text: string) {
 async function command(text: string, chatId: number): Promise<string | null> {
   // «сколько осталось лимитов?» in plain words is answered without spending a request
   if (/^\/limits?\b/i.test(text) || isLimitsQuestion(text)) return limitsText();
-  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|learn|uchis|pings|app|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база|reja|bugun|pin|hamyon|wallet|кошелек|кошелёк|rutin|rutinalar|routines|fon|bg)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
+  const m = text.match(/^\/(today|dolg|agents|k|sklad|oil|sleep|data|plan|stop|promise|memory|learn|uchis|pings|app|forget|reminders|cancel|brief|evening|my|weather|kurs|news|cal|skills?|tasks|task|baza|база|reja|bugun|pin|hamyon|wallet|кошелек|кошелёк|rutin|rutinalar|routines|fon|bg|xotira|suhbat)(?=[\s@]|$)(?:@\w+)?\s*([\s\S]*)$/i); if (!m) return null;
   const cmd = m[1].toLowerCase(), arg = m[2].trim();
   const ctx = { chatId };
   const loadDB = needData; // every command below needs the CRM data: no data → a clear error, not zeros
@@ -5401,6 +5690,7 @@ async function command(text: string, chatId: number): Promise<string | null> {
     return id ? '📌 Bugungi reja tepada mahkamlandi — vazifani bosing, bajarildi deb belgilanadi. Har soat o\'zi yangilanadi.' : '⚠️ Rejani mahkamlab bo\'lmadi.';
   }
   if (cmd === 'memory') return run('memory_list', {});
+  if (cmd === 'xotira' || cmd === 'suhbat') return convReport(chatId);
   if (cmd === 'rutin' || cmd === 'routines' || cmd === 'rutinalar') return sbOn() ? routinesText(await rtLoad(true)) : NO_DB;
   if (cmd === 'fon' || cmd === 'bg') { const r: any = await bgControl(chatId, n(arg) > 0 ? { id: n(arg), action: 'status' } : { action: 'status' }); return r.error || r.text; }
   if (cmd === 'pings') return pingsCommand(chatId, arg);
@@ -5517,6 +5807,7 @@ async function morningBrief(db: any, chatId: number, world?: World) {
   if (pers) out.push(pers);
   const gg = worldGoogle(w); if (gg) out.push(gg);
   const tb = await tasksBrief(chatId); if (tb) out.push(tb);
+  const ot = await openThreadsBrief(chatId).catch(() => ''); if (ot) out.push(ot);
   const rem = await remindersToday(chatId);
   if (rem.length) out.push(`⏰ Напоминания на сегодня:\n` + rem.map((r: any) => `• ${nowTime(r.due_at).slice(-5)}${sphTag(r.sphere)} — ${r.text}`).join('\n'));
   if (w.news?.length) out.push('📰 Новости:\n' + lines(w.news, (x: any) => `• ${x.title} (${x.source})`, 5) + '\nЕщё: /news');
@@ -5775,6 +6066,7 @@ async function tick() {
   // 3) own routines and background tasks: every day, Sunday too (the owner set their times himself)
   await runOwnRoutines(res).catch(e => console.warn('routines', redact((e as Error).message)));
   await runBackground(res).catch(e => console.warn('background', redact((e as Error).message)));
+  for (const c of chats) await convTick(c).then(k => { if (k) res.episodes = n(res.episodes) + k; }).catch(e => console.warn('memory tick', redact((e as Error).message)));
   // 4) the built-in routines (briefs, alerts, «пишу первым»): at their time (changeable in words, see routine_set), on their
   // days, a missed one still in its grace window; quiet hours hold back the unasked ones. The «once» keys are the old ones
   const rcfg = await rtLoad(true).catch(() => null);
@@ -5805,7 +6097,14 @@ async function tick() {
   });
   await slot('noorders', CFG.hour('ALERT_HOUR', 11), async (db, c) => { const t = noOrdersAlert(db); if (t) await say(c, t); });
   await slot('evening', CFG.hour('EVENING_HOUR', 19), async (db, c) => { await say(c, eveningBrief(db)); });
-  await slot('learn', CFG.hour('LEARN_HOUR', 22), async (_db, c) => { const r = await learnFromChat(c); if (r.length) await say(c, learnedText(r)); });
+  await slot('learn', CFG.hour('LEARN_HOUR', 22), async (_db, c) => {
+    await convTick(c).catch(() => 0);
+    const r = await learnFromChat(c), t = todayStr();
+    MEM.delete(c);
+    const day0 = (await memoryOf(c)).filter((m: any) => String(m.text).startsWith(LEARN_MARK) && localParts(new Date(m.created_at)).date === t && !r.some((x: any) => x.id === m.id))
+      .map((m: any) => ({ id: m.id, text: String(m.text).replace(LEARN_MARK, '') }));
+    if (day0.length || r.length) await say(c, learnedText([...day0, ...r]));
+  });
   const watchKeys = rcfg ? [...bdue.values()].filter(x => x.name === 'watch') : PX_HOURS.map(hr => ({ key: `watch${hr}:${L.date}`, hour: hr }));
   for (const w of watchKeys) await slot(w.key.split(':')[0], w.hour, async (db, c) => { await proactiveRun(db, c, w.hour); });
   await slot('idea', CFG.hour('IDEA_HOUR', 13), async (db, c) => { await ideaOfDay(db, c); });
@@ -6248,7 +6547,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /pings — сообщения первым (вкл / выкл / сколько в день)
 /learn — изучить меня по разговорам за день (сам делаю каждый вечер в ${CFG.hour('LEARN_HOUR', 22)}:00) · /learn 30 — за 30 дней
 /reminders — напоминания · /cancel N — отменить
-🗓 /rutin — rutinalar (brif vaqti, tinch soatlar, «har juma 17:00 da hisobot yubor») · 🔬 /fon — fon vazifalar («10 daqiqa o'rgan: …»)
+🧠 /xotira — suhbatdan nimalarni eslab qoldim · 🗓 /rutin — rutinalar (brif vaqti, tinch soatlar, «har juma 17:00 da hisobot yubor») · 🔬 /fon — fon vazifalar («10 daqiqa o'rgan: …»)
 /tasks — задачи (канбан) · /task текст — новая задача
 /my — личные долги · /my имя — история с человеком
 /weather [город] — погода · /kurs — курс ЦБ · /news [тема] — новости
@@ -6259,7 +6558,7 @@ const HELP = `Я ${CFG.name} — ваш личный AI-помощник: раб
 /data — свежесть данных · /new — начать разговор заново
 Каждый день в ${CFG.hour('MORNING_HOUR', 8)}:00 присылаю план (с погодой, курсом и новостями; голосом, если не /voice off), в ${CFG.hour('EVENING_HOUR', 19)}:00 — итог дня.`;
 
-const COMMANDS = [['rutin', 'Rutinalar: brif vaqti, tinch soatlar, o\'z rutinalarim'], ['fon', 'Fon vazifalar: uzoq tadqiqot holati'], ['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
+const COMMANDS = [['xotira', 'Suhbat xotirasi: bugun, kecha, ochiq mavzular'], ['rutin', 'Rutinalar: brif vaqti, tinch soatlar, o\'z rutinalarim'], ['fon', 'Fon vazifalar: uzoq tadqiqot holati'], ['brief', 'Утренний план'], ['today', 'Кого дожимать сегодня'], ['dolg', 'Должники'], ['agents', 'Итоги агентов за период'], ['plan', 'Прогноз выполнения плана'],
   ['tasks', 'Задачи: канбан-доска с кнопками'], ['task', 'Новая задача: /task текст'], ['k', 'Карточка клиента: /k имя'], ['baza', 'База клиентов в Excel / /baza имя'], ['promise', 'Обещания оплат'], ['stop', 'Кто перестал брать'], ['sleep', 'Кто давно не брал'], ['sklad', 'Склад: что заканчивается / /sklad товар'], ['oil', 'OilBook: сводка / /oil точка'],
   ['evening', 'Итог дня'], ['nb', 'Блокнот знаний'], ['notebooklm', 'Файл для Google NotebookLM'], ['memory', 'Что я помню'], ['learn', 'Изучить меня по разговорам за день'], ['pings', 'Сообщения первым: вкл / выкл / сколько в день'], ['reja', '📌 План дня (закреплён наверху)'], ['hamyon', '👛 Кошелёк: расходы и приходы'], ['reminders', 'Напоминания'], ['my', 'Мои личные долги'],
   ['weather', 'Погода: /weather город'], ['kurs', 'Курс ЦБ'], ['news', 'Новости: /news тема'], ['cal', 'Google Календарь: /cal завтра'], ['google', 'Подключить Google'], ['skills', 'Навыки'],
@@ -6501,5 +6800,5 @@ async function serve(req: Request) {
   return new Response('ok');
 }
 
-export { RT_TOOLS, BG_TOOLS, runBackground, runOwnRoutines, kvGet, kvList, NBC, TOOLS, TPL, build, loadDB, serve, tick, morningBrief, eveningBrief, exportMd, searchNotebook, chunkText, officeText, localToUtc, planPeriod, workDays, stoppedClients, promisesState, command, handle };
+export { RT_TOOLS, BG_TOOLS, runBackground, runOwnRoutines, kvGet, kvList, kvPut, convTick, NBC, TOOLS, TPL, build, loadDB, serve, tick, morningBrief, eveningBrief, exportMd, searchNotebook, chunkText, officeText, localToUtc, planPeriod, workDays, stoppedClients, promisesState, command, handle };
 if (!env('AI_BOT_TEST')) (globalThis as any).Deno.serve(serve);

@@ -7,6 +7,7 @@ const D = (globalThis as any).Deno;
 const ENV: Record<string, string> = {
   AI_BOT_TEST: '1', TG_TOKEN: 'T', TG_SECRET: 'sec', ALLOWED_USERS: '111', GEMINI_KEY: 'g', GH_TOKEN: 'gh',
   SUPABASE_URL: 'https://sb.test', SUPABASE_SERVICE_ROLE_KEY: 'service', TZ_NAME: 'Asia/Tashkent', QUIET_DAYS: 'none',
+  MEM_EPISODES: 'off', // the conversation memory spends Gemini requests of its own — it has its own tests
   GEMINI_SPENT_MIN: '0', // the model ladder's rest after a daily 429 has its own test
   CRM_STALE_HOURS: '1000000', // the fixture CRM summary has a fixed date; the stale warning has its own test
 };
@@ -2330,4 +2331,100 @@ D.test('25.11 ideas from Mark LVII: ↩️ undo a deletion; a daily-limited mode
   eq(mainCalls, first, 'the spent model is not asked again');
   assert(DB.ai_events.some(e => /^spent:.+:\d{4}-\d{2}-\d{2}:\d+$/.test(e.key)), 'the rest is kept for a cold start');
   D.env.set('GEMINI_SPENT_MIN', '0'); D.env.delete('GEMINI_FALLBACK_MODEL');
+});
+
+D.test('25.11 memory: episodes instead of forgetting, facts learned at once, open threads, auto-recall by words and meaning', async () => {
+  D.env.set('MEM_EPISODES', 'on');
+  const C = 777, H = (h: number) => new Date(Date.now() - h * 3600e3).toISOString();
+  // 14 question/answer pairs this morning: the window holds the last 10, the first 4 leave it
+  DB.ai_messages = DB.ai_messages.filter(r => r.chat_id !== C);
+  const talk: [string, string][] = [
+    ['Fozilxon qarzini qachon to\'laydi?', 'Fozilxon $800 qarz.'], ['U juma kuni $500 to\'layman dedi', 'Yozib oldim, juma kuni tekshiraman.'],
+    ['O\'g\'limning ismi Ali, ertaga tug\'ilgan kuni', 'Tabriklayman!'], ['Jumada Fozilga qo\'ng\'iroq qilaman', 'Yaxshi.'],
+  ];
+  for (let i = 0; i < 10; i++) talk.push([`savol ${i}`, `javob ${i}`]);
+  talk.forEach(([u, a], i) => { DB.ai_messages.push({ id: seq++, chat_id: C, role: 'user', text: u, tools: null, created_at: H(5 - i * 0.1) }, { id: seq++, chat_id: C, role: 'model', text: a, tools: null, created_at: H(5 - i * 0.1 - 0.01) }); });
+  const vec = (t: string) => { const x = latinT(t); return [/fozil/.test(x) ? 1 : 0, /golden|booster|aksiya/.test(x) ? 1 : 0, /ali\b/.test(x) ? 1 : 0, 0.1, 0.1, 0.1, 0.1, 0.1]; };
+  const latinT = (t: string) => String(t).toLowerCase();
+  let memPrompt = '';
+  GEM = (b: any, url: string) => {
+    if (/:embedContent/.test(url)) return { embedding: { values: vec(b.content.parts[0].text) } };
+    const p = JSON.stringify(b.contents || '');
+    if (p.includes('модуль памяти личного ассистента')) {
+      memPrompt = p;
+      const fz = p.includes('Fozilxon');
+      return say(JSON.stringify(fz
+        ? { summary: 'Говорили про долг Fozilxon $800: он обещал заплатить $500 в пятницу. Сына владельца зовут Али, завтра у него день рождения.', keywords: ['Fozilxon', 'qarz', 'Ali'], open: ['Позвонить Fozilxon в пятницу и проверить оплату $500'], facts: [{ text: 'Сына зовут Али', sphere: 'family', replaces: null }] }
+        : { summary: 'Короткие вопросы savol / javob.', keywords: ['savol'], open: ['Позвонить Fozilxon в пятницу и проверить оплату $500'], facts: [] }));
+    }
+    return say('ok');
+  };
+  eq(await M.convCompress(C, { max: 3 }), 1, 'one episode: the 4 pairs that left the window (the rest is still in it)');
+  assert(!memPrompt.includes('savol 9'), 'the window itself is not written down while the talk goes on');
+  const ep = (await M.kvList(`ep:${C}:`))[0]?.v;
+  assert(ep && /Fozilxon/.test(ep.summary) && ep.pairs === 4, 'the episode: ' + JSON.stringify(ep));
+  const cs = (await M.kvGet(`conv:${C}`)).v;
+  eq(cs.open.map((x: any) => x.t), ['Позвонить Fozilxon в пятницу и проверить оплату $500'], 'an open thread');
+  assert(DB.ai_memory.some(m => m.chat_id === C && m.text === '🧠 Сына зовут Али'), 'a fact learned at once, not at 22:00');
+  assert((await M.kvGet(`epidx:${C}`)).v.items[0].e, 'the meaning vector is kept (int8)');
+  // every answer sees today's earlier talk and the open threads
+  let ctx = await M.convContext(C, 'Fozil to\'ladimi?');
+  assert(/ПАМЯТЬ О РАЗГОВОРАХ/.test(ctx) && /Сегодня раньше|\(вчера\)/.test(ctx) && /обещал заплатить \$500/.test(ctx) && /Открытые темы[\s\S]*Позвонить Fozilxon/.test(ctx), 'memory block: ' + ctx);
+  // an older talk comes back by itself when the question is about the same thing — by words and by meaning
+  const old = M.localToUtc ? new Date(Date.now() - 10 * 864e5) : new Date();
+  const od = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tashkent' }).format(old);
+  await M.kvPut(`ep:${C}:${od}:1`, { d: od, from: 1, to: 2, t0: '15:00', summary: 'Обсуждали акцию Golden Booster: 10+1 для автосервисов Андижана.', keywords: ['Golden Booster', 'aksiya'], pairs: 3 });
+  const idx = (await M.kvGet(`epidx:${C}`));
+  await M.kvPut(`epidx:${C}`, { items: [...idx.v.items, { k: `ep:${C}:${od}:1`, d: od, w: 'golden booster aksiya avtoservis andijon', e: M.q8([0, 1, 0, 0.1, 0.1, 0.1, 0.1, 0.1].map((x: number, _i: number, a: number[]) => x / Math.hypot(...a))) }] }, idx.id);
+  M.memCacheReset();
+  ctx = await M.convContext(C, 'Golden Booster aksiyasi qanday edi?');
+  assert(/Возможно связано[\s\S]*Golden Booster: 10\+1/.test(ctx), 'auto-recall of an old talk: ' + ctx.slice(-400));
+  assert(!/Возможно связано/.test(await M.convContext(C, 'bugun havo qanday')), 'nothing unrelated is pulled in');
+  // chat_recall finds the gist in the episodes too
+  const rc = await M.TOOLS.chat_recall.run(null, { query: 'Fozilxon' }, { chatId: C });
+  assert(rc.episodes?.some((e: any) => /\$500/.test(e.summary)), 'chat_recall with episodes: ' + JSON.stringify(rc).slice(0, 300));
+  // a quiet session (2+ hours) is written down to the end by the tick
+  const made = await M.convTick(C);
+  assert(made >= 1, 'the rest of the session written down: ' + made);
+  assert(M.nextChunk([{ id: 1, role: 'user', text: 'a', created_at: H(3) }, { id: 2, role: 'model', text: 'b', created_at: H(3) }, { id: 3, role: 'user', text: 'c', created_at: H(1) }], 3, false).closed, 'a pause closes a chunk');
+  assert(!M.nextChunk([{ id: 1, role: 'user', text: 'a', created_at: H(0.1) }, { id: 2, role: 'model', text: 'b', created_at: H(0.1) }], 3, false).closed, 'a growing chunk waits');
+  // an answer through ask(): the memory block is in the instructions, and the answer is written down in the background
+  let sys = '';
+  GEM = (b: any, url: string) => { if (/:embedContent/.test(url)) return { embedding: { values: vec(b.content.parts[0].text) } }; if (b.systemInstruction) sys = JSON.stringify(b.systemInstruction); return say(JSON.stringify(b.contents || '').includes('модуль памяти') ? '{"summary":"x","keywords":[],"open":[],"facts":[]}' : 'Ha, juma kuni Fozilga eslataman.'); };
+  const r = await M.ask(await M.loadDB(), C, [{ text: 'Fozil masalasi nima bo\'ldi?' }], 'Fozil masalasi nima bo\'ldi?');
+  await M.memSettled();
+  assert(/Ha, juma/.test(r.text) && sys.includes('ПАМЯТЬ О РАЗГОВОРАХ') && sys.includes('Позвонить Fozilxon') && sys.includes('Сына зовут Али'), 'the AI got the memory: ' + sys.slice(-600));
+  assert(sys.includes('ПАМЯТЬ — главное'), 'the character rule about remembering');
+  // «забудь …»
+  const f = await M.TOOLS.conv_forget.run(null, { query: 'Golden Booster' }, { chatId: C });
+  assert(/1 ta/.test(f.text) && !(await M.kvList(`ep:${C}:${od}:`)).length, 'forgotten: ' + f.text);
+  // /xotira
+  await tgPost({ text: '/xotira' }); assert(/Suhbat xotirasi/.test(lastText()), '/xotira: ' + lastText());
+  D.env.set('MEM_EPISODES', 'off');
+});
+
+D.test('25.11 memory: the prompt gets the NEWEST facts (it used to get the oldest 300)', async () => {
+  const C = 778;
+  for (let i = 0; i < 620; i++) DB.ai_memory.push({ id: seq++, chat_id: C, kind: 'fact', text: (i === 619 ? 'NEWEST ' : '🧠 old ') + i, sphere: 'work', until: null, created_at: new Date().toISOString() });
+  const m = await M.TOOLS.memory_list.run(null, {}, { chatId: C });
+  assert(m.facts.some((x: any) => x.text === 'NEWEST 619'), 'the newest fact is there');
+  DB.ai_memory = DB.ai_memory.filter(r => r.chat_id !== C);
+});
+
+D.test('25.11 memory: a bad answer of the model is not retried for ever; out of quota = a pause', async () => {
+  D.env.set('MEM_EPISODES', 'on');
+  const C = 779, H = (h: number) => new Date(Date.now() - h * 3600e3).toISOString();
+  for (let i = 0; i < 4; i++) DB.ai_messages.push({ id: seq++, chat_id: C, role: 'user', text: 'q' + i, tools: null, created_at: H(30 - i * 0.1) }, { id: seq++, chat_id: C, role: 'model', text: 'a' + i, tools: null, created_at: H(30 - i * 0.1) });
+  let calls = 0;
+  GEM = () => { calls++; return say(''); };
+  for (let k = 0; k < 3; k++) await M.convCompress(C).catch(() => 0);
+  const st = (await M.kvGet(`conv:${C}`)).v;
+  assert(st.upto > 0 && calls === 2, `skipped after 2 failures (calls ${calls}, upto ${st.upto})`);
+  for (let i = 0; i < 4; i++) DB.ai_messages.push({ id: seq++, chat_id: C, role: 'user', text: 'x' + i, tools: null, created_at: H(20 - i * 0.1) }, { id: seq++, chat_id: C, role: 'model', text: 'y' + i, tools: null, created_at: H(20 - i * 0.1) });
+  calls = 0; GEM = () => { calls++; return { __status: 429, body: { error: { code: 429, message: 'per day', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } } }; };
+  await M.convCompress(C).catch(() => 0); const c1 = calls;
+  await M.convCompress(C).catch(() => 0);
+  eq(calls, c1, 'out of quota → no request on the next answer');
+  assert(Date.parse((await M.kvGet(`conv:${C}`)).v.pause_until) > Date.now(), 'a 10-minute pause');
+  D.env.set('MEM_EPISODES', 'off');
 });
