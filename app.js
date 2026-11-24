@@ -29,10 +29,13 @@ async function api(url, opts = {}) {
 }
 
 // route -> permission section. A page needs "<section>.view"; write buttons are hidden (body.ro) without "<section>.edit".
-const PAGE_PERM = { wh: 'stock', whstock: 'stock', whlow: 'stock', whmove: 'stock', whup: 'stock', agents: 'agents', leaders: 'agents', aclients: 'agents', atasks: 'agents', aup: 'agents' };
+const PAGE_PERM = { country: 'team', audit: 'team', wh: 'stock', whstock: 'stock', whlow: 'stock', whmove: 'stock', whup: 'stock', agents: 'agents', leaders: 'agents', aclients: 'agents', atasks: 'agents', aup: 'agents' };
 const DEMO_ROUTES = [];
 const canOpen = r => (!DEMO_ROUTES.includes(r) || me?.demo !== false) && (!PAGE_PERM[r] || can(PAGE_PERM[r] + '.view'));
-const landing = () => ['my', 'rday', 'agents', 'wh'].find(canOpen);
+// РОП runs the whole country: he starts on its overview; everyone else on his own day
+const landing = () => (me?.crmRole === 'rop' ? ['country'] : []).concat(['my', 'rday', 'agents', 'wh']).find(canOpen);
+// pages that read only the shared database (not the CRM data of this browser): open even when this device holds another account's data
+const GATE_FREE = ['country', 'audit', 'users'];
 
 // Menu: your own data first (warehouse stock, agents), then the demo sections that mirror the old LINKO menu. top item -> groups -> [title, route]
 const MENU = {};
@@ -127,6 +130,7 @@ function render() {
 }
 function route() {
   const el = $('#page'); if (!el) return;
+  if (!location.hash.replace('#/', '') && landing()) history.replaceState(null, '', '#/' + landing()); // the start page shows in the address and the menu
   const name = (location.hash.replace('#/', '') || 'my').split('?')[0]; // #/kb?c=… — the part after «?» is the page's own address
   const hub = (window.HUBS || []).find(h => h.some(x => x[0] === name)), inMenu = r => !!document.querySelector(`.sidenav a[data-r="${r}"]`);
   const head = hub ? (inMenu(name) ? name : (hub.find(x => inMenu(x[0])) || hub[0])[0]) : name; // the menu line this page belongs to
@@ -143,7 +147,7 @@ function route() {
     el.innerHTML = '<div class="soon">Для вашей роли нет доступных разделов. Обратитесь к администратору.</div>'; return;
   }
   // the CRM data in this browser is shown only to the account it belongs to (cloud.js → CLOUD.gate); agents never see it
-  const g = window.CLOUD?.gate?.();
+  const g = GATE_FREE.includes(name) && window.CLOUD?.gate?.() !== 'agent' ? null : window.CLOUD?.gate?.();
   document.body.classList.toggle('gated', !!g && g !== 'wait');
   if (g) return gatePage(el, g);
   (PAGES[name] || PAGES.soon)(el);
@@ -153,8 +157,8 @@ function gatePage(el, g) {
   if (g === 'agent' && navigator.onLine !== false) { el.innerHTML = '<div class="soon">Открываю ваш кабинет…</div>'; location.replace('me.html'); return; } // the agent's own page
   const out = '<button class="btn gray" id="gOut" type="button">Выйти из аккаунта</button>';
   el.innerHTML = g === 'agent'
-    ? `<div class="empty-state"><h3>Здравствуйте, ${esc(me?.name || '')}!</h3><p>Вы вошли как <b>агент</b>. Ваш личный раздел в CRM появится позже.<br>
-        Пока ваши клиенты, долги, план и зарплата — в Telegram: кнопка <b>«📱 Мой кабинет»</b> в боте супервайзера.</p><div class="bar" style="justify-content:center">${out}</div></div>`
+    ? `<div class="empty-state"><h3>Здравствуйте, ${esc(me?.name || '')}!</h3><p>Ваш кабинет откроется, когда появится интернет.<br>
+        Или откройте его в Telegram: кнопка <b>«📱 Мой кабинет»</b> в боте руководителя.</p><div class="bar" style="justify-content:center"><a class="btn" href="me.html">Открыть кабинет</a>${out}</div></div>`
     : `<div class="empty-state"><h3>На этом устройстве данные другого аккаунта</h3><p>Чтобы не перепутать и не показать чужие данные, CRM здесь закрыта.<br>
         Если это ваше устройство, очистите его — ваши данные загрузятся из базы, а данные того аккаунта останутся у него в базе.</p>
         <div class="bar" style="justify-content:center"><button class="btn" id="gTake" type="button">Очистить устройство и загрузить мои данные</button>${out}</div><p class="neg" id="gErr" role="alert"></p></div>`;

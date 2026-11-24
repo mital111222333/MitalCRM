@@ -128,8 +128,10 @@
       if (!data) msg('Кабинет ещё не готов: ваш руководитель должен открыть свою CRM — кабинет появится через минуту.', true);
       else if (data.data.role === 'store') {
         // завсклад: the list of goods and today's count come from the auto-loader (it checks this login with the MITAL database)
-        const gas = data.data.gas; if (!gas) throw new Error('no gas');
-        const r = await fetch(gas, { method: 'POST', body: JSON.stringify({ sb: session.access_token, act: 'load' }) }), j = await r.json();
+        // not «no internet» when the reason is elsewhere: the supervisor has not set up the auto-loader, or it answered with an error
+        const gas = data.data.gas; if (!gas) throw Object.assign(new Error('Кабинет склада ещё не настроен: руководитель должен включить автозагрузку в своей CRM.'), { shown: true });
+        const r = await fetch(gas, { method: 'POST', body: JSON.stringify({ sb: session.access_token, act: 'load' }) });
+        let j; try { j = await r.json(); } catch { throw Object.assign(new Error('Сервер склада ответил с ошибкой. Сообщите руководителю и попробуйте позже.'), { shown: true }); }
         if (j.error) msg(j.error, true); else { S = j; S._gas = gas; store.set(DATA_KEY, S); msg(''); }
       }
       else { S = data.data; S._owner = data.updated_by; store.set(DATA_KEY, S); msg(''); keepMarks(S); }
@@ -138,7 +140,7 @@
       if (/jwt|token|auth|session|401|PGRST30/i.test(`${e?.code || ''} ${e?.message || ''} ${e?.status || ''}`)) {
         try { await SB.auth.signOut(); } catch { /* offline */ } location.replace('./'); return;
       }
-      msg(S ? 'Нет интернета — показаны последние сохранённые данные' : 'Нет интернета. Откройте страницу, когда появится связь.', true);
+      msg(e?.shown ? e.message : S ? 'Нет интернета — показаны последние сохранённые данные' : 'Нет интернета. Откройте страницу, когда появится связь.', true);
     }
     loading = false; $('#meUpd').disabled = false; $('#meUpd').textContent = '🔄 Обновить';
     draw();
@@ -693,7 +695,7 @@
     { const by = new Map(S.clients.map(c => [c.name, c])), today = new Date().toLocaleDateString('sv-SE'), mine = store.get('mital_me_cq');
       S.queue = (S.queue || []).map(x => (by.has(x.name) ? { ...x, debt: by.get(x.name).debt } : x)).filter(x => x.debt > 0 || (mine?.day === today && mine.m?.[x.name])); }
     $('#meName').textContent = S.agent;
-    $('#meSub').innerHTML = `Период ${dm(S.period.from)} — ${dm(S.period.to)}${S.period.days_left != null ? ` · осталось <b>${S.period.days_left} дн.</b>` : ''}<br><span style="opacity:.75">Обновлено: план ${esc(hhmm(S.at))}${S.live?.debt ? ` · долги ${esc(hhmm(S.live.debt))}` : ''}${S.live?.stock ? ` · склад ${esc(hhmm(S.live.stock))}` : ''}</span>`;
+    $('#meSub').innerHTML = `Период ${dm(S.period.from)} — ${dm(S.period.to)}${S.period.days_left != null ? ` · осталось <b>${S.period.days_left} дн.</b>` : ''}<br>${S.at && Date.now() - Date.parse(S.at) > 12 * 3600e3 ? '<b style="color:#f0b429">⚠ Данные давно не обновлялись — напишите руководителю, пусть откроет CRM.</b><br>' : ''}<span style="opacity:.75">Обновлено: план ${esc(hhmm(S.at))}${S.live?.debt ? ` · долги ${esc(hhmm(S.live.debt))}` : ''}${S.live?.stock ? ` · склад ${esc(hhmm(S.live.stock))}` : ''}</span>`;
     document.querySelectorAll('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === tab || (a.dataset.tab === 'more' && ['clients', 'contracts', 'stock', 'disc', 'chat'].includes(tab))));
     const openN = (S.tasks || []).filter(isOpen).length; $('#meTaskN').textContent = openN ? `(${openN})` : '';
     if (tab !== 'chat') chatStop();

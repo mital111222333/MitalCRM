@@ -34,7 +34,7 @@ window.AUTH = (() => {
 
   // what app.js expects from /api/me
   const meJson = p => ({ name: p.full_name, login: p.login, role: ROLE_RU[p.role] || p.role, crmRole: p.role, branch: '', demo: false,
-    perms: ['stock.view', 'stock.edit', 'agents.view', 'agents.edit'] });
+    perms: ['stock.view', 'stock.edit', 'agents.view', 'agents.edit', ...(['admin', 'rop'].includes(p.role) ? ['team.view'] : [])] }); // team: the country overview and the journal
 
   const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   const prevFetch = window.fetch;
@@ -121,7 +121,7 @@ window.EXT_PAGES.users = async el => {
   };
   const canEdit = x => manager && (isAdmin || x.role !== 'admin');
   const seeText = { admin: 'Вы видите всех и можете всё менять.', rop: 'Вы видите всю страну и можете менять данные. Администраторов меняет только администратор.',
-    supervisor: 'Вы видите себя и своих агентов. Добавлять людей могут администратор и РОП.', agent: 'Вы видите себя и своего супервайзера.' }[myRole] || '';
+    supervisor: 'Вы видите себя, своих агентов и завскладов. Добавлять людей могут администратор и РОП.', agent: 'Вы видите себя и своего супервайзера.', store: 'Вы видите себя и своего супервайзера.' }[myRole] || '';
 
   el.innerHTML = `<div class="page-head"><div><h2>Пользователи</h2><div class="sub">${esc(seeText)}</div></div>
       <div class="tools">${names.length ? '<button class="btn gray" id="ucab" title="Отправить агентам их кабинеты сейчас, не дожидаясь новых данных">↻ Обновить кабинеты агентов</button>' : ''}${manager ? '<button class="btn" id="uadd">+ Добавить человека</button>' : ''}<button class="btn gray" id="uout">Выйти из аккаунта</button></div></div>
@@ -164,6 +164,7 @@ window.EXT_PAGES.users = async el => {
     const isNew = !x, sups = people.filter(s => LEADS.includes(s.role) && s.is_active && (s.role === 'supervisor' || svRegions(s.id).length));
     const roleOpts = Object.entries(ROLE_RU).filter(([k]) => isAdmin || k !== 'admin');
     const mine = x ? svRegions(x.id) : [];
+    const team = x && LEADS.includes(x.role) ? people.filter(t => t.supervisor_id === x.id && t.is_active) : []; // his agents and store keepers
     const m = modal(`<h3>${isNew ? 'Новый человек' : esc(x.full_name)}</h3>
       <div class="form">
         <label>Имя и фамилия<input id="f_name" value="${esc(x?.full_name || '')}"></label>
@@ -177,6 +178,8 @@ window.EXT_PAGES.users = async el => {
         <datalist id="f_names">${names.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
         <datalist id="f_whs">${whs.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
         <label>Телефон<input id="f_phone" value="${esc(x?.phone || '')}"></label>
+        ${team.length ? `<label style="grid-column:1/-1">Если он перестанет быть руководителем или будет заблокирован, его люди (${team.length}: ${esc(team.map(t => t.full_name).join(', '))}) перейдут к
+          <select id="f_hand"><option value="">— выберите —</option>${sups.filter(s => s.id !== x.id).map(s => `<option value="${s.id}">${esc(s.full_name)}</option>`).join('')}</select></label>` : ''}
       </div><small id="f_err" class="neg" role="alert"></small>
       ${isNew ? '<p class="mut" style="margin:8px 0 0">Запишите логин и пароль и передайте человеку лично. Пароль он сможет сменить сам: клик по своему имени вверху.</p>' : ''}
       <div class="bar" style="margin-top:12px">${!isNew && x.id !== AUTH.profile?.id ? `<button class="btn gray" id="f_pw">Новый пароль</button><button class="btn ${x.is_active ? 'danger' : 'gray'}" id="f_act">${x.is_active ? 'Заблокировать' : 'Разблокировать'}</button>` : ''}
@@ -194,7 +197,7 @@ window.EXT_PAGES.users = async el => {
       const body = { full_name: q('#f_name').value, role: q('#f_role').value, linko_name: q('#f_linko').value, phone: q('#f_phone').value,
         supervisor_id: q('#f_sv').value || null, region_id: q('#f_reg').value || null, region_ids: [...m.el.querySelectorAll('[data-reg]:checked')].map(c => c.dataset.reg) };
       if (isNew) await AUTH.admin({ action: 'create', login: q('#f_login').value, password: q('#f_pass').value, ...body });
-      else await AUTH.admin({ action: 'update', id: x.id, ...body });
+      else await AUTH.admin({ action: 'update', id: x.id, ...body, reassign_to: q('#f_hand')?.value || null });
       m.close(); toast(isNew ? 'Аккаунт создан' : 'Сохранено'); again();
     });
     if (!isNew && x.id !== AUTH.profile?.id) {
@@ -204,7 +207,7 @@ window.EXT_PAGES.users = async el => {
       });
       q('#f_act').onclick = () => busy(q('#f_act'), async () => {
         if (x.is_active && !confirm(`Заблокировать ${x.full_name}? Он не сможет войти, пока вы не разблокируете.`)) return;
-        await AUTH.admin({ action: 'set_active', id: x.id, active: !x.is_active }); m.close(); again();
+        await AUTH.admin({ action: 'set_active', id: x.id, active: !x.is_active, reassign_to: q('#f_hand')?.value || null }); m.close(); again();
       });
     }
   }

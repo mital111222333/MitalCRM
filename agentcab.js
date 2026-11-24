@@ -195,15 +195,27 @@ const AC = {
   // the same cabinet for agents who have their own CRM account (MITAL database, table agent_cabinets): the agent signs in with
   // his login and sees it on me.html. Matched by the account's «Имя в LINKO». Works without the GitHub key and the personal codes.
   // Only from the CRM of the person this device's data belongs to (CLOUD.gate), never from an agent's or another person's sign-in.
+  // whose cabinets this CRM may write: only the people this account leads (profiles.supervisor_id = me). An admin or РОП sees every
+  // agent of the country, but publishing them all made a cabinet jump between two CRMs (and the agent's marks went to whoever wrote
+  // last). A manager also covers people whose lead has no CRM of his own yet (nobody else would publish them).
+  async ownPeople(role) {
+    const sb = window.AUTH?.sb, me = window.AUTH?.profile;
+    const { data: ppl, error } = await sb.from('profiles').select('id, full_name, linko_name, is_active, supervisor_id').eq('role', role);
+    if (error) throw error;
+    let others = new Set();
+    if (['admin', 'rop'].includes(me.role)) {
+      const { data: ws } = await sb.from('workspaces').select('owner_id');
+      others = new Set((ws || []).map(w => w.owner_id).filter(id => id !== me.id));
+    }
+    return (ppl || []).filter(p => p.is_active && p.linko_name && (p.supervisor_id === me.id || (['admin', 'rop'].includes(me.role) && !others.has(p.supervisor_id))));
+  },
   norm: s => String(s || '').toLowerCase().replace(/[’ʻʼ`´‘]/g, "'").replace(/\s+/g, ' ').trim(),
   async publishDb({ force = false } = {}) {
     const sb = window.AUTH?.sb, me = window.AUTH?.profile;
     if (!sb || !me || ['agent', 'store'].includes(me.role) || window.CLOUD?.gate?.() || AC._busyDb) return { n: 0 };
     AC._busyDb = true;
     try {
-      const { data: ppl, error } = await sb.from('profiles').select('id, full_name, linko_name, is_active').eq('role', 'agent');
-      if (error) throw error;
-      const want = (ppl || []).filter(p => p.is_active && p.linko_name);
+      const want = await AC.ownPeople('agent');
       if (!want.length) return { n: 0, missing: [] };
       const d = await REP.load(); if (d.empty) return { n: 0, missing: [] };
       let stock = null; try { stock = await CRMLocal.request('GET', '/api/wh/stock'); } catch { /* no stock */ }

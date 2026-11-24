@@ -127,10 +127,9 @@ const WC = {
     WC._busySb = true;
     try {
       await WC.prep();
-      const { data, error } = await sb.from('profiles').select('id, full_name, linko_name, is_active').eq('role', 'store');
-      if (error) throw error;
+      const data = await AC.ownPeople('store'); // only this account's store keepers (see AC.ownPeople)
       let n = 0; WC._lastSb ||= {};
-      for (const p of (data || []).filter(x => x.is_active && x.linko_name)) {
+      for (const p of data) {
         const file = WC.file('sb_' + p.id, p.full_name, p.linko_name, ''), key = JSON.stringify({ ...file, at: '' });
         if (!force && WC._lastSb[p.id] === key) continue;
         await AC.gh(cl, 'PUT', 'agents/sb/' + p.id + '.json', { message: 'CRM: кабинет склада (логин)', content: AC.b64(JSON.stringify(file)) });

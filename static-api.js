@@ -182,6 +182,7 @@
   // above the page, so related screens live together instead of as separate menu lines (Спецпредложения, Сроки, Календарь оплат,
   // Страница агента and Сверка складов are tabs of their hubs now; every screen is also found by the quick search, Ctrl+K).
   window.EXT_MENU = {
+    'Страна': { '': [['Обзор страны', 'country']] },
     'Сегодня': { '': [['Пульс', 'pulse'], ['Мой день', 'my'], ['Сигналы', 'signals']] },
     'Деньги': { '': [['Дебиторка', 'collect'], ['Оплаты', 'lxpay'], ['Договоры', 'contracts']] },
     'Клиенты': { '': [['База клиентов', 'kb']] },
@@ -192,6 +193,7 @@
     'Настройки': { '': [['Настройки', 'cloud']] },
   };
   window.HUBS = [
+    [['country', 'Обзор страны'], ['audit', 'Журнал действий']],
     [['my', 'Мой день'], ['dayplan', 'План агентов на день']],
     [['collect', 'Очередь сбора'], ['lbal', '⚡ Баланс сейчас'], ['debt', 'Должники по агентам'], ['lxage', 'Просрочка'], ['rdebt', 'План сбора'], ['debtprev', 'Прошлый период']],
     [['lxpay', 'Оплаты по дням'], ['pcal', 'Календарь оплат']],

@@ -84,6 +84,21 @@ window.CLOUD = (() => {
     }
     return { state: { ...state, ext }, secrets };
   }
+  // the device keys (GitHub key of the data repository, LINKO key) travel with the owner's login, inside workspace_secrets that
+  // only he can read — a phone that signs in gets them by itself. They used to travel in the «connect a phone» link / QR code,
+  // where anyone who saw the link or a photo of the code got the keys.
+  const withDevKeys = st => {
+    const c = cfg(), lk = get('crm_linko_key');
+    if (!c && !lk) return st;
+    return { ...st, ext: { ...(st.ext || {}), devkeys: { owner: c?.owner || '', repo: c?.repo || '', token: c?.token || '', key: lk || '' } } };
+  };
+  const takeDevKeys = st => {
+    const d = st.ext?.devkeys; if (!d) return st;
+    if (!cfg() && d.owner && d.repo && d.token) set(LS.cfg, JSON.stringify({ owner: d.owner, repo: d.repo, token: d.token }));
+    if (!get('crm_linko_key') && d.key) set('crm_linko_key', d.key);
+    const ext = { ...st.ext }; delete ext.devkeys;
+    return { ...st, ext };
+  };
   const joinSecrets = (state, secrets) => {
     const ext = { ...(state.ext || {}) };
     for (const [k, v] of Object.entries(secrets || {})) ext[k] = { ...(ext[k] || {}), ...v };
@@ -163,7 +178,7 @@ window.CLOUD = (() => {
     let state = data.state;
     if (owner === me()?.id) {
       const { data: s } = await sb.from('workspace_secrets').select('data').eq('owner_id', owner).maybeSingle();
-      lastSecrets = JSON.stringify(s?.data || {}); state = joinSecrets(state, s?.data);
+      lastSecrets = JSON.stringify(s?.data || {}); state = takeDevKeys(joinSecrets(state, s?.data));
     }
     return { sha, savedAt: data.savedAt, device: data.device, state };
   }
@@ -171,7 +186,7 @@ window.CLOUD = (() => {
   async function pushSb({ force = false } = {}) {
     const sb = AUTH.sb, owner = me().id;
     await CRMLocal.flushLocal?.();
-    const full = CRMLocal.engine.getState(), savedAt = new Date().toISOString();
+    const full = withDevKeys(CRMLocal.engine.getState()), savedAt = new Date().toISOString();
     const { state, secrets } = splitSecrets(full);
     const bytes = await gzip(JSON.stringify({ app: 'mitalcrm', savedAt, device: device(), state }));
     if (bytes.length > 48e6) throw new Error('Данных стало слишком много (больше 48 МБ). Удалите старые загрузки в разделах «Загрузки».');
@@ -503,7 +518,9 @@ EXT_PAGES.cloud = async el => {
       <label style="grid-column:1/-1">Ключ доступа (fine-grained token)<input id="cTok" type="password" placeholder="github_pat_…" autocomplete="off"></label>
     </div>
     <div class="bar" style="margin-top:12px"><button class="btn" id="cGo">Подключить</button><span id="cMsg" role="status" class="mut"></span></div>`, { cls: 'w7' })}
-  ${UI.panel(c ? 'Подключить телефон или другой компьютер' : 'Как получить ключ (5 минут, бесплатно)', c ? `
+  ${CLOUD.store() === 'sb' ? UI.panel('Подключить телефон или другой компьютер', `
+    <p style="margin-top:0">Откройте CRM на телефоне или другом компьютере и <b>войдите своим логином и паролем</b> — данные, ключ GitHub и ключ LINKO подключатся сами.</p>
+    <p class="mut" style="margin-bottom:0">Ссылки и QR-кода с ключами больше нет: кто видел такую ссылку или её фото, получал доступ к данным. Если вы раньше отправляли такую ссылку — создайте на GitHub новый ключ и вставьте его здесь (кнопка «Отключить», затем «Подключить»).</p>`, { cls: 'w5' }) : UI.panel(c ? 'Подключить телефон или другой компьютер' : 'Как получить ключ (5 минут, бесплатно)', c ? `
     <p class="mut" style="margin-top:0">Откройте камеру телефона и наведите на код — CRM откроется уже подключённой. Или отправьте ссылку себе в «Избранное» Telegram и откройте её на нужном устройстве.</p>
     ${(() => { try { return localStorage.getItem('crm_linko_key'); } catch { return ''; } })() ? '<p class="mut">⚡ Вместе со ссылкой передаётся ключ LINKO: телефон тоже будет сам брать сегодняшние заказы, оплаты и долги прямо из LINKO каждые 30 секунд. Телефон, который уже подключён, — откройте на нём эту ссылку ещё раз.</p>' : ''}
     <div id="qr" style="background:#fff;padding:10px;width:max-content;border-radius:8px"></div>
@@ -569,7 +586,7 @@ EXT_PAGES.cloud = async el => {
     $('#cSync', el).onclick = async () => { await CLOUD.sync({ quiet: false }); EXT_PAGES.cloud(el); };
     $('#cOff', el).onclick = () => { if (!confirm('Отключить синхронизацию на этом устройстве? Данные в облаке и в этом браузере останутся.')) return; CLOUD.disconnect(); EXT_PAGES.cloud(el); };
     const link = CLOUD.link();
-    $('#cCopy', el).onclick = async () => { try { await navigator.clipboard.writeText(link); toast('Ссылка скопирована'); } catch { prompt('Скопируйте ссылку:', link); } };
+    if ($('#cCopy', el)) $('#cCopy', el).onclick = async () => { try { await navigator.clipboard.writeText(link); toast('Ссылка скопирована'); } catch { prompt('Скопируйте ссылку:', link); } };
     loadScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js').then(() => { const q = $('#qr', el); if (q) new QRCode(q, { text: link, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.L }); }).catch(() => { const q = $('#qr', el); if (q) q.outerHTML = '<p class="mut">QR-код не загрузился — используйте ссылку.</p>'; });
   } else {
     $('#cGo', el).onclick = async () => {

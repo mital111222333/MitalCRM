@@ -15,6 +15,15 @@ jobs:
           cp autolinko.gs /tmp/autolinko.js && node --check /tmp/autolinko.js
       - name: numbers tests
         run: node --test tests/*.test.mjs
+  # every role signs in (stubbed database) and sees the right screens: РОП, admin, supervisor, agent, store keeper
+  roles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: roles in Chrome
+        run: npm i --no-save playwright-core@1 && node tests/roles.e2e.mjs
   bot:
     runs-on: ubuntu-latest
     steps:
@@ -64,3 +73,26 @@ jobs:
         run: |
           if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then echo "SUPABASE_ACCESS_TOKEN is not set — skipping deploy"; exit 0; fi
           npx -y supabase@latest functions deploy team-bot --remote=oxchgcfyzszemqlvdjjr --no-verify-jwt --use-api --yes
+  # account management (Пользователи): type check, then live on main the same way as the bots (it checks the caller's login itself)
+  admin-users:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with: { deno-version: v2.x }
+      - name: type check
+        run: deno check supabase/functions/admin-users/index.ts
+  deploy-admin-users:
+    needs: admin-users
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: deploy admin-users
+        run: |
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then echo "SUPABASE_ACCESS_TOKEN is not set — skipping deploy"; exit 0; fi
+          npx -y supabase@latest functions deploy admin-users --remote=oxchgcfyzszemqlvdjjr --no-verify-jwt --use-api --yes

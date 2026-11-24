@@ -2,9 +2,9 @@
 // Only an active admin or РОП may call it. Accounts get a login (no e-mail needed): it is stored in Supabase Auth as <login>@mital.crm.
 // Actions (POST JSON {action, ...}):
 //   create       {login, password, full_name, role, phone?, linko_name?, supervisor_id?, region_id?, region_ids?}
-//   update       {id, full_name?, phone?, linko_name?, role?, supervisor_id?, region_id?, region_ids?}
+//   update       {id, full_name?, phone?, linko_name?, role?, supervisor_id?, region_id?, region_ids?, reassign_to?}
 //   set_password {id, password}
-//   set_active   {id, active}
+//   set_active   {id, active, reassign_to?}  — a lead who is blocked or loses the lead role hands his team to reassign_to
 // РОП cannot create, change or block an admin; nobody can block himself. Every action is written to audit_log with the caller's id.
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 
@@ -32,23 +32,52 @@ async function profile(id: string) {
 // who may lead a team of agents and have regions: a supervisor, and also an admin or РОП who runs his own regions
 const LEADS = ['supervisor', 'admin', 'rop'];
 
-// checks the links of an agent and returns the clean fields
-async function links(role: string, b: Record<string, unknown>) {
+// the regions a supervisor leads (empty = not set yet: any region is accepted)
+async function regionsOf(id: string) {
+  const { data, error } = await db.from('supervisor_regions').select('region_id').eq('supervisor_id', id);
+  if (error) throw error;
+  return (data || []).map(r => String(r.region_id));
+}
+
+// checks the links of an agent and returns the clean fields; was = the person before the change (an unchanged link is not re-checked)
+async function links(role: string, b: Record<string, unknown>, was: Record<string, unknown> | null = null) {
   const out: Record<string, unknown> = { supervisor_id: null, region_id: null };
   if (role === 'agent') {
     const sv = b.supervisor_id ? await profile(String(b.supervisor_id)) : null;
     if (!sv || !LEADS.includes(sv.role)) throw new Fail('Выберите супервайзера агента');
     if (!b.region_id) throw new Fail('Выберите регион агента');
+    const changed = !was || was.role !== role || was.supervisor_id !== sv.id || was.region_id !== String(b.region_id);
+    if (changed && !sv.is_active) throw new Fail('Этот супервайзер заблокирован — выберите другого');
+    // an agent of Fergana cannot be put under the supervisor of Namangan by mistake
+    if (changed && sv.role === 'supervisor') {
+      const regs = await regionsOf(sv.id);
+      if (regs.length && !regs.includes(String(b.region_id))) throw new Fail(`${sv.full_name} не ведёт этот регион. Выберите его регион или добавьте регион супервайзеру.`);
+    }
     out.supervisor_id = sv.id; out.region_id = String(b.region_id);
   }
   // a store keeper belongs to the supervisor whose CRM publishes his warehouse; the region is optional
   if (role === 'store') {
     const sv = b.supervisor_id ? await profile(String(b.supervisor_id)) : null;
     if (!sv || !LEADS.includes(sv.role)) throw new Fail('Выберите супервайзера завсклада');
+    if ((!was || was.supervisor_id !== sv.id) && !sv.is_active) throw new Fail('Этот супервайзер заблокирован — выберите другого');
     if (!str(b.linko_name)) throw new Fail('Укажите склад завсклада (как в LINKO)');
     out.supervisor_id = sv.id; out.region_id = b.region_id ? String(b.region_id) : null;
   }
   return out;
+}
+
+// a lead who stops leading (another role, or blocked) must hand his agents and store keepers to another lead first:
+// otherwise their cabinets silently stop updating and their marks go nowhere. reassign_to = the new lead.
+async function handOver(p: Record<string, unknown>, to: unknown) {
+  const { data: team, error } = await db.from('profiles').select('id, full_name').eq('supervisor_id', String(p.id)).eq('is_active', true);
+  if (error) throw error;
+  if (!team?.length) return;
+  const nl = to ? await profile(String(to)) : null;
+  if (!nl || nl.id === p.id || !nl.is_active || !LEADS.includes(nl.role)) {
+    throw new Fail(`Сначала передайте людей ${p.full_name} другому руководителю: ${team.map(t => t.full_name).join(', ')}`, 409);
+  }
+  const { error: e2 } = await db.from('profiles').update({ supervisor_id: nl.id }).eq('supervisor_id', String(p.id)).in('role', ['agent', 'store']);
+  if (e2) throw e2;
 }
 
 async function setRegions(id: string, role: string, ids: unknown) {
@@ -104,8 +133,9 @@ Deno.serve(async req => {
         const next = { ...p, ...b, role };
         const fields = {
           full_name: str(next.full_name) || p.full_name, phone: str(next.phone, 40) || null, linko_name: str(next.linko_name) || null, role,
-          ...(await links(role, next)),
+          ...(await links(role, next, p)),
         };
+        if (LEADS.includes(p.role) && !LEADS.includes(role)) await handOver(p, b.reassign_to);
         const { error } = await db.from('profiles').update(fields).eq('id', id);
         if (error) throw error;
         if (LEADS.includes(role) && Array.isArray(b.region_ids)) await setRegions(id, role, b.region_ids);
@@ -116,6 +146,7 @@ Deno.serve(async req => {
       } else if (action === 'set_active') {
         const active = b.active === true;
         if (id === me.id && !active) throw new Fail('Себя заблокировать нельзя');
+        if (!active && LEADS.includes(p.role)) await handOver(p, b.reassign_to);
         const { error } = await db.auth.admin.updateUserById(id, { ban_duration: active ? 'none' : '876000h' });
         if (error) throw new Fail(error.message);
         const { error: e2 } = await db.from('profiles').update({ is_active: active }).eq('id', id);
