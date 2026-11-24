@@ -2124,10 +2124,51 @@ D.test('24.11 Telegram only: the keyboard is taken away once, 📌 pinned plan o
     eq(M.followKeyboard(['debtors'], 'x\n📎 Excel: a.xlsx')!.inline_keyboard[0].map((b: any) => b.callback_data), ['fu:more'], 'no Excel button when the file is already there');
 
     // 4) an Uzbek question that a Russian template would answer: the AI writes the answer from the same result
-    const g0 = GEM_LOG.length; let n = 0;
-    GEM = () => (++n === 1 ? call('debtors', {}) : say("Qarzdorlar: Fozilxon Fargona — $800"));
+    // a small, fast request: the template is translated, no functions, no instructions; every number must survive
+    const g0 = GEM_LOG.length; let n = 0, small: any = null;
+    const tr = (b: any) => { small = b; const t = b.contents[0].parts[0].text; return say('UZ: ' + t.slice(t.indexOf('\n\n') + 2)); };
+    GEM = (b: any) => b.tools ? (++n === 1 ? call('debtors', {}) : say('?')) : tr(b);
     await tgPost({ text: 'qarzdorlar royxatini korsat' });
-    eq(GEM_LOG.length - g0, 2, 'two requests: the function, then the Uzbek answer');
-    assert(/Qarzdorlar: Fozilxon/.test(SENT.filter(s => s.method === 'editMessageText').at(-1)!.body.text), 'answered in Uzbek');
+    eq(GEM_LOG.length - g0, 2, 'two requests: the function, then the short translation');
+    assert(!small.tools && !small.systemInstruction && JSON.stringify(small).length < 3000, 'the translation request is tiny');
+    assert(/^UZ: /.test(SENT.filter(s => s.method === 'editMessageText').at(-1)!.body.text), 'answered in Uzbek');
+    // a translation that lost a number → the Russian template goes out
+    n = 0; GEM = (b: any) => b.tools ? call('debtors', {}) : say("Qarzdorlar ro'yxati tayyor");
+    await tgPost({ text: 'qarzdorlar royxatini yana korsat' });
+    assert(/Должники/.test(SENT.filter(s => s.method === 'editMessageText').at(-1)!.body.text), 'numbers lost → Russian template');
   } finally { TG_IDS = false; GEM = () => say('ok'); }
+});
+
+D.test('👛 wallet: expenses and income in words, a trip, month totals, report, edit, delete; the Mini App API', async () => {
+  DB.ai_wallet = [];
+  const ctx = { chatId: 111 };
+  const a = await M.TOOLS.wallet_add.run(null, { amount: 200000, category: 'benzin' }, ctx);
+  eq([a.kind, a.currency, a.category, a.sphere, a.month_expense], ['expense', 'UZS', 'Бензин', 'personal', 200000], 'a plain expense in so‘m: ' + JSON.stringify(a));
+  const b = await M.TOOLS.wallet_add.run(null, { amount: 60000, category: 'Еда', trip: 'Namangan', note: 'tushlik' }, ctx);
+  eq([b.sphere, b.trip_total], ['work', 60000], 'a trip expense is work');
+  await M.TOOLS.wallet_add.run(null, { amount: 150000, category: 'Бензин', trip: 'Namangan' }, ctx);
+  await M.TOOLS.wallet_add.run(null, { kind: 'income', amount: 500, currency: 'USD', category: 'Бонус' }, ctx);
+  assert(/Записал #\d+: −60 000 сум · 🍽 Еда · 🧳 Namangan/.test(M.TPL.wallet_add(b)), M.TPL.wallet_add(b));
+  const r = await M.TOOLS.wallet_report.run(null, {}, ctx);
+  eq([r.count, r.totals.UZS.expense, r.totals.USD.income, r.by_category[0].category, r.by_trip[0].sum], [4, 410000, 500, 'Бензин', 210000], 'report: ' + JSON.stringify(r.totals));
+  const tr = await M.TOOLS.wallet_report.run(null, { trip: 'namangan' }, ctx);
+  eq(tr.count, 2, 'a trip whole (no month limit), found in any case');
+  assert(/Поездки|🧳 Namangan/.test(M.TPL.wallet_report(r)) && /приход \$500/.test(M.TPL.wallet_report(r)), M.TPL.wallet_report(r));
+  const e = await M.TOOLS.wallet_edit.run(null, { last: true, amount: 550 }, ctx);
+  eq([e.amount, e.currency, e.category], [550, 'USD', 'Бонус'], 'edit the last one, the rest stays');
+  const d = await M.TOOLS.wallet_delete.run(null, { id: a.saved }, ctx);
+  eq(d.deleted, a.saved, 'deleted'); eq(DB.ai_wallet.length, 3, 'three left');
+  // the Mini App: signed list / add / edit / del, month and the balance of all time
+  const op = await M.walletOp(111, { op: 'add', kind: 'expense', amount: 30000, category: 'Связь', day: '2026-01-05' });
+  eq([op.status, op.body.rows.length, op.body.all_time.UZS.expense], [200, 3, 240000], 'this month only in rows, all time in the balance');
+  const jan = await M.walletOp(111, { op: 'list', month: '2026-01' });
+  eq([jan.body.from, jan.body.to, jan.body.rows.length], ['2026-01-01', '2026-01-31', 1], 'another month');
+  eq((await M.walletOp(111, { op: 'edit', id: 99999, amount: 1 })).status, 404, 'unknown id');
+  eq((await M.walletOp(111, { op: 'add', amount: 0 })).status, 400, 'no amount');
+  eq(M.wCat('income', 'oylik'), 'Зарплата', 'Uzbek category word');
+  // the wallet button comes under its answer; the menu of the pinned plan has it too
+  const kb = M.followKeyboard(['wallet_add'], 'x');
+  assert(kb.inline_keyboard[0].some((x: any) => /wallet\.html/.test(x.web_app?.url || '')), 'wallet button: ' + JSON.stringify(kb));
+  assert(M.dayPlanKeyboard([], '2026-01-01').inline_keyboard.flat().some((x: any) => /wallet\.html/.test(x.web_app?.url || '')), 'in the pinned plan');
+  assert(M.toolsFor('benzinga 200 ming ketdi', '').some((x: any) => x.name === 'wallet_add'), 'declared for an Uzbek expense');
 });
