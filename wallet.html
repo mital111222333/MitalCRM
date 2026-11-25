@@ -130,7 +130,7 @@ h3{margin:0 0 10px;font-size:14px}
   const shift = k => { const [y, m] = month.split('-').map(Number), d = new Date(Date.UTC(y, m - 1 + k, 1)); month = d.toISOString().slice(0, 7); haptic(); run({ op: 'list' }); };
   $('#prev').onclick = () => shift(-1); $('#next').onclick = () => shift(1);
 
-  const visible = () => D.rows.filter(r => !filter || (filter === 'expense' || filter === 'income' ? r.kind === filter : filter.startsWith('trip:') ? r.trip === filter.slice(5) : filter.startsWith('cat:') ? r.category === filter.slice(4) : r.sphere === filter));
+  const visible = () => D.rows.filter(r => !filter || (filter === 'expense' || filter === 'income' ? r.kind === filter : filter === 'trips' ? !!r.trip : filter.startsWith('trip:') ? r.trip === filter.slice(5) : filter.startsWith('cat:') ? r.category === filter.slice(4) : r.sphere === filter));
   const totals = rows => { const t = {}; for (const r of rows) { const c = t[r.currency] ||= { income: 0, expense: 0 }; c[r.kind] += +r.amount; } return t; };
   function draw() {
     const [y, m] = month.split('-').map(Number);
@@ -142,7 +142,7 @@ h3{margin:0 0 10px;font-size:14px}
       ${cur.slice(1).map(c => `<div class="other">${c}: ${[t[c].income ? `приход <b class="in">+${fmt(t[c].income, c)}</b>` : '', t[c].expense ? `расход <b class="out">−${fmt(t[c].expense, c)}</b>` : ''].filter(Boolean).join(' · ')}</div>`).join('')}
       ${all ? `<div class="other">За всё время: ${all.balance < 0 ? '−' : '+'}${fmt(all.balance, main)}</div>` : ''}`;
     const tripsM = [...new Set(D.rows.filter(r => r.trip).map(r => r.trip))];
-    const chips = [['', 'Все'], ['expense', '− Расходы'], ['income', '+ Приходы'], ...Object.entries(SPH).slice(0, 3), ...tripsM.map(x => ['trip:' + x, '🧳 ' + x])];
+    const chips = [['', 'Все'], ['expense', '− Расходы'], ['income', '+ Приходы'], ...Object.entries(SPH).slice(0, 3), ...(tripsM.length ? [['trips', '🧳 Командировки']] : []), ...tripsM.map(x => ['trip:' + x, '🧳 ' + x])];
     if (filter.startsWith('cat:')) chips.push([filter, (D.icons[filter.slice(4)] || '') + ' ' + filter.slice(4)]);
     $('#chips').innerHTML = chips.map(([k, l]) => `<button class="chip" data-f="${esc(k)}" aria-pressed="${k === filter}">${esc(l)}</button>`).join('');
     // categories of the expenses (main currency)

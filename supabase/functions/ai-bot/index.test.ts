@@ -2176,6 +2176,27 @@ D.test('👛 wallet: expenses and income in words, a trip, month totals, report,
   assert(M.toolsFor('benzinga 200 ming ketdi', '').some((x: any) => x.name === 'wallet_add'), 'declared for an Uzbek expense');
 });
 
+D.test('25.11 🧳 business trip: «командировочные расходы 50 тысяч на обед», income from an agent, the full trip report', async () => {
+  DB.ai_wallet = [];
+  const ctx = { chatId: 112 }, today = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);
+  const a = await M.TOOLS.wallet_add.run(null, { amount: 50000, category: 'Еда', note: 'обед', business_trip: true }, ctx);
+  eq([a.trip, a.sphere, a.category], [`Командировка ${today.slice(8, 10)}.${today.slice(5, 7)}`, 'work', 'Еда'], 'no name → a new trip: ' + JSON.stringify(a));
+  const b = await M.TOOLS.wallet_add.run(null, { kind: 'income', amount: 1000, currency: 'USD', category: 'От агента', from_whom: 'Адхамжон', business_trip: true }, ctx);
+  eq([b.trip, b.category, b.note], [a.trip, 'От агента', 'Адхамжон'], 'the same trip, who in the note');
+  await M.TOOLS.wallet_add.run(null, { amount: 50000, category: 'taksi', business_trip: true }, ctx);
+  await M.TOOLS.wallet_add.run(null, { amount: 300000, category: 'Бензин' }, ctx); // personal, not in the trip
+  eq(M.wCat('income', 'agentdan'), 'От агента', 'agent money'); eq(M.wCat('expense', 'mehmonxona'), 'Жильё', 'hotel');
+  const r = await M.TOOLS.wallet_report.run(null, { business_trip: true }, ctx);
+  eq([r.trip_mode, r.trip, r.count, r.totals.UZS.expense, r.totals.USD.income, r.live], [true, a.trip, 3, 100000, 1000, true], 'the current trip, whole');
+  const t = M.TPL.wallet_report(r);
+  assert(/КОМАНДИРОВКА/.test(t) && /От агента: Адхамжон/.test(t) && /Остаток на руках: −100 000 сум · \+\$1 000/.test(t) && /ПО ДНЯМ/.test(t) && /Транспорт — 50 000 сум/.test(t), t);
+  // a city said in another spelling → the same trip
+  await M.TOOLS.wallet_add.run(null, { amount: 10000, category: 'Еда', trip: 'Namangan' }, ctx);
+  const c = await M.TOOLS.wallet_add.run(null, { amount: 20000, category: 'Еда', trip: 'Наманган' }, ctx);
+  eq(c.trip, 'Namangan', 'Наманган = Namangan');
+  eq((await M.TOOLS.wallet_report.run(null, { trip: 'namangan' }, ctx)).count, 2, 'by name');
+});
+
 D.test('24.11 a task for an agent goes straight into his MitalCRM account (agent_cabinets → «Задания»)', async () => {
   DB.profiles = [{ id: 'p-adx', linko_name: 'Adxamjon  Umarov', is_active: true, role: 'agent' }, { id: 'p-off', linko_name: 'Other', is_active: true, role: 'agent' }];
   DB.agent_cabinets = [{ agent_id: 'p-adx', data: { agent: 'Adxamjon Umarov', tasks: [{ src: 'x', id: 3, title: 'old', status: 'open' }] } }, { agent_id: 'p-off', data: { tasks: [] } }];
