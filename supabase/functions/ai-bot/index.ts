@@ -1178,14 +1178,21 @@ export const walletUrl = () => {
 };
 export const walletButton = () => ({ text: '👛 Hamyon', web_app: { url: walletUrl() } });
 // a category said in words («benzin», «ovqat», «командировочные») → one of the list; unknown → «Прочее»
-const W_SYN: [RegExp, string][] = [[/бенз|заправ|benzin|yoqilg|metan|propan|gaz quy/i, 'Бензин'], [/еда|обед|ужин|завтрак|кафе|ресторан|ovqat|tushlik|kechki|nonushta|choyxona|osh\b/i, 'Еда'],
-  [/такси|автобус|проезд|поезд|самол|билет|taksi|avtobus|poyezd|chipta|yo.?l haqi/i, 'Транспорт'], [/гостиниц|отел|хостел|ночлег|квартир|mehmonxona|gostinitsa|hotel|hostel|kvartira/i, 'Жильё'], [/агент|agent/i, 'От агента'], [/командир|komandir|safar/i, 'Командировка'], [/связь|телефон|интернет|aloqa|paynet|internet|tel/i, 'Связь'],
+const W_SYN: [RegExp, string][] = [[/бенз|заправ|benzin|yoqilg|metan|propan|gaz quy/i, 'Бензин'], [/еда|обед|ужин|завтрак|кафе|ресторан|ovqat|tushlik|kechki|nonushta|choyxona|osh\b|obed|ujin|uzhin|zavtrak|kafe/i, 'Еда'],
+  [/такси|автобус|проезд|поезд|самол|билет|taksi|avtobus|poyezd|chipta|yo.?l haqi/i, 'Транспорт'], [/гостиниц|отел|хостел|ночлег|квартир|mehmonxona|gostinitsa|otel|hotel|hostel|kvartira|yotoq/i, 'Жильё'], [/агент|agent/i, 'От агента'], [/командир|komandir|safar/i, 'Командировка'], [/связь|телефон|интернет|aloqa|paynet|internet|tel/i, 'Связь'],
   [/аптек|лекар|врач|dori|shifokor|apteka/i, 'Здоровье'], [/зарплат|оклад|maosh|oylik/i, 'Зарплата'], [/бонус|премия|bonus|mukofot/i, 'Бонус'], [/подар|sovg/i, 'Подарки']];
 export function wCat(kind: string, c: any) {
   const list = W_CAT[kind] || W_CAT.expense, raw = String(c || '').trim();
   const hit = list.find(x => x.toLowerCase() === raw.toLowerCase()); if (hit) return hit;
   for (const [re, cat] of W_SYN) if (re.test(raw)) { if (list.includes(cat)) return cat; if (cat === 'Подарки' && kind === 'income') return 'Подарок'; if (cat === 'Командировка' && kind === 'income') return 'Командировочные'; }
   return 'Прочее';
+}
+// the model sometimes picks a wrong category (Otel → Прочее, money from an agent → Бизнес / Возврат): the note decides then
+export function wNoteCat(kind: string, cat: string, note: any) {
+  const t = String(note || '');
+  if (kind === 'income') { if (/агент|agent/i.test(t)) return 'От агента'; if (/командир|komandir|safar/i.test(t)) return 'Командировочные'; return cat; }
+  if (cat === 'Прочее' && t) { const c = wCat('expense', t); if (c !== 'Прочее') return c; }
+  return cat;
 }
 const wSign = (r: any) => r.kind === 'income' ? 1 : -1;
 // totals per currency: income, expense, balance (sums are never mixed across currencies)
@@ -1227,11 +1234,25 @@ function wBody(a: any, partial = false) {
   if (!partial || a.note != null) b.note = String(a.note || '').trim().slice(0, 500);
   if (!partial || a.day != null) b.day = /^\d{4}-\d{2}-\d{2}$/.test(String(a.day || '')) ? a.day : todayStr();
   if (b.trip && !partial && a.sphere == null) b.sphere = 'work'; // a business trip is work unless said otherwise
+  if (!partial) b.category = wNoteCat(b.kind, b.category, b.note);
   return b;
 }
 // 🧳 the business trip a row belongs to: «командировочные …» without a name → the trip in progress (a trip row in the last
 // 6 days), else a new one «Командировка 25.11»; a name said again in another spelling (Наманган / Namangan) → the same trip
 export const TRIP_GAP = 6;
+const TRIP_GENERIC = /^\s*(komandirovka|командировка|safar)/i;
+// one business trip = trip rows of days next to each other (a gap of up to 2 days), whatever names they were written with:
+// «Komandirovka» on 23–24 and «Namangan» on 25 are one trip 23.11–25.11
+export function tripRun(all: any[], name = '') {
+  const start = name ? all.find(r => r.trip === name) : all[0]; if (!start) return null;
+  const names = new Set<string>([start.trip]); let from = start.day, to = start.day;
+  for (const r of all) { // newest first
+    if (r.day > to) { if (r.trip === start.trip || r.day <= addDays(to, 2)) { to = r.day > to ? r.day : to; names.add(r.trip); } continue; }
+    if (r.day >= addDays(from, -2)) { from = r.day < from ? r.day : from; names.add(r.trip); }
+  }
+  const list = [...names], city = list.filter(x => !TRIP_GENERIC.test(x));
+  return { from, to, names: list, title: (city.length ? city : list).join(' → ') };
+}
 async function walletTrips(chatId: number) {
   const rows = (await sb(`ai_wallet?chat_id=eq.${chatId}&select=trip,day,id&order=day.desc&limit=3000`)) as any[];
   return rows.filter(r => r.trip).sort((x, y) => String(y.day).localeCompare(String(x.day)) || y.id - x.id);
@@ -1239,8 +1260,13 @@ async function walletTrips(chatId: number) {
 export async function tripOf(chatId: number, a: any) {
   const said = String(a.trip || '').trim(); if (!said && !a.business_trip) return said;
   const rows = await walletTrips(chatId), k = norm(said);
-  if (said) { const same = rows.find(r => { const t = norm(r.trip); return t === k || (k.length > 2 && (t.includes(k) || k.includes(t))); }); return same ? same.trip : said; }
   const live = rows.find(r => r.day >= addDays(todayStr(), -TRIP_GAP));
+  if (said) {
+    const same = rows.find(r => { const t = norm(r.trip); return t === k || (k.length > 2 && (t.includes(k) || k.includes(t))); }); if (same) return same.trip;
+    // the trip in progress was opened without a city («Командировка 23.11») and now the city is said → the whole trip gets it
+    if (live && TRIP_GENERIC.test(live.trip) && !TRIP_GENERIC.test(said)) await sb(`ai_wallet?chat_id=eq.${chatId}&trip=eq.${q(live.trip)}`, { method: 'PATCH', body: { trip: said.slice(0, 80) } });
+    return said;
+  }
   return live ? live.trip : `Командировка ${dm(todayStr())}`;
 }
 async function walletAdd(chatId: number, a: any) {
@@ -1718,12 +1744,13 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
       if (a.business_trip || a.trip) { // 🧳 a whole trip, every row, by day
         const all = await walletTrips(ctx.chatId);
         if (!all.length) return { trip_mode: true, count: 0, trip: a.trip || '', trips: [] };
-        const name = a.trip ? await tripOf(ctx.chatId, a) : all[0].trip;
-        const rows = (await sb(`ai_wallet?chat_id=eq.${ctx.chatId}&trip=eq.${q(name)}&order=day.asc&limit=2000`) as any[]).filter(r => !a.kind || r.kind === a.kind).sort((x, y) => String(x.day).localeCompare(String(y.day)) || x.id - y.id);
+        const name = a.trip ? await tripOf(ctx.chatId, a) : all[0].trip, run = tripRun(all, name) || { from: '', to: '', names: [name], title: name };
+        const rows = (await sb(`ai_wallet?chat_id=eq.${ctx.chatId}&day=gte.${run.from}&day=lte.${run.to}&order=day.asc&limit=2000`) as any[])
+          .filter(r => run.names.includes(r.trip) && (!a.kind || r.kind === a.kind)).sort((x, y) => String(x.day).localeCompare(String(y.day)) || x.id - y.id);
         const days = [...new Set(rows.map(r => r.day))].sort();
-        return { trip_mode: true, trip: name, count: rows.length, from: days[0], to: days[days.length - 1], days: days.length, live: !!days.length && days[days.length - 1] >= addDays(todayStr(), -TRIP_GAP),
+        return { trip_mode: true, trip: run.title, count: rows.length, from: days[0], to: days[days.length - 1], days: days.length, live: !!days.length && days[days.length - 1] >= addDays(todayStr(), -TRIP_GAP),
           totals: walletTotals(rows), by_category: walletGroups(rows, 'category'), income_by_category: walletGroups(rows, 'category', 'income'),
-          other_trips: [...new Set(all.map(r => r.trip))].filter(x => x !== name).slice(0, 4),
+          other_trips: [...new Set(all.map(r => r.trip))].filter(x => !run.names.includes(x)).slice(0, 4),
           rows: rows.map((r: any) => ({ id: r.id, day: r.day, kind: r.kind === 'income' ? 'приход' : 'расход', amount: n(r.amount), currency: r.currency, category: r.category, note: r.note || '' })) };
       }
       const m = monthOf(), from = /^\d{4}-\d{2}-\d{2}$/.test(a.from || '') ? a.from : a.trip ? '' : m.from, to = /^\d{4}-\d{2}-\d{2}$/.test(a.to || '') ? a.to : a.trip ? '' : m.to;
@@ -6090,10 +6117,29 @@ async function ensureWebhook() {
   const r = await tg('setWebhook', { url: i.url, secret_token: CFG.secret(), allowed_updates: want });
   hookOk = !!r?.ok; console.log('webhook: buttons enabled', r?.ok);
 }
+// 25.11.2026, once: the owner's Namangan trip 23–25.11 was written as «Komandirovka» and «Namangan» with wrong categories
+// (Otel → Прочее, money from Adhamjon → Бизнес / Возврат, «Komandirovkaga pul» → Прочее). One trip «Namangan», fixed categories.
+let WFIX_DONE = false;
+export async function walletFixOnce(from = '2026-11-23', to = '2026-11-25', name = 'Namangan', again = false) {
+  if (WFIX_DONE && !again) return 0; WFIX_DONE = true;
+  const key = `fix:wallet-trip:${from}`; if (await kvGet(key)) return 0;
+  let fixed = 0;
+  for (const chat of CFG.allowed().map(Number).filter(Boolean)) {
+    for (const r of await sb(`ai_wallet?chat_id=eq.${chat}&day=gte.${from}&day=lte.${to}&order=id&limit=500`)) {
+      if (!r.trip) continue; // only what was written as a trip
+      const p: any = { trip: name, sphere: 'work', category: wNoteCat(r.kind, r.kind === 'expense' && r.category === 'Командировка' ? 'Прочее' : r.category, r.note) };
+      if (p.trip === r.trip && p.sphere === r.sphere && p.category === r.category) continue;
+      await sb(`ai_wallet?id=eq.${r.id}&chat_id=eq.${chat}`, { method: 'PATCH', body: { ...p, updated_at: new Date().toISOString() } }); fixed++;
+    }
+  }
+  await kvPut(key, { fixed, at: new Date().toISOString() });
+  return fixed;
+}
 async function tick() {
   const res: Record<string, any> = { reminders: 0 };
   await ensureWebhook().catch(e => console.warn('webhook', e));
   if (!sbOn()) return { ...res, skipped: NO_DB };
+  res.wallet_fix = await walletFixOnce().catch(e => { console.warn('wallet fix', e); return 0; });
   // 1) reminders that are due. The row is claimed by a conditional update first, so two overlapping ticks never send it twice
   const nowIso = new Date().toISOString();
   const due = await sb(`ai_reminders?sent_at=is.null&due_at=lte.${q(nowIso)}&order=due_at&limit=25`);

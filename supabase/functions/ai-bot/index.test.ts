@@ -2194,7 +2194,26 @@ D.test('25.11 🧳 business trip: «командировочные расход�
   await M.TOOLS.wallet_add.run(null, { amount: 10000, category: 'Еда', trip: 'Namangan' }, ctx);
   const c = await M.TOOLS.wallet_add.run(null, { amount: 20000, category: 'Еда', trip: 'Наманган' }, ctx);
   eq(c.trip, 'Namangan', 'Наманган = Namangan');
-  eq((await M.TOOLS.wallet_report.run(null, { trip: 'namangan' }, ctx)).count, 2, 'by name');
+  eq((await M.TOOLS.wallet_report.run(null, { trip: 'namangan' }, ctx)).count, 5, 'the trip opened without a city got the city: all 5');
+});
+
+D.test('25.11 🧳 one trip across names (Komandirovka 23–24 + Namangan 25), categories from the note, the one-time fix', async () => {
+  const W = (id: number, day: string, kind: string, amount: number, category: string, trip: string, note: string, currency = 'UZS') => ({ id, chat_id: 111, kind, amount, currency, category, sphere: 'work', trip, note, day });
+  DB.ai_wallet = [W(1, '2026-11-23', 'income', 1000000, 'Прочее', 'Komandirovka', 'Komandirovkaga pul'), W(2, '2026-11-23', 'expense', 400000, 'Прочее', 'Komandirovka', 'Otel'),
+    W(3, '2026-11-24', 'expense', 50000, 'Еда', 'Komandirovka', 'Ujin'), W(4, '2026-11-25', 'income', 1000000, 'Возврат', 'Namangan', 'Адхамжон агентдан олдим'),
+    W(5, '2026-11-25', 'income', 1300, 'Бизнес', 'Namangan', 'Adhamjon agentdan olindi', 'USD'), W(6, '2026-11-25', 'expense', 50000, 'Транспорт', 'Namangan', 'Taksiga'),
+    W(7, '2026-11-10', 'expense', 9000, 'Еда', 'Toshkent', 'old trip'), W(8, '2026-11-24', 'expense', 70000, 'Бензин', null as any, 'personal')];
+  DB.ai_messages = (DB.ai_messages || []).filter((r: any) => !String(r.tools || '').startsWith('fix:'));
+  const all = DB.ai_wallet.filter((r: any) => r.trip).sort((x: any, y: any) => y.day.localeCompare(x.day) || y.id - x.id);
+  const run = M.tripRun(all);
+  eq([run.from, run.to, run.title], ['2026-11-23', '2026-11-25', 'Namangan'], 'one trip 23–25: ' + JSON.stringify(run));
+  eq(await M.walletFixOnce(undefined, undefined, undefined, true), 5, 'fixed once'); eq(await M.walletFixOnce(undefined, undefined, undefined, true), 0, 'not again (marked)');
+  const by = (id: number) => DB.ai_wallet.find((r: any) => r.id === id);
+  eq([1, 2, 3, 4, 5, 6].map(i => by(i).trip), Array(6).fill('Namangan'), 'one name');
+  eq([by(1).category, by(2).category, by(4).category, by(5).category, by(7).trip, by(8).trip], ['Командировочные', 'Жильё', 'От агента', 'От агента', 'Toshkent', null], 'categories; other rows untouched');
+  const r = await M.TOOLS.wallet_report.run(null, { business_trip: true }, { chatId: 111 });
+  eq([r.count, r.totals.UZS.income, r.totals.UZS.expense, r.days], [6, 2000000, 500000, 3], 'the whole trip');
+  eq(M.wNoteCat('expense', 'Прочее', 'Otel'), 'Жильё', 'a new Otel is Жильё');
 });
 
 D.test('24.11 a task for an agent goes straight into his MitalCRM account (agent_cabinets → «Задания»)', async () => {
