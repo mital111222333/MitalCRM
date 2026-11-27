@@ -93,7 +93,7 @@ h3{margin:0 0 10px;font-size:14px}
   <div class="amt"><input class="num" id="amount" inputmode="decimal" placeholder="0" required><div class="seg" id="cur"><button type="button" data-v="UZS">сум</button><button type="button" data-v="USD">$</button></div></div>
   <div class="cats" id="catGrid"></div>
   <div class="row2"><label>Дата<input type="date" id="day"></label><label>Сфера<select id="sphere"></select></label></div>
-  <label>🧳 Командировка / поездка<input id="trip" list="tripList" maxlength="80" placeholder="напр. Namangan 25.11"></label>
+  <label>🧳 Командировка / поездка<input id="trip" list="tripList" maxlength="80" placeholder="город: Наманган (пусто — не командировка)"></label>
   <datalist id="tripList"></datalist>
   <label>Комментарий<input id="note" maxlength="500" placeholder="на что именно"></label>
   <div class="foot"><button type="button" class="del" id="del">🗑 Удалить</button><span><button type="button" class="x" id="close">✕</button> <button class="btn">Сохранить</button></span></div>
@@ -150,11 +150,13 @@ h3{margin:0 0 10px;font-size:14px}
     const cats = Object.entries(by).sort((a, b) => b[1] - a[1]), max = cats[0] ? cats[0][1] : 1, sum = cats.reduce((s, x) => s + x[1], 0) || 1;
     $('#cats').hidden = !cats.length || filter.startsWith('cat:');
     $('#cats').innerHTML = '<h3>Расходы по категориям</h3>' + cats.slice(0, 8).map(([c, v]) => `<div class="cat" data-cat="${esc(c)}"><span class="ic">${D.icons[c] || '📦'}</span><span class="nm">${esc(c)} <small style="color:var(--mut);font-weight:400">${Math.round(v / sum * 100)}%</small></span><span class="sm">${fmt(v, main)}</span><span class="br"><i style="width:${v / max * 100}%"></i></span></div>`).join('');
-    // business trips of this month
-    const tby = {}; for (const r of D.rows) if (r.trip && r.kind === 'expense') { const k = r.trip + '|' + r.currency; tby[k] = (tby[k] || 0) + +r.amount; }
-    const trips = Object.entries(tby);
+    // business trips of this month: the whole trip (every row of its days) — income, expense, what is left in hand
+    const dmy = d => d ? d.slice(8, 10) + '.' + d.slice(5, 7) : '';
+    let trips = (D.trip_list || []).map(t => ({ n: t.title, sub: `${dmy(t.from)}${t.to !== t.from ? '–' + dmy(t.to) : ''}${t.live ? ' · идёт' : ''} · ${t.count} зап.`, cur: Object.keys(t.totals || {}), t: t.totals || {} }));
+    if (!D.trip_list) { const tby = {}; for (const r of D.rows) if (r.trip) { const x = (tby[r.trip] ||= {}), c = (x[r.currency] ||= { income: 0, expense: 0, balance: 0 }); c[r.kind] += +r.amount; c.balance += (r.kind === 'income' ? 1 : -1) * r.amount; }
+      trips = Object.entries(tby).map(([n, t]) => ({ n, sub: '', cur: Object.keys(t), t })); }
     $('#trips').hidden = !trips.length || !!filter;
-    $('#trips').innerHTML = '<h3>🧳 Командировки</h3>' + trips.map(([k, v]) => { const [n, c] = k.split('|'); return `<div class="cat" data-trip="${esc(n)}"><span class="ic">🧳</span><span class="nm">${esc(n)}</span><span class="sm">${fmt(v, c)}</span></div>`; }).join('');
+    $('#trips').innerHTML = '<h3>🧳 Командировки</h3>' + trips.map(x => `<div class="cat" data-trip="${esc(x.n)}"><span class="ic">🧳</span><span class="nm">${esc(x.n.replace(/ · \d\d\.\d\d$/, ''))} <small style="color:var(--mut);font-weight:400">${esc(x.sub)}</small></span><span class="sm">${x.cur.map(c => (x.t[c].balance < 0 ? '−' : '+') + fmt(Math.abs(x.t[c].balance), c)).join('<br>')}</span><small style="grid-column:2/4;color:var(--mut)">${x.cur.map(c => `+${fmt(x.t[c].income, c)} / −${fmt(x.t[c].expense, c)}`).join(' · ')} · на руках</small></div>`).join('');
     // history by day
     const days = {}; for (const r of rows) (days[r.day] ||= []).push(r);
     const today = D.today, yest = new Date(Date.parse(today) - 864e5).toISOString().slice(0, 10);

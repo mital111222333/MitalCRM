@@ -2143,20 +2143,20 @@ D.test('24.11 Telegram only: the keyboard is taken away once, 📌 pinned plan o
 });
 
 D.test('👛 wallet: expenses and income in words, a trip, month totals, report, edit, delete; the Mini App API', async () => {
-  DB.ai_wallet = [];
+  DB.ai_wallet = []; DB.ai_messages = DB.ai_messages.filter((r: any) => !String(r.tools || '').startsWith('trips:'));
   const ctx = { chatId: 111 };
   const a = await M.TOOLS.wallet_add.run(null, { amount: 200000, category: 'benzin' }, ctx);
   eq([a.kind, a.currency, a.category, a.sphere, a.month_expense], ['expense', 'UZS', 'Бензин', 'personal', 200000], 'a plain expense in so‘m: ' + JSON.stringify(a));
   const b = await M.TOOLS.wallet_add.run(null, { amount: 60000, category: 'Еда', trip: 'Namangan', note: 'tushlik' }, ctx);
-  eq([b.sphere, b.trip_total], ['work', 60000], 'a trip expense is work');
+  eq([b.sphere, b.trip_totals.UZS.expense], ['work', 260000], 'a trip expense is work; the trip takes every row of its day');
   await M.TOOLS.wallet_add.run(null, { amount: 150000, category: 'Бензин', trip: 'Namangan' }, ctx);
   await M.TOOLS.wallet_add.run(null, { kind: 'income', amount: 500, currency: 'USD', category: 'Бонус' }, ctx);
-  assert(/Записал #\d+: −60 000 сум · 🍽 Еда · 🧳 Namangan/.test(M.TPL.wallet_add(b)), M.TPL.wallet_add(b));
+  assert(/Записал #\d+: −60 000 сум · 🍽 Еда/.test(M.TPL.wallet_add(b)) && /🧳 Командировка: Наманган/.test(M.TPL.wallet_add(b)), M.TPL.wallet_add(b));
   const r = await M.TOOLS.wallet_report.run(null, {}, ctx);
-  eq([r.count, r.totals.UZS.expense, r.totals.USD.income, r.by_category[0].category, r.by_trip[0].sum], [4, 410000, 500, 'Бензин', 210000], 'report: ' + JSON.stringify(r.totals));
+  eq([r.count, r.totals.UZS.expense, r.totals.USD.income, r.by_category[0].category, r.by_trip[0].sum], [4, 410000, 500, 'Бензин', 410000], 'report: ' + JSON.stringify(r.totals));
   const tr = await M.TOOLS.wallet_report.run(null, { trip: 'namangan' }, ctx);
-  eq(tr.count, 2, 'a trip whole (no month limit), found in any case');
-  assert(/Поездки|🧳 Namangan/.test(M.TPL.wallet_report(r)) && /приход \$500/.test(M.TPL.wallet_report(r)), M.TPL.wallet_report(r));
+  eq(tr.count, 4, 'a trip whole (no month limit), found in any case');
+  assert(/Поездки|🧳 Наманган/.test(M.TPL.wallet_report(r)) && /приход \$500/.test(M.TPL.wallet_report(r)), M.TPL.wallet_report(r));
   const e = await M.TOOLS.wallet_edit.run(null, { last: true, amount: 550 }, ctx);
   eq([e.amount, e.currency, e.category], [550, 'USD', 'Бонус'], 'edit the last one, the rest stays');
   const d = await M.TOOLS.wallet_delete.run(null, { id: a.saved }, ctx);
@@ -2176,44 +2176,75 @@ D.test('👛 wallet: expenses and income in words, a trip, month totals, report,
   assert(M.toolsFor('benzinga 200 ming ketdi', '').some((x: any) => x.name === 'wallet_add'), 'declared for an Uzbek expense');
 });
 
-D.test('25.11 🧳 business trip: «командировочные расходы 50 тысяч на обед», income from an agent, the full trip report', async () => {
-  DB.ai_wallet = [];
-  const ctx = { chatId: 112 }, today = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);
-  const a = await M.TOOLS.wallet_add.run(null, { amount: 50000, category: 'Еда', note: 'обед', business_trip: true }, ctx);
-  eq([a.trip, a.sphere, a.category], [`Командировка ${today.slice(8, 10)}.${today.slice(5, 7)}`, 'work', 'Еда'], 'no name → a new trip: ' + JSON.stringify(a));
-  const b = await M.TOOLS.wallet_add.run(null, { kind: 'income', amount: 1000, currency: 'USD', category: 'От агента', from_whom: 'Адхамжон', business_trip: true }, ctx);
-  eq([b.trip, b.category, b.note], [a.trip, 'От агента', 'Адхамжон'], 'the same trip, who in the note');
-  await M.TOOLS.wallet_add.run(null, { amount: 50000, category: 'taksi', business_trip: true }, ctx);
-  await M.TOOLS.wallet_add.run(null, { amount: 300000, category: 'Бензин' }, ctx); // personal, not in the trip
-  eq(M.wCat('income', 'agentdan'), 'От агента', 'agent money'); eq(M.wCat('expense', 'mehmonxona'), 'Жильё', 'hotel');
+D.test('27.11 🧳 business trip: every row of the trip days, several cities, agents and store keepers, «вернулся», the report = the period', async () => {
+  DB.ai_wallet = []; DB.ai_messages = DB.ai_messages.filter((r: any) => !String(r.tools || '').startsWith('trips:'));
+  const ctx = { chatId: 112 }, today = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10), dd = `${today.slice(8, 10)}.${today.slice(5, 7)}`;
+  const add = (a: any) => M.TOOLS.wallet_add.run(null, a, ctx);
+  // a personal row before, then the trip opens with «командировочные …»
+  const p0 = await add({ amount: 300000, category: 'Бензин', day: M.addDaysT(today, -5) });
+  const a = await add({ kind: 'income', amount: 2000000, category: 'Командировочные', business_trip: true, city: 'Fargona' });
+  eq([a.trip, a.sphere], [`Фергана · ${dd}`, 'work'], 'opened with the city: ' + JSON.stringify(a));
+  // no trip words: still in the trip (it goes on), work; the answer offers «🏠 Не командировка»
+  const b = await add({ amount: 60000, category: 'Еда', note: 'tushlik' });
+  eq([b.trip, b.sphere, b.trip_auto], [`Фергана · ${dd}`, 'work', true], 'a plain row of a trip day joins it');
+  const t0 = M.TPL.wallet_add(b); assert(/В командировку: Фергана/.test(t0) && /Не командировка/.test(t0), t0);
+  // another city in the same trip, money from an agent and a store keeper, in dollars and so‘m
+  const s = await M.TOOLS.trip_start.run(null, { city: 'Наманган' }, ctx);
+  eq([s.opened, s.cities], [false, ['Фергана', 'Наманган']], 'the same trip, a second city');
+  await add({ kind: 'income', amount: 1300, currency: 'USD', category: 'От агента', from_whom: 'Адхамжон', business_trip: true });
+  await add({ kind: 'income', amount: 500000, category: 'Прочее', note: 'zavskladdan oldim', from_whom: 'Ботир' });
+  await add({ amount: 400000, category: 'Жильё', note: 'otel' });
+  const c = await add({ amount: 50000, category: 'Еда', note: 'ужин', city: 'Andijon', business_trip: true });
+  eq(c.trip, `Фергана → Наманган → Андижан · ${dd}`, 'the title follows the cities');
+  // «это не командировка»
+  const home = await add({ amount: 100000, category: 'Семья', note: 'uyga', not_trip: true });
+  eq([home.trip, home.sphere], [undefined, 'personal'], 'kept out');
+  eq(DB.ai_wallet.filter((r: any) => r.trip).every((r: any) => r.trip === c.trip), true, 'every trip row has the same title');
   const r = await M.TOOLS.wallet_report.run(null, { business_trip: true }, ctx);
-  eq([r.trip_mode, r.trip, r.count, r.totals.UZS.expense, r.totals.USD.income, r.live], [true, a.trip, 3, 100000, 1000, true], 'the current trip, whole');
+  eq([r.trip_mode, r.count, r.totals.UZS.income, r.totals.UZS.expense, r.totals.USD.income, r.live], [true, 6, 2500000, 510000, 1300, true], 'the whole trip: ' + JSON.stringify(r.totals));
+  eq(r.income_by_source.map((g: any) => `${g.category}:${g.who}`).sort(), ['Командировочные:', 'От агента:Адхамжон', 'От завсклада:Ботир'], 'income by source');
+  eq(r.by_city.map((g: any) => `${g.city}:${g.sum}`), ['Наманган:400000', 'Фергана:60000', 'Андижан:50000'], 'expenses by city');
   const t = M.TPL.wallet_report(r);
-  assert(/КОМАНДИРОВКА/.test(t) && /От агента: Адхамжон/.test(t) && /Остаток на руках: −100 000 сум · \+\$1 000/.test(t) && /ПО ДНЯМ/.test(t) && /Транспорт — 50 000 сум/.test(t), t);
-  // a city said in another spelling → the same trip
-  await M.TOOLS.wallet_add.run(null, { amount: 10000, category: 'Еда', trip: 'Namangan' }, ctx);
-  const c = await M.TOOLS.wallet_add.run(null, { amount: 20000, category: 'Еда', trip: 'Наманган' }, ctx);
-  eq(c.trip, 'Namangan', 'Наманган = Namangan');
-  eq((await M.TOOLS.wallet_report.run(null, { trip: 'namangan' }, ctx)).count, 5, 'the trip opened without a city got the city: all 5');
+  assert(/КОМАНДИРОВКА · Фергана → Наманган → Андижан \(идёт\)/.test(t) && /От агента: Адхамжон — \+\$1 300/.test(t) && /Командировочные \(аванс\) — \+2 000 000 сум/.test(t) && /Остаток на руках: \+1 990 000 сум · \+\$1 300/.test(t) && /РАСХОДЫ по городам/.test(t), t);
+  // the same numbers as the wallet for the trip's dates (minus the row he kept out)
+  const per = await M.TOOLS.wallet_report.run(null, { from: today, to: today }, ctx);
+  eq([per.totals.UZS.expense - 100000, per.totals.UZS.income], [r.totals.UZS.expense, r.totals.UZS.income], 'trip = period');
+  // in plain words, without AI
+  assert(M.isTripReportQuestion('итоги командировки') && M.isTripReportQuestion('safar hisoboti') && !M.isTripReportQuestion('командировочные 50 тысяч обед'), 'trip report words');
+  // the button: out of the trip
+  await M.walletPatchT(112, b.saved, { not_trip: true });
+  eq(DB.ai_wallet.find((x: any) => x.id === b.saved).trip, null, 'out by the button');
+  eq((await M.TOOLS.wallet_report.run(null, { business_trip: true }, ctx)).count, 5, 'five left in the trip');
+  // «вернулся» → closed, the report at once; a row after it is personal again
+  const e = await M.TOOLS.trip_end.run(null, {}, ctx);
+  eq([e.ended, e.live, e.to], [true, false, today], 'closed today');
+  assert(/завершена/.test(M.TPL.trip_end(e)), M.TPL.trip_end(e));
+  eq(DB.ai_wallet.find((x: any) => x.id === p0.saved).trip ?? null, null, 'the row before the trip untouched');
+  // the old trip by a city
+  eq((await M.TOOLS.wallet_report.run(null, { business_trip: true, trip: 'namangan' }, ctx)).trip, c.trip, 'found by a city');
+  eq((await M.TOOLS.wallet_report.run(null, { trips: true }, ctx)).trips.length, 1, 'the list of trips');
 });
 
-D.test('25.11 🧳 one trip across names (Komandirovka 23–24 + Namangan 25), categories from the note, the one-time fix', async () => {
-  const W = (id: number, day: string, kind: string, amount: number, category: string, trip: string, note: string, currency = 'UZS') => ({ id, chat_id: 111, kind, amount, currency, category, sphere: 'work', trip, note, day });
-  DB.ai_wallet = [W(1, '2026-11-23', 'income', 1000000, 'Прочее', 'Komandirovka', 'Komandirovkaga pul'), W(2, '2026-11-23', 'expense', 400000, 'Прочее', 'Komandirovka', 'Otel'),
-    W(3, '2026-11-24', 'expense', 50000, 'Еда', 'Komandirovka', 'Ujin'), W(4, '2026-11-25', 'income', 1000000, 'Возврат', 'Namangan', 'Адхамжон агентдан олдим'),
-    W(5, '2026-11-25', 'income', 1300, 'Бизнес', 'Namangan', 'Adhamjon agentdan olindi', 'USD'), W(6, '2026-11-25', 'expense', 50000, 'Транспорт', 'Namangan', 'Taksiga'),
-    W(7, '2026-11-10', 'expense', 9000, 'Еда', 'Toshkent', 'old trip'), W(8, '2026-11-24', 'expense', 70000, 'Бензин', null as any, 'personal')];
-  DB.ai_messages = (DB.ai_messages || []).filter((r: any) => !String(r.tools || '').startsWith('fix:'));
-  const all = DB.ai_wallet.filter((r: any) => r.trip).sort((x: any, y: any) => y.day.localeCompare(x.day) || y.id - x.id);
-  const run = M.tripRun(all);
-  eq([run.from, run.to, run.title], ['2026-11-23', '2026-11-25', 'Namangan'], 'one trip 23–25: ' + JSON.stringify(run));
-  eq(await M.walletFixOnce(undefined, undefined, undefined, true), 5, 'fixed once'); eq(await M.walletFixOnce(undefined, undefined, undefined, true), 0, 'not again (marked)');
-  const by = (id: number) => DB.ai_wallet.find((r: any) => r.id === id);
-  eq([1, 2, 3, 4, 5, 6].map(i => by(i).trip), Array(6).fill('Namangan'), 'one name');
-  eq([by(1).category, by(2).category, by(4).category, by(5).category, by(7).trip, by(8).trip], ['Командировочные', 'Жильё', 'От агента', 'От агента', 'Toshkent', null], 'categories; other rows untouched');
-  const r = await M.TOOLS.wallet_report.run(null, { business_trip: true }, { chatId: 111 });
-  eq([r.count, r.totals.UZS.income, r.totals.UZS.expense, r.days], [6, 2000000, 500000, 3], 'the whole trip');
-  eq(M.wNoteCat('expense', 'Прочее', 'Otel'), 'Жильё', 'a new Otel is Жильё');
+D.test('27.11 🧳 trips written before: one trip from «Komandirovka» + «Namangan» rows, every row of those days, dates fixed by words', async () => {
+  const W = (id: number, day: string, kind: string, amount: number, category: string, trip: string | null, note: string, currency = 'UZS', sphere = 'work') => ({ id, chat_id: 113, kind, amount, currency, category, sphere, trip, note, day });
+  DB.ai_messages = DB.ai_messages.filter((r: any) => !String(r.tools || '').startsWith('trips:'));
+  DB.ai_wallet = [W(1, '2026-11-23', 'income', 1000000, 'Командировочные', 'Komandirovka', 'Komandirovkaga pul'), W(2, '2026-11-23', 'expense', 400000, 'Жильё', 'Komandirovka', 'Otel'),
+    W(3, '2026-11-24', 'expense', 50000, 'Еда', 'Komandirovka', 'Ujin'), W(4, '2026-11-25', 'income', 1000000, 'От агента', 'Namangan', 'Адхамжон агентдан олдим'),
+    W(5, '2026-11-25', 'income', 1300, 'От агента', 'Namangan', 'Adhamjon', 'USD'), W(6, '2026-11-25', 'expense', 50000, 'Транспорт', 'Namangan', 'Taksiga'),
+    W(7, '2026-11-10', 'expense', 9000, 'Еда', 'Toshkent', 'old trip'), W(8, '2026-11-24', 'expense', 70000, 'Еда', null, 'obed', 'UZS', 'personal'),
+    W(9, '2026-11-26', 'expense', 60000, 'Еда', null, 'tushlik', 'UZS', 'personal'), W(10, '2026-11-27', 'expense', 80000, 'Дом', null, 'uy', 'UZS', 'personal')];
+  const ctx = { chatId: 113 };
+  const r = await M.TOOLS.wallet_report.run(null, { business_trip: true, trip: 'командировка' }, ctx);
+  eq([r.from, r.to, r.count, r.cities, r.live], ['2026-11-23', '2026-11-25', 7, ['Наманган'], false], 'one trip 23–25, the untagged row of 24 taken in: ' + JSON.stringify([r.from, r.to, r.count]));
+  eq(DB.ai_wallet.find((x: any) => x.id === 8).sphere, 'work', 'a row of the trip days is work now');
+  eq(DB.ai_wallet.find((x: any) => x.id === 7).trip, 'Ташкент · 10.11', 'the old trip is its own');
+  // «командировка была с 23 по 26» → the 26th comes in, the 27th stays out
+  const f = await M.TOOLS.trip_fix.run(null, { from: '2026-11-23', to: '2026-11-26' }, ctx);
+  eq([f.from, f.to, f.count, f.totals.UZS.expense], ['2026-11-23', '2026-11-26', 8, 630000], 'fixed: ' + JSON.stringify(f.totals));
+  const per = await M.TOOLS.wallet_report.run(null, { from: '2026-11-23', to: '2026-11-26' }, ctx);
+  eq([per.totals.UZS.expense, per.totals.UZS.income, per.totals.USD.income], [f.totals.UZS.expense, f.totals.UZS.income, f.totals.USD.income], 'trip report = report for 23–26');
+  eq(DB.ai_wallet.find((x: any) => x.id === 10).trip, null, 'the 27th at home stays personal');
+  eq(M.cityOf('Komandirovka'), '', 'no city'); eq(M.cityOf('Farg‘onada'), 'Фергана', 'Uzbek'); eq(M.cityOf('в Андижане'), 'Андижан', 'Russian');
 });
 
 D.test('24.11 a task for an agent goes straight into his MitalCRM account (agent_cabinets → «Задания»)', async () => {
