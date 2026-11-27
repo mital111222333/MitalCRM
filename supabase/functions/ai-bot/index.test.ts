@@ -1752,8 +1752,11 @@ D.test('phone actions: in the app the AI asks for an alarm → the app gets it; 
   assert(/⏰ Будильник на 06:30 \(пн, вт, ср, чт, пт\) — «Работа»/.test(r.text), r.text);
   assert(M.toolsFor('разбуди меня в 7', '').some((d: any) => d.name === 'phone_action'), 'declared for such questions');
 
+  // 27.11: an alarm in Telegram is a persistent wake-up reminder now (see «27.11 audit … uyg'ot»); other actions stay app-only
   const tgr = await M.TOOLS.phone_action.run(null, { action: 'alarm', hour: 7, minute: 0 }, { chatId: 111, actions: [] });
-  assert(/только приложение JUMAVOY/.test(tgr.error), 'Telegram: ' + JSON.stringify(tgr));
+  assert(tgr.wake && !tgr.error, 'Telegram alarm → wake-up reminder: ' + JSON.stringify(tgr));
+  const tgc = await M.TOOLS.phone_action.run(null, { action: 'timer', seconds: 60 }, { chatId: 111, actions: [] });
+  assert(/только приложение JUMAVOY/.test(tgc.error), 'Telegram timer: ' + JSON.stringify(tgc));
   const cal = await M.TOOLS.phone_action.run(null, { action: 'calendar', title: 'Встреча с Fozilxon', start: '2099-01-05T15:00' }, { chatId: 111, app: true, actions: [] });
   eq(cal.done_on_phone.end_ms - cal.done_on_phone.start_ms, 3600e3, 'calendar: an hour by default');
 });
@@ -2506,4 +2509,91 @@ D.test('25.11 memory: a bad answer of the model is not retried for ever; out of 
   eq(calls, c1, 'out of quota → no request on the next answer');
   assert(Date.parse((await M.kvGet(`conv:${C}`)).v.pause_until) > Date.now(), 'a 10-minute pause');
   D.env.set('MEM_EPISODES', 'off');
+});
+
+// ───── 27.11 audit of real chats: long reports → Excel, «shuni excel» without AI, honest answers, wake-up, photo, 💱 ─────
+D.test('27.11 audit: 💱 a currency exchange is neither income nor expense, only the balance of each currency', async () => {
+  DB.ai_wallet = [];
+  const ctx = { chatId: 121 };
+  const a = await M.TOOLS.wallet_add.run(null, { kind: 'expense', amount: 100, currency: 'USD', category: 'Прочее', note: "valyuta almashtirish (so'mga)" }, ctx);
+  const b = await M.TOOLS.wallet_add.run(null, { kind: 'income', amount: 1200000, category: 'Возврат', note: 'обмен валют' }, ctx);
+  await M.TOOLS.wallet_add.run(null, { kind: 'expense', amount: 50000, category: 'Еда', note: 'obed' }, ctx);
+  eq([DB.ai_wallet.find((r: any) => r.id === a.saved).category, DB.ai_wallet.find((r: any) => r.id === b.saved).category], ['Обмен', 'Обмен'], 'the note decides: exchange');
+  const r = await M.TOOLS.wallet_report.run(null, {}, ctx);
+  eq([r.totals.UZS.income, r.totals.UZS.expense, r.totals.UZS.balance, r.totals.USD.expense, r.totals.USD.balance], [0, 50000, 1150000, 0, -100], 'totals: ' + JSON.stringify(r.totals));
+  eq(r.by_category.map((g: any) => g.category), ['Еда'], 'not in the categories');
+});
+
+D.test('27.11 audit: a long trip report → its head in the chat + the whole report as Excel; «shuni excel qilib yubor» → the file, no AI', async () => {
+  DB.ai_wallet = []; DB.ai_messages = DB.ai_messages.filter((r: any) => !/^(trips|lastx):/.test(String(r.tools || '')));
+  const ctx = { chatId: 111 };
+  await M.TOOLS.trip_start.run(null, { city: 'Namangan' }, ctx);
+  for (let i = 0; i < 16; i++) await M.TOOLS.wallet_add.run(null, { amount: 10000 * (i + 1), category: i % 2 ? 'Еда' : 'Транспорт', note: `xarajat ${i + 1}`, business_trip: true }, ctx);
+  const full = M.TPL.wallet_report(await M.TOOLS.wallet_report.run(null, { business_trip: true }, ctx));
+  assert(M.isLongReport(full), 'the full report is long: ' + full.length);
+  let gem = 0; GEM = () => { gem++; return say('no'); };
+  const s0 = SENT.length;
+  const t = await M.command('итоги командировки', 111);
+  const doc = SENT.slice(s0).find((x: any) => x.method === 'sendDocument');
+  assert(doc && /^📎 Командировка/.test(doc.body.caption), 'the trip book was sent: ' + t.slice(0, 300) + ' | ' + JSON.stringify(SENT.slice(s0).map((x: any) => x.method)));
+  assert(t.length < 700 && /КОМАНДИРОВКА/.test(t) && /ИТОГ/.test(t) && /Полный отчёт — в Excel/.test(t) && !/ПО ДНЯМ/.test(t), 'only the head in the chat: ' + t);
+  // «shuni excel qilib yubor» — the same report again as a file, by the code
+  const s1 = SENT.length;
+  const x = await M.command('shuni excel qilib yubor', 111);
+  assert(/Excel tayyor/.test(x || ''), 'answered: ' + x);
+  assert(SENT.slice(s1).some((y: any) => y.method === 'sendDocument' && /Командировка/.test(y.body.caption)), 'the trip file again');
+  eq(gem, 0, 'no Gemini request');
+  // what counts as «that, as Excel» and what is a new question
+  for (const q of ['shuni excel qilib yubor', 'Excel', 'пришли это в экселе', 'эксель файл скинь', "buni excelda jo'nat"]) assert(M.isExcelFollowUp(q), 'follow-up: ' + q);
+  for (const q of ['qarzdorlarni excel qilib yubor', 'пришли должников в Excel', "excel nima o'zi?"]) assert(!M.isExcelFollowUp(q), 'a new request: ' + q);
+  // a short report stays text
+  assert(!M.isLongReport('👛 Кошелёк · ноябрь\nприход 1 000 000 сум'), 'short = text');
+  eq(M.shortReport('A\n\nB\n\nC', 3), 'A', 'head = the first blocks that fit');
+});
+
+D.test('27.11 audit: a promise «hozir qidiraman» is not an answer — the AI is made to do it now', async () => {
+  assert(M.selfCheck('Hozir qidiruvni boshlayapman.', [], "Lubric prays-listini jo'nat"), 'promise caught');
+  assert(M.selfCheck('Сейчас поищу и пришлю.', ['notebook_search'], 'пришли прайс'), 'ru promise caught');
+  eq(M.selfCheck('🔬 Boshladim, hisobot keladi', ['bg_start'], "10 daqiqa o'rgan"), '', 'a background task may promise');
+  eq(M.selfCheck('Mana prays: Lubric.pdf', ['send_saved_file'], "prays jo'nat"), '', 'a real answer passes');
+  const n0 = GEM_LOG.length;
+  let k = 0; GEM = () => (k++ === 0 ? say('Saidbonur aka, hozir qidiruvni boshlayapman.') : say('Topolmadim: bloknotda Lubric prays yoq.'));
+  await tgPost({ text: "Lubric oil prays-listini jo'natib yuboring" });
+  assert(GEM_LOG.slice(n0).some((b: any) => JSON.stringify(b.contents).includes('ПРОВЕРКА ПЕРЕД ОТВЕТОМ')), 'asked to check itself');
+  assert(/Topolmadim/.test(lastText()) && !/boshlayapman/.test(lastText()), 'the honest answer went out: ' + lastText());
+});
+
+D.test("27.11 audit: «uyg'ot 6:30 da» in Telegram = a persistent reminder (3 times on one card until ✅)", async () => {
+  DB.ai_reminders = []; DB.ai_tasks = DB.ai_tasks || [];
+  const r = await M.TOOLS.phone_action.run(null, { action: 'alarm', hour: 6, minute: 30, label: 'namoz' }, { chatId: 111, app: false });
+  assert(r.wake && !r.error, JSON.stringify(r));
+  const rs = DB.ai_reminders.filter((x: any) => x.chat_id === 111);
+  eq(rs.length, 3, 'the wake-up and two more');
+  eq(new Set(rs.map((x: any) => x.task_id)).size, 1, 'all on one card');
+  const ts = rs.map((x: any) => Date.parse(x.due_at)).sort();
+  eq([ts[1] - ts[0], ts[2] - ts[0]], [5 * 60e3, 10 * 60e3], '+5 and +10 minutes');
+  eq(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tashkent', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ts[0])), '06:30', 'at 6:30 Tashkent');
+  assert(ts[0] > Date.now(), 'in the future');
+  assert(/Разбужу/.test(M.TPL.phone_action(r)) && /через 5 и 10 минут/.test(M.TPL.phone_action(r)), M.TPL.phone_action(r));
+  // other phone actions still say «only in the app»
+  assert((await M.TOOLS.phone_action.run(null, { action: 'call', phone: '+998901112233' }, { chatId: 111, app: false })).error, 'a call is app-only');
+});
+
+D.test('27.11 audit: a photo first, the question in the next message → the photo goes with the question', async () => {
+  FILES.ph27 = new Uint8Array([0xff, 0xd8, 0xff, 1, 2, 3]);
+  GEM = () => say('Rasmni kordim.');
+  await tgPost({ photo: [{ file_id: 'ph27' }], caption: 'qara' });
+  const n0 = GEM_LOG.length;
+  GEM = () => say('Rasmda: Mitanol 5W-30 SP.');
+  await tgPost({ text: 'Ushbu rasmdagi moylarni nomi bilan yozib ber' });
+  const req = GEM_LOG.slice(n0).find((b: any) => Array.isArray(b.tools));
+  assert(req, 'the AI was asked');
+  assert(req.contents.at(-1).parts.some((p: any) => p.inlineData), 'the photo is in the question');
+  assert(M.FILE_REF.test("Rasimda qaysi moylarni ko'ryapsiz?") && !M.FILE_REF.test('Fozilxon qarzi qancha'), 'what refers to a file');
+});
+
+D.test('27.11 audit: a wrong crm_query filter goes back to the AI (retry), not to the owner', async () => {
+  const db = await M.loadDB();
+  const r = await M.TOOLS.crm_query.run(db, { path: 'debtors', filter: 'region=Fargona' });
+  assert(r.retry && /нет полей: region/.test(r.error) && r.fields && typeof r.fields === 'object', JSON.stringify(r).slice(0, 300));
 });
