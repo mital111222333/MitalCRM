@@ -793,7 +793,7 @@ async function onButton(q: any) {
   if (/^(fu|ch):/.test(String(q.data || '')) && chatId) return followButton(q, chatId, answer);
   if (/^un:\d+$/.test(String(q.data || '')) && chatId) return undoButton(q, chatId, answer);
   if (/^bg:(fin|stop):\d+$/.test(String(q.data || '')) && chatId) return bgButton(q, chatId, answer);
-  if (/^wt:(out|rep|end):\d+$/.test(String(q.data || '')) && chatId) return tripButton(q, chatId, answer);
+  if (/^wt:(out|rep|end|xls):\d+$/.test(String(q.data || '')) && chatId) return tripButton(q, chatId, answer);
   const m = String(q.data || '').match(/^ob:(send|cancel):(\d+)$/); if (!m || !chatId) return answer();
   const now = new Date().toISOString();
   // claimed by a conditional update: a double tap never sends twice
@@ -1450,9 +1450,31 @@ export async function walletOp(chatId: number, b: any): Promise<{ status: number
     trips: [...new Set([...(st ? [...st.list].sort((p, q2) => q2.from.localeCompare(p.from)).map(tripTitle) : []), ...src.filter((r: any) => r.trip).map((r: any) => r.trip)])].slice(0, 30),
     trip_list, categories: W_CAT, icons: W_ICON } };
 }
+// 📊 the trip as an Excel book: every row by day, totals per currency, income by source, expenses by category and by city
+export function tripSheets(s: any): { name: string; rows: any[][] }[] {
+  const cur = Object.keys(s.totals || {});
+  return [
+    { name: 'Записи', rows: [['№', 'Дата', 'Город', 'Приход/расход', 'Сумма', 'Валюта', 'Категория', 'Комментарий'],
+      ...(s.rows || []).map((r: any) => [r.id, r.day, r.city || '', r.kind, r.kind === 'приход' ? r.amount : -r.amount, r.currency, r.category, r.note])] },
+    { name: 'Итоги', rows: [['Валюта', 'Приход', 'Расход', 'Остаток на руках'], ...cur.map(c => [c, s.totals[c].income, s.totals[c].expense, s.totals[c].balance]),
+      [], ['Командировка', s.trip], ['Даты', `${s.from} — ${s.to}${s.live ? ' (идёт)' : ''}`], ['Дней', s.days], ['Записей', s.count]] },
+    { name: 'Приходы', rows: [['Источник', 'От кого', 'Сумма', 'Валюта', 'Записей'], ...(s.income_by_source || []).map((g: any) => [g.category, g.who || '', g.sum, g.currency, g.count])] },
+    { name: 'Расходы по категориям', rows: [['Категория', 'Сумма', 'Валюта', 'Записей'], ...(s.by_category || []).map((g: any) => [g.category, g.sum, g.currency, g.count])] },
+    { name: 'По городам', rows: [['Город', 'Сумма', 'Валюта', 'Записей'], ...(s.by_city || []).map((g: any) => [g.city, g.sum, g.currency, g.count])] },
+  ].filter(x => x.name === 'Итоги' || x.rows.length > 1);
+}
+export const tripFileName = (s: any) => `Командировка ${String(s.trip || '').replace(/ · \d\d\.\d\d$/, '').replace(/[^\p{L}\p{N} _-]/gu, ' ').trim().slice(0, 40)} ${s.from || todayStr()}.xlsx`.replace(/\s+/g, ' ');
 // 🧳 buttons under wallet answers: «🏠 Не командировка» (row out of the trip), «🧳 Итоги поездки», «🏠 Вернулся»
 export async function tripButton(q: any, chatId: number, answer: (t?: string) => Promise<any>) {
   const [, act, rid] = String(q.data).split(':'), id = n(rid), ctx = { chatId };
+  if (act === 'xls') { // 📊 Excel of the whole trip — built straight from its rows, no AI (works when the AI limit is out)
+    await answer('Готовлю Excel…');
+    const st = await tripStore(chatId), t = st.list.find(x => x.id === id) || tripPick(st, {});
+    if (!t) return say(chatId, '🧳 Командировок пока нет.');
+    const s = await tripSummary(chatId, t, st);
+    try { await sendXlsx(chatId, tripFileName(s), tripSheets(s)); } catch (e) { await say(chatId, '⚠️ Не получилось отправить Excel: ' + redact((e as Error).message)); }
+    return;
+  }
   if (act === 'out') {
     const r: any = await walletPatch(chatId, id, { not_trip: true });
     await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: q.message?.message_id, reply_markup: { inline_keyboard: [[walletButton()]] } }).catch(() => null);
@@ -1461,13 +1483,13 @@ export async function tripButton(q: any, chatId: number, answer: (t?: string) =>
     return;
   }
   await answer(act === 'end' ? 'Закрываю…' : 'Считаю…');
-  let text = '';
-  if (act === 'end') { const r: any = await TOOLS.trip_end.run(null, {}, ctx); text = r.error ? '⚠️ ' + r.error : TPL.trip_end(r); }
+  let text = '', xls = id;
+  if (act === 'end') { const r: any = await TOOLS.trip_end.run(null, {}, ctx); text = r.error ? '⚠️ ' + r.error : TPL.trip_end(r); if (r.error) xls = 0; }
   else {
     const st = await tripStore(chatId), t = st.list.find(x => x.id === id) || tripPick(st, {});
-    text = t ? tripReport(await tripSummary(chatId, t, st)) : tripReport({ count: 0 });
+    text = t ? tripReport(await tripSummary(chatId, t, st)) : tripReport({ count: 0 }); xls = t ? t.id : 0;
   }
-  KB.set(chatId, { inline_keyboard: [[walletButton()]] });
+  KB.set(chatId, { inline_keyboard: [[...(xls ? [{ text: '📊 Excel', callback_data: `wt:xls:${xls}` }] : []), walletButton()]] });
   await say(chatId, text);
 }
 async function walletApi(req: Request) {
@@ -1984,7 +2006,7 @@ const TOOLS: Record<string, { desc: string; params: any; run: (db: any, a: any, 
         if (!t) return { trip_mode: true, count: 0, trip: '', trips: [] };
         const s: any = await tripSummary(ctx.chatId, t, st);
         if (a.kind) s.rows = s.rows.filter((r: any) => (r.kind === 'приход') === (a.kind === 'income'));
-        if (!ctx.app) KB.set(ctx.chatId, { inline_keyboard: [[...(s.live ? [{ text: '🏠 Вернулся', callback_data: `wt:end:${t.id}` }] : []), { text: '📊 Excel', callback_data: 'fu:excel' }, walletButton()]] });
+        if (!ctx.app) KB.set(ctx.chatId, { inline_keyboard: [[...(s.live ? [{ text: '🏠 Вернулся', callback_data: `wt:end:${t.id}` }] : []), { text: '📊 Excel', callback_data: `wt:xls:${t.id}` }, walletButton()]] });
         return s;
       }
       const m = monthOf(), from = /^\d{4}-\d{2}-\d{2}$/.test(a.from || '') ? a.from : m.from, to = /^\d{4}-\d{2}-\d{2}$/.test(a.to || '') ? a.to : m.to;
@@ -5841,7 +5863,10 @@ async function sendExcel(chatId: number, tool: string, args: any, result: any): 
   const sheets = resultSheets(result).filter(s => s.rows.length > 1);
   if (!sheets.length) return null;
   const who = String(args.agent || args.client || args.product || '').replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 30);
-  const name = `${XLS_TITLE[tool] || tool}${who ? ' ' + who : ''} ${todayStr()}.xlsx`.replace(/\s+/g, '_');
+  return await sendXlsx(chatId, `${XLS_TITLE[tool] || tool}${who ? ' ' + who : ''} ${todayStr()}.xlsx`, sheets);
+}
+async function sendXlsx(chatId: number, file: string, sheets: { name: string; rows: any[][] }[]): Promise<string> {
+  const name = file.replace(/\s+/g, '_');
   const fd = new FormData();
   fd.append('chat_id', String(chatId)); fd.append('caption', `📎 ${name}`);
   fd.append('document', new File([makeXlsx(sheets) as BlobPart], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));

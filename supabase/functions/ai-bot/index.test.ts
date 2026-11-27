@@ -311,7 +311,7 @@ D.test('telegram flow: access, commands, memory, reminders, notebook, NotebookLM
   eq(GEM_LOG.length, before, 'quick commands use no AI');
 
   // remember → template answer, stored, then injected into the next prompt
-  GEM = () => call('remember', { text: 'Abdulmutallib в отпуске до 25.11', kind: 'fact', until: '2026-11-25' });
+  GEM = () => call('remember', { text: 'Abdulmutallib в отпуске до 25.11', kind: 'fact', until: new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10) }); // still in force whenever the test runs
   await tgPost({ text: 'запомни: Абдулмутталиб в отпуске до 25.11' });
   assert(lastText().startsWith('🧠 Запомнил #'), 'remember template: ' + lastText());
   eq(DB.ai_memory.length, 1, 'memory row stored');
@@ -2206,6 +2206,14 @@ D.test('27.11 🧳 business trip: every row of the trip days, several cities, ag
   eq(r.by_city.map((g: any) => `${g.city}:${g.sum}`), ['Наманган:400000', 'Фергана:60000', 'Андижан:50000'], 'expenses by city');
   const t = M.TPL.wallet_report(r);
   assert(/КОМАНДИРОВКА · Фергана → Наманган → Андижан \(идёт\)/.test(t) && /От агента: Адхамжон — \+\$1 300/.test(t) && /Командировочные \(аванс\) — \+2 000 000 сум/.test(t) && /Остаток на руках: \+1 990 000 сум · \+\$1 300/.test(t) && /РАСХОДЫ по городам/.test(t), t);
+  // 📊 Excel of the trip — built from the summary itself, no AI
+  const xs = M.tripSheets(r), names = xs.map((x: any) => x.name);
+  eq(names, ['Записи', 'Итоги', 'Приходы', 'Расходы по категориям', 'По городам'], 'trip excel sheets');
+  eq(xs[0].rows.length, 7, 'every trip row + header');
+  assert(xs[1].rows.some((row: any[]) => row[0] === 'UZS' && row[1] === 2500000 && row[2] === 510000 && row[3] === 1990000), 'totals per currency: ' + JSON.stringify(xs[1].rows));
+  assert(xs[2].rows.some((row: any[]) => row[1] === 'Адхамжон' && row[2] === 1300 && row[3] === 'USD'), 'income from the agent by name');
+  assert(/^Командировка Фергана Наманган Андижан \d{4}-\d{2}-\d{2}\.xlsx$/.test(M.tripFileName(r)), M.tripFileName(r));
+  eq([...M.makeXlsx(xs).slice(0, 2)], [0x50, 0x4b], 'a real xlsx (zip)');
   // the same numbers as the wallet for the trip's dates (minus the row he kept out)
   const per = await M.TOOLS.wallet_report.run(null, { from: today, to: today }, ctx);
   eq([per.totals.UZS.expense - 100000, per.totals.UZS.income], [r.totals.UZS.expense, r.totals.UZS.income], 'trip = period');
