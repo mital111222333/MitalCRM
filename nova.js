@@ -14,7 +14,7 @@
   // ---------- menu icons ----------
   const IC = {
     pulse: 'M3 12h4l2-6 4 12 2-6h6',
-    field: 'M12 12m-1 0a1 1 0 1 0 2 0 1 1 0 1 0-2 0M7.8 7.8a6 6 0 0 0 0 8.4m8.4 0a6 6 0 0 0 0-8.4M5 5a10 10 0 0 0 0 14m14 0a10 10 0 0 0 0-14',
+    field: 'M3 12h4l2-6 4 12 2-6h6',
     my: 'M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
     signals: 'M12 4 2.5 20h19zM12 10v4m0 3v.01',
     collect: 'M12 3v18M16.5 7.5C16.5 5.6 14.5 5 12 5S7.5 5.8 7.5 8s2 3 4.5 3.5 4.5 1.3 4.5 3.5-2 3-4.5 3-4.5-.6-4.5-2.5',
@@ -310,7 +310,8 @@
     countUp(el);
   }
   window.EXT_PAGES = window.EXT_PAGES || {};
-  window.EXT_PAGES.pulse = pulse;
+  // «Пульс» is now the field dashboard (field.js, #/field); the old debt page answers only to old links, which go there
+  window.EXT_PAGES.pulse = () => { location.hash = '#/field'; };
 
   // ---------- start ----------
   addEventListener('DOMContentLoaded', () => {

@@ -1,4 +1,4 @@
-// «Поле» (#/field): the supervisor's dashboard of his agents in the field — today live, and any past period.
+// «Пульс» (#/field, the page was called «Поле»): the supervisor's dashboard of his agents in the field — today live, and any past period.
 // Data (Supabase, read only, filtered by the database itself: a supervisor gets only his agents, admin / РОП everybody):
 //   field_days   — one row per GPS device per day, rebuilt by field-watch from the GPS track: every stop (at a client or not),
 //                  km, time moving / standing, first / last move, LINKO totals of the agent's day (orders, payments, refusals);
@@ -63,7 +63,7 @@ const FIELD = {
   daysOf([a, b]) { const out = []; for (let d = a; d <= b && out.length < 93; d = FIELD.addDays(d, 1)) out.push(d); return out; },
 
   async load() {
-    const sb = FIELD.sb(); if (!sb) throw new Error('Войдите в CRM, чтобы видеть «Поле»');
+    const sb = FIELD.sb(); if (!sb) throw new Error('Войдите в CRM, чтобы видеть «Пульс»');
     const [a, b] = FIELD.range(), t = FIELD.today(), withToday = b >= t;
     const q = p => Promise.resolve(p).then(r => r, e => ({ error: e }));
     const [cfg, days, live, visits, routes, events, sups] = await Promise.all([
@@ -294,8 +294,8 @@ const FIELD = {
   },
 
   settings(D, redraw) {
-    const cfg = D.cfg[0]; if (!cfg) return toast('Настройки «Поля» меняет администратор');
-    const m = modal(`<h3>Настройки «Поля»</h3><div class="fd-set">
+    const cfg = D.cfg[0]; if (!cfg) return toast('Настройки «Пульса» меняет администратор');
+    const m = modal(`<h3>Настройки «Пульса»</h3><div class="fd-set">
       <label><input type="checkbox" id="fsOn" ${cfg.enabled ? 'checked' : ''}> следить за агентами</label>
       <label for="fsAl">Уведомления, минут у клиента</label><input type="text" id="fsAl" value="${esc((cfg.alerts || []).join(', '))}" placeholder="15, 30, 45">
       <label for="fsR">Радиус вокруг клиента, м</label><input type="number" id="fsR" min="30" max="500" value="${cfg.radius_m}">
@@ -328,7 +328,7 @@ const FIELD = {
       const mine = data.filter(e => FIELD.inScope(e, scope) && e.kind !== 'outcome');
       for (const e of mine.slice(-3)) toast(String(e.text).split('\n')[0]);
       if (mine.length && 'Notification' in window && Notification.permission === 'granted' && document.hidden) {
-        try { new Notification('Поле: ' + (mine.length > 1 ? `${mine.length} событий` : String(mine[0].text).split('\n')[0]), { body: mine.slice(-3).map(x => String(x.text).split('\n')[0]).join('\n'), tag: 'field' }); } catch { /* not allowed here */ }
+        try { new Notification('Пульс: ' + (mine.length > 1 ? `${mine.length} событий` : String(mine[0].text).split('\n')[0]), { body: mine.slice(-3).map(x => String(x.text).split('\n')[0]).join('\n'), tag: 'field' }); } catch { /* not allowed here */ }
       }
     } catch { /* offline: next minute */ }
   },
@@ -340,7 +340,7 @@ EXT_PAGES.field = async el => {
   const S = FIELD.st;
   S.period = FIELD.ls('period') || 'today';
   const PER = [['today', 'Сегодня'], ['yesterday', 'Вчера'], ['7', '7 дней'], ['30', '30 дней'], ['custom', 'Период']];
-  el.innerHTML = `<div class="page-head"><div><h2>Поле</h2><div class="sub" id="fdSub">Загружаю…</div></div>
+  el.innerHTML = `<div class="page-head"><div><h2>Пульс</h2><div class="sub" id="fdSub">Загружаю…</div></div>
     <div class="actions"><button class="btn gray" id="fdBell" type="button" hidden>${FIELD.ic('bell')} Уведомления</button><button class="btn gray" id="fdSet" type="button" hidden>${FIELD.ic('gear')} Настройки</button><a class="btn gray" href="#/gps">${FIELD.ic('map')} Карта</a></div></div>
     <div class="fd-bar"><div class="fd-seg-c" role="group" aria-label="Период">${PER.map(([v, t]) => `<button type="button" data-p="${v}" aria-pressed="${S.period === v}">${t}</button>`).join('')}</div>
       <span id="fdCustom" ${S.period === 'custom' ? '' : 'hidden'}><input type="date" id="fdFrom" aria-label="С какого дня"> – <input type="date" id="fdTo" aria-label="По какой день"></span>
@@ -360,7 +360,7 @@ EXT_PAGES.field = async el => {
   const draw = async soft => {
     if (!el.isConnected) { clearInterval(FIELD.timer); clearInterval(FIELD.tick); return; }
     if (busy) return; busy = true;
-    try { D = await FIELD.load(); } catch (e) { busy = false; $('#fdBody', el).innerHTML = UI.empty('Не удалось загрузить «Поле»', esc(e.message || e)); return; }
+    try { D = await FIELD.load(); } catch (e) { busy = false; $('#fdBody', el).innerHTML = UI.empty('Не удалось загрузить «Пульс»', esc(e.message || e)); return; }
     busy = false;
     if (!el.isConnected) return;
     const sel = $('#fdScope', el);
