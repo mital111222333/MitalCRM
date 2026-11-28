@@ -307,6 +307,7 @@
         { sub: `<span class="nv-key"><i style="background:var(--tint)"></i>${hasB ? 'в сроке' : 'платили за 30 дн.'}</span><span class="nv-key"><i style="background:var(--st-crit)"></i>${hasB ? 'просрочено' : 'без оплаты 30+ дн.'}</span><span class="nv-key">✓ отработано сегодня</span>`, cls: 'w12 nv-card' })}
       </div>`;
     countUp(el);
+    window.FIELD?.strip(el); // «Поле»: who is at a client right now (field.js)
   }
   window.EXT_PAGES = window.EXT_PAGES || {};
   window.EXT_PAGES.pulse = pulse;

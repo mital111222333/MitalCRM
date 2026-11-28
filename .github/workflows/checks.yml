@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - name: every script parses
         run: |
           for f in *.js; do node --check "$f"; done
@@ -32,7 +32,7 @@ jobs:
       - uses: denoland/setup-deno@v2
         with: { deno-version: v2.x }
       - name: type check
-        run: deno check supabase/functions/admin-users/index.ts
+        run: deno check supabase/functions/admin-users/index.ts supabase/functions/field-watch/index.ts
   deploy-admin-users:
     needs: admin-users
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -47,3 +47,4 @@ jobs:
         run: |
           if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then echo "SUPABASE_ACCESS_TOKEN is not set — skipping deploy"; exit 0; fi
           npx -y supabase@latest functions deploy admin-users --remote=oxchgcfyzszemqlvdjjr --no-verify-jwt --use-api --yes
+          npx -y supabase@latest functions deploy field-watch --remote=oxchgcfyzszemqlvdjjr --no-verify-jwt --use-api --yes
