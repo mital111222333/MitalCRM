@@ -57,9 +57,11 @@ const FIELD = {
     if (p === 'yesterday') { const y = FIELD.addDays(t, -1); return [y, y]; }
     if (p === '7') return [FIELD.addDays(t, -6), t];
     if (p === '30') return [FIELD.addDays(t, -29), t];
+    if (p === 'plan') return [FIELD.planStart(t), t]; // the plan period runs from the 16th to the 15th
     if (p === 'custom' && FIELD.st.from && FIELD.st.to) return FIELD.st.from <= FIELD.st.to ? [FIELD.st.from, FIELD.st.to] : [FIELD.st.to, FIELD.st.from];
     return [t, t];
   },
+  planStart: t => (+t.slice(8) >= 16 ? t.slice(0, 8) + '16' : FIELD.addDays(t.slice(0, 8) + '01', -1).slice(0, 8) + '16'),
   daysOf([a, b]) { const out = []; for (let d = a; d <= b && out.length < 93; d = FIELD.addDays(d, 1)) out.push(d); return out; },
 
   async load() {
@@ -144,19 +146,82 @@ const FIELD = {
     </div>`;
   },
 
+  initials: n => esc(String(n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase()),
+  // route progress as a small ring with the number beside it (colour is never the only signal)
+  ring(done, plan) {
+    const r = 15, C = 2 * Math.PI * r, f = plan ? Math.min(1, done / plan) : 0;
+    return `<span class="fd-ring" role="img" aria-label="Маршрут LINKO: ${done} из ${plan}"><svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="${r}" class="bg"/><circle cx="20" cy="20" r="${r}" class="fg" stroke-dasharray="${(f * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 20 20)"/></svg><b>${done}<small>/${plan}</small></b></span>`;
+  },
+  // the day 07–21 as a thin strip: client visits, other stops, now
+  miniLine(r, now) {
+    const T0 = 420, T1 = 1260, pos = t => Math.min(100, Math.max(0, (FIELD.minOfDay(t) - T0) / (T1 - T0) * 100));
+    const stops = (r?.stops || []).filter(s => FIELD.minOfDay(s.b) > T0 && FIELD.minOfDay(s.a) < T1);
+    return `<span class="fd-mini" aria-hidden="true">${stops.map(s => `<b class="fd-seg ${FIELD.kind(s)}" style="left:${pos(s.a).toFixed(1)}%;width:${Math.max(0.8, pos(s.b) - pos(s.a)).toFixed(1)}%"></b>`).join('')}${now ? `<i style="left:${pos(new Date().toISOString()).toFixed(1)}%"></i>` : ''}</span><span class="fd-mini-h" aria-hidden="true"><span>7</span><span>10</span><span>13</span><span>16</span><span>19</span><span>21</span></span>`;
+  },
   nowCards(D) {
     if (!D.withToday || !D.live.length) return '';
+    const t = FIELD.today(), WORD = { visit: 'У клиента', stop: 'Стоит', drive: 'В пути', off: 'Нет связи' };
     const cards = D.live.map(l => {
       const open = D.visits.find(v => v.device_id === l.device_id && !v.ended_at), age = Date.now() - Date.parse(l.fix_at || 0);
       const k = open ? 'visit' : age > 30 * 60000 ? 'off' : l.speed >= 3 ? 'drive' : 'stop';
-      const line = k === 'visit' ? `${FIELD.ic('store')}<span>у клиента <b>${esc(open.place_name)}</b>${open.planned ? '' : ' <em class="fd-tag out">вне маршрута</em>'}</span><b class="fd-timer" data-since="${esc(open.started_at)}"></b>`
-        : k === 'stop' ? `${FIELD.ic('pause')}<span>стоит${l.near_name ? ` у <b>${esc(l.near_name)}</b>` : ' не у клиента'}</span><b class="fd-timer" data-since="${esc(l.stop_since || l.fix_at)}"></b>`
-          : k === 'drive' ? `${FIELD.ic('car')}<span>в пути</span><b>${Math.round(l.speed)} км/ч</b>`
-            : `${FIELD.ic('off')}<span>нет связи с ${FIELD.hm(l.fix_at)}</span><b>${FIELD.mins(age)}</b>`;
+      const r = D.rows.find(x => x.device_id === l.device_id && x.day === t), g = FIELD.agg(r ? [r] : []);
+      const L = (r?.linko && Object.keys(r.linko).length ? r.linko : D.routes.find(x => x.agent_id === l.agent_id)?.stats) || {};
+      const line = k === 'visit' ? `${FIELD.ic('store')}<span><b>${esc(open.place_name)}</b>${open.planned ? '' : ' <em class="fd-tag out">вне маршрута</em>'}</span><b class="fd-timer" data-since="${esc(open.started_at)}"></b>`
+        : k === 'stop' ? `${FIELD.ic('pause')}<span>${l.near_name ? `у <b>${esc(l.near_name)}</b>` : 'не у клиента'}</span><b class="fd-timer" data-since="${esc(l.stop_since || l.fix_at)}"></b>`
+          : k === 'drive' ? `${FIELD.ic('car')}<span>едет</span><b class="fd-big">${Math.round(l.speed)} <small>км/ч</small></b>`
+            : `${FIELD.ic('off')}<span>с ${FIELD.hm(l.fix_at)}</span><b class="fd-big">${FIELD.mins(age)}</b>`;
+      const last = (r?.stops || []).filter(FIELD.isClient).slice(-3).reverse();
       const o = { visit: 0, stop: 1, drive: 2, off: 3 }[k];
-      return { o, t: open ? Date.parse(open.started_at) : 0, html: `<button type="button" class="fd-now ${k}" data-fda="${esc(l.device_id)}" data-day="${FIELD.today()}"><span class="fd-now-n">${esc(l.device_name)}</span><span class="fd-now-s">${line}</span></button>` };
+      return { o, t: open ? Date.parse(open.started_at) : 0, html: `<button type="button" class="fd-ac ${k}" data-fda="${esc(l.device_id)}" data-day="${t}">
+        <span class="fd-ac-top"><span class="fd-av" aria-hidden="true">${FIELD.initials(l.device_name)}</span><span class="fd-ac-name"><b>${esc(l.device_name)}</b>${l.agent_name ? `<small>${esc(l.agent_name)}</small>` : ''}</span><span class="fd-pill">${WORD[k]}</span></span>
+        <span class="fd-ac-now">${line}</span>
+        ${FIELD.miniLine(r, true)}
+        <span class="fd-ac-stats">${L.plan ? FIELD.ring(L.done || 0, L.plan) : ''}
+          <span class="fd-st"><b>${g.visits}</b><small>визитов</small></span>
+          <span class="fd-st"><b>${FIELD.mins(g.at)}</b><small>у клиентов</small></span>
+          <span class="fd-st"><b>${r?.km != null ? Math.round(r.km) : '—'}</b><small>км сегодня</small></span></span>
+        <span class="fd-ac-money"><span class="${L.orders ? 'ok' : ''}">заказы <b>${FIELD.money(L.orders)}</b></span><span class="${L.paid ? 'ok' : ''}">оплаты <b>${FIELD.money(L.paid)}</b></span>${L.rejections ? `<span class="bad">отказы <b>${L.rejections}</b></span>` : ''}${g.otherN ? `<span>стоял не у клиентов <b>${FIELD.mins(g.other)}</b></span>` : ''}</span>
+        ${last.length ? `<span class="fd-ac-last">${last.map(s => `<span><i class="${FIELD.kind(s)}"></i>${FIELD.hm(s.a)} ${esc(s.name)} · ${FIELD.mins(FIELD.stopMs(s))}</span>`).join('')}</span>` : '<span class="fd-ac-last mut">визитов к клиентам сегодня ещё нет</span>'}
+        <span class="fd-ac-more">Подробнее →</span></button>` };
     }).sort((x, y) => x.o - y.o || x.t - y.t);
-    return `<section class="fd-sec"><h3>Сейчас <small>нажмите на агента — откроется его день</small></h3><div class="fd-nowgrid">${cards.map(c => c.html).join('')}</div></section>`;
+    return `<section class="fd-sec fd-nowsec"><h3>Сейчас <small>карточка — сегодняшний день агента; нажмите, чтобы открыть подробно</small></h3><div class="fd-acgrid">${cards.map(c => c.html).join('')}</div></section>`;
+  },
+
+  // km for the fuel: per agent over the period (the whole day by GPS — from home and back home), with a cost estimate
+  FUEL: { petrol: ['Бензин', 'л'], propane: ['Пропан', 'л'], methane: ['Метан', 'м³'] },
+  fuelOf: id => { try { return JSON.parse(localStorage.getItem('fd_fuel_' + id) || '{}'); } catch { return {}; } },
+  mileage(D) {
+    const rows = D.agents.map(a => {
+      const rs = D.rows.filter(r => r.device_id === a.id && r.km != null);
+      const km = rs.reduce((s, r) => s + (+r.km || 0), 0), max = rs.reduce((m, r) => Math.max(m, +r.km || 0), 0);
+      const f = FIELD.fuelOf(a.id), cost = f.rate > 0 && f.price > 0 ? km * f.rate / 100 * f.price : null;
+      return { a, rs, km, max, f, cost };
+    }).filter(x => x.rs.length);
+    if (!rows.length) return '';
+    const tot = rows.reduce((s, x) => s + x.km, 0), totCost = rows.reduce((s, x) => s + (x.cost || 0), 0);
+    const [a, b] = D.range;
+    return `<section class="fd-sec"><h3>Пробег и топливо <small>${a === b ? FIELD.dlabel(a, true) : FIELD.dlabel(a) + ' – ' + FIELD.dlabel(b)} · весь день по GPS: из дома, по клиентам и обратно домой</small></h3>
+      <div class="tscroll"><table class="fd-tab fd-km"><thead><tr><th scope="col">Агент</th><th scope="col">Дней с движением</th><th scope="col">Км за период</th><th scope="col">В среднем за день</th><th scope="col">Самый длинный день</th><th scope="col">Топливо</th><th scope="col">Расход на 100 км</th><th scope="col">Цена, сум</th><th scope="col">Расходы, сум</th></tr></thead><tbody>
+      ${rows.map(x => `<tr><th scope="row"><button type="button" class="fd-link" data-fda="${esc(x.a.id)}">${esc(x.a.name)}</button></th><td>${x.rs.length}</td><td><b>${UI.fmt0(Math.round(x.km))}</b> км</td><td>${Math.round(x.km / x.rs.length)} км</td><td>${Math.round(x.max)} км</td>
+        <td><select data-fuel="${esc(x.a.id)}" data-k="type" aria-label="Топливо: ${esc(x.a.name)}">${Object.entries(FIELD.FUEL).map(([v, [n]]) => `<option value="${v}" ${(x.f.type || 'petrol') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></td>
+        <td><input type="number" min="0" step="0.1" inputmode="decimal" data-fuel="${esc(x.a.id)}" data-k="rate" value="${x.f.rate ?? ''}" placeholder="${FIELD.FUEL[x.f.type || 'petrol'][1]}" aria-label="Расход на 100 км: ${esc(x.a.name)}"></td>
+        <td><input type="number" min="0" step="100" inputmode="numeric" data-fuel="${esc(x.a.id)}" data-k="price" value="${x.f.price ?? ''}" placeholder="за ${FIELD.FUEL[x.f.type || 'petrol'][1]}" aria-label="Цена топлива: ${esc(x.a.name)}"></td>
+        <td><b>${x.cost != null ? UI.fmt0(Math.round(x.cost)) : '—'}</b></td></tr>`).join('')}
+      </tbody><tfoot><tr><th scope="row">Итого</th><td></td><td><b>${UI.fmt0(Math.round(tot))}</b> км</td><td colspan="5"></td><td><b>${totCost ? UI.fmt0(Math.round(totCost)) : '—'}</b></td></tr></tfoot></table></div>
+      <p class="mut fd-note">Пробег — по GPS-трекеру за весь день (00:00–24:00), включая дорогу из дома и домой. Для периода плана нажмите «План 16–15». Расход и цену впишите один раз — они запомнятся на этом устройстве для каждого агента. Сегодняшний пробег обновляется каждые 15 минут.</p></section>`;
+  },
+
+  // the agent opened: his numbers over the period and, over several days, km and visits by day
+  agentBlock(D, devId) {
+    const rows = D.rows.filter(r => r.device_id === devId);
+    let html = FIELD.kpis({ rows, days: D.days });
+    const days = D.days.filter(d => rows.some(r => r.day === d));
+    if (days.length > 1) {
+      const by = d => rows.find(r => r.day === d), mk = Math.max(1, ...days.map(d => +by(d)?.km || 0)), mv = Math.max(1, ...days.map(d => FIELD.agg([by(d)]).visits));
+      const bars = (label, val, max) => `<div class="fd-chart"><h4>${label}</h4><div class="fd-bars">${days.map(d => { const v = val(by(d)); return `<button type="button" class="fd-bar1" data-fda="${esc(devId)}" data-day="${d}" title="${FIELD.dlabel(d, true)}: ${v}"><span class="v">${v}</span><span class="b" style="height:${Math.max(2, v / max * 100).toFixed(0)}%"></span><span class="d">${d.slice(8)}</span></button>`; }).join('')}</div></div>`;
+      html += `<div class="fd-charts">${bars('Пробег по дням, км', r => Math.round(+r?.km || 0), mk)}${bars('Визиты к клиентам по дням', r => FIELD.agg([r]).visits, mv)}</div>`;
+    }
+    return html;
   },
 
   table(D) {
@@ -187,8 +252,9 @@ const FIELD = {
     const r = D.rows.find(x => x.device_id === devId && x.day === day), a = D.agents.find(x => x.id === devId);
     const days = D.days.filter(d => D.rows.some(x => x.device_id === devId && x.day === d));
     const nav = days.length > 1 ? `<div class="fd-dnav" role="group" aria-label="День">${days.map(d => `<button type="button" class="fd-chip ${d === day ? 'on' : ''}" data-fda="${esc(devId)}" data-day="${d}" aria-pressed="${d === day}">${FIELD.dlabel(d)}</button>`).join('')}</div>` : '';
-    const head = `<div class="fd-dhead"><div><h3>${esc(a?.name || '')} · ${FIELD.dlabel(day, true)}</h3>${a?.linko ? `<small class="mut">${esc(a.linko)}</small>` : ''}</div><button type="button" class="btn gray sm" id="fdClose">${FIELD.ic('x')} Закрыть</button></div>`;
-    if (!r) return `<section class="fd-sec fd-day" id="fdDay">${head}${nav}<p class="mut">За этот день данных нет.</p></section>`;
+    const head = `<div class="fd-dhead"><div class="fd-dname"><span class="fd-av" aria-hidden="true">${FIELD.initials(a?.name)}</span><span><h3>${esc(a?.name || '')}</h3>${a?.linko ? `<small class="mut">${esc(a.linko)}</small>` : ''}</span></div><button type="button" class="btn gray sm" id="fdClose">${FIELD.ic('x')} Закрыть</button></div>`;
+    const agentBox = FIELD.agentBlock(D, devId);
+    if (!r) return `<section class="fd-sec fd-day" id="fdDay">${head}${agentBox}${nav}<p class="mut">За этот день данных нет.</p></section>`;
     const k = FIELD.agg([r]), L = r.linko || {};
     const T0 = 7 * 60, T1 = 21 * 60, pos = t => Math.min(100, Math.max(0, (FIELD.minOfDay(t) - T0) / (T1 - T0) * 100));
     const stops = (r.stops || []).filter(s => FIELD.minOfDay(s.b) > T0 && FIELD.minOfDay(s.a) < T1);
@@ -200,7 +266,7 @@ const FIELD = {
       const ms = FIELD.stopMs(s), outs = (s.out || []).map(t => { const [c, w] = FIELD.OUT[t.type] || ['', t.type]; return `<span class="fd-out ${c}">${w}: ${esc(String(t.text).replace(/^Оформили заказ |^Оплатили |^Отказ: |^Обслуживание заняло /, ''))}</span>`; }).join('');
       return `<li class="${FIELD.kind(s)}"><span class="fd-n">${i + 1}</span><span class="fd-t">${FIELD.hm(s.a)}–${FIELD.hm(s.b)}</span><span class="fd-c">${FIELD.isClient(s) ? `<b>${esc(s.name)}</b>${s.planned ? ' <em class="fd-tag">маршрут</em>' : ' <em class="fd-tag out">вне маршрута</em>'}` : `<span class="mut">${r.first_at && Date.parse(s.a) < Date.parse(r.first_at) - 60000 ? 'до первой поездки' : r.last_at && Date.parse(s.b) > Date.parse(r.last_at) + 60000 ? 'после последней поездки' : 'стоял не у клиента'}</span>`}</span><span class="fd-d ${FIELD.isClient(s) && ms >= 45 * 60000 ? 'neg' : ''}">${FIELD.mins(ms)}</span>${outs ? `<span class="fd-outs">${outs}</span>` : FIELD.isClient(s) ? `<span class="fd-outs mut">${Date.now() - Date.parse(s.b) > 2 * 3600000 ? 'в LINKO ничего не отмечено' : 'ждём, что отметят в LINKO'}</span>` : ''}</li>`;
     }).join('');
-    return `<section class="fd-sec fd-day" id="fdDay">${head}${nav}
+    return `<section class="fd-sec fd-day" id="fdDay">${head}${agentBox}<h4 class="fd-h4">День: ${FIELD.dlabel(day, true)}</h4>${nav}
       <div class="fd-dstats"><span>визитов <b>${k.visits}</b></span><span>у клиентов <b>${FIELD.mins(k.at)}</b></span><span>не у клиентов <b>${FIELD.mins(k.other)}</b></span><span>в пути <b>${r.move_s ? FIELD.mins(r.move_s * 1000) : '—'}</b></span><span>пробег <b>${r.km != null ? Math.round(r.km) + ' км' : '—'}</b></span><span>движение <b>${FIELD.hm(r.first_at)}–${FIELD.hm(r.last_at)}</b></span>${L.plan ? `<span>маршрут LINKO <b>${L.done || 0}/${L.plan}</b></span><span>заказы <b>${FIELD.money(L.orders)}</b></span><span>оплаты <b>${FIELD.money(L.paid)}</b></span>${L.rejections ? `<span>отказы <b>${L.rejections}</b></span>` : ''}` : ''}</div>
       ${bar}
       <div class="fd-dgrid"><ol class="fd-stops">${list || '<li class="mut">Остановок нет.</li>'}</ol><div class="fd-map" id="fdMap" role="region" aria-label="Карта остановок"></div></div>
@@ -282,7 +348,32 @@ const FIELD = {
 .fd-feed{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13px;max-height:420px;overflow:auto}
 .fd-feed li{display:flex;gap:10px;padding:5px 8px;border-radius:8px;border-left:3px solid transparent}.fd-feed li.warn{border-left-color:var(--st-warn)}.fd-feed li.bad{border-left-color:var(--st-crit)}.fd-feed li span:last-child{flex:1;min-width:0;overflow-wrap:anywhere}
 .fd-set label{display:block;margin:10px 0 4px;font-weight:600}.fd-set input[type=text],.fd-set input[type=number]{width:100%}
-@media (prefers-reduced-motion:reduce){.fd-now,.fd-seg-c button{transition:none}.fd-now:hover{transform:none}}`;
+.fd-acgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr));gap:12px}
+.fd-ac{all:unset;box-sizing:border-box;cursor:pointer;display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:16px;min-width:0;position:relative;overflow:hidden;background:linear-gradient(160deg,color-mix(in srgb,var(--ac,#8e8e93) 16%,var(--card)) 0%,var(--card) 55%);border:1px solid color-mix(in srgb,var(--ac,#8e8e93) 35%,var(--line));transition:transform .18s,box-shadow .18s}
+.fd-ac:hover{transform:translateY(-2px);box-shadow:0 10px 28px -12px color-mix(in srgb,var(--ac,#000) 60%,transparent)}.fd-ac:focus-visible{outline:2px solid var(--tint);outline-offset:2px}
+.fd-ac.visit{--ac:var(--tint)}.fd-ac.stop{--ac:var(--st-warn,#d98a00)}.fd-ac.drive{--ac:var(--st-good,#30a46c)}.fd-ac.off{--ac:#8e8e93}
+.fd-ac-top{display:flex;align-items:center;gap:10px;min-width:0}.fd-ac-name{flex:1;min-width:0;display:flex;flex-direction:column}.fd-ac-name b{font-size:15px;overflow-wrap:anywhere}.fd-ac-name small{font-size:12px;color:var(--text-2,var(--muted))}
+.fd-av{flex:none;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:14px;color:#fff;background:var(--ac,var(--tint));box-shadow:0 0 0 3px color-mix(in srgb,var(--ac,var(--tint)) 30%,transparent)}
+.fd-ac.visit .fd-av{animation:fdPulse 2s ease-in-out infinite}@keyframes fdPulse{50%{box-shadow:0 0 0 7px color-mix(in srgb,var(--ac) 12%,transparent)}}
+.fd-pill{flex:none;font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;background:color-mix(in srgb,var(--ac) 20%,transparent);color:var(--text)}
+.fd-ac-now{display:flex;align-items:center;gap:8px;font-size:14px;padding:8px 10px;border-radius:10px;background:var(--fill)}.fd-ac-now>span{flex:1;min-width:0;overflow-wrap:anywhere}
+.fd-ac .fd-timer{font-size:22px;font-weight:700;letter-spacing:.5px}.fd-big{font-size:18px}.fd-big small{font-size:12px;font-weight:400}
+.fd-mini{position:relative;display:block;height:10px;border-radius:5px;background:var(--fill);overflow:hidden}.fd-mini .fd-seg{top:0;bottom:0;border-radius:0}.fd-mini i{position:absolute;top:0;bottom:0;width:2px;background:var(--text)}
+.fd-mini-h{display:flex;justify-content:space-between;font-size:10px;color:var(--text-2,var(--muted));margin-top:-6px}
+.fd-ac-stats{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.fd-st{display:flex;flex-direction:column;line-height:1.15}.fd-st b{font-size:18px;font-variant-numeric:tabular-nums}.fd-st small{font-size:11px;color:var(--text-2,var(--muted))}
+.fd-ring{display:inline-flex;align-items:center;gap:6px}.fd-ring svg{width:40px;height:40px}.fd-ring circle{fill:none;stroke-width:5}.fd-ring .bg{stroke:var(--fill)}.fd-ring .fg{stroke:var(--st-good,#30a46c);stroke-linecap:round}
+.fd-ring b{font-size:18px;font-variant-numeric:tabular-nums;line-height:1}.fd-ring small{font-size:12px;font-weight:400;color:var(--text-2,var(--muted))}
+.fd-ac-money{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px;color:var(--text-2,var(--muted))}.fd-ac-money b{color:var(--text);font-variant-numeric:tabular-nums}.fd-ac-money .ok b{color:var(--st-good-text)}.fd-ac-money .bad b{color:var(--st-crit-text)}
+.fd-ac-last{display:flex;flex-direction:column;gap:3px;font-size:12px;border-top:1px solid var(--line);padding-top:8px}.fd-ac-last>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fd-ac-last i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}.fd-ac-last i.sale{background:var(--st-good)}.fd-ac-last i.client{background:var(--tint)}.fd-ac-last i.rej{background:var(--st-crit)}
+.fd-ac-more{font-size:12px;font-weight:600;color:var(--tint);align-self:flex-end}
+.fd-dname{display:flex;align-items:center;gap:10px}.fd-dname .fd-av{--ac:var(--tint)}.fd-h4{margin:14px 0 2px;font-size:15px}
+.fd-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:14px;margin:0 0 8px}.fd-chart{background:var(--fill);border-radius:12px;padding:10px 12px;min-width:0}.fd-chart h4{margin:0 0 6px;font-size:13px;font-weight:600}
+.fd-bars{display:flex;align-items:flex-end;gap:3px;height:130px;overflow-x:auto}.fd-bar1{all:unset;cursor:pointer;flex:1 0 18px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:2px}
+.fd-bar1 .b{width:100%;max-width:26px;border-radius:4px 4px 0 0;background:var(--tint);min-height:2px}.fd-bar1:hover .b{filter:brightness(1.2)}.fd-bar1:focus-visible{outline:2px solid var(--tint)}
+.fd-bar1 .v,.fd-bar1 .d{font-size:10px;font-variant-numeric:tabular-nums;color:var(--text-2,var(--muted))}
+.fd-km input,.fd-km select{width:96px;min-height:34px}.fd-km tfoot th,.fd-km tfoot td{font-weight:600;border-top:2px solid var(--line)}
+@media (prefers-reduced-motion:reduce){.fd-now,.fd-seg-c button,.fd-ac{transition:none}.fd-now:hover,.fd-ac:hover{transform:none}.fd-ac.visit .fd-av{animation:none}}`;
     document.head.appendChild(s);
   },
 
@@ -339,7 +430,7 @@ EXT_PAGES.field = async el => {
   FIELD.css();
   const S = FIELD.st;
   S.period = FIELD.ls('period') || 'today';
-  const PER = [['today', 'Сегодня'], ['yesterday', 'Вчера'], ['7', '7 дней'], ['30', '30 дней'], ['custom', 'Период']];
+  const PER = [['today', 'Сегодня'], ['yesterday', 'Вчера'], ['7', '7 дней'], ['30', '30 дней'], ['plan', 'План 16–15'], ['custom', 'Период']];
   el.innerHTML = `<div class="page-head"><div><h2>Пульс</h2><div class="sub" id="fdSub">Загружаю…</div></div>
     <div class="actions"><button class="btn gray" id="fdBell" type="button" hidden>${FIELD.ic('bell')} Уведомления</button><button class="btn gray" id="fdSet" type="button" hidden>${FIELD.ic('gear')} Настройки</button><a class="btn gray" href="#/gps">${FIELD.ic('map')} Карта</a></div></div>
     <div class="fd-bar"><div class="fd-seg-c" role="group" aria-label="Период">${PER.map(([v, t]) => `<button type="button" data-p="${v}" aria-pressed="${S.period === v}">${t}</button>`).join('')}</div>
@@ -379,7 +470,7 @@ EXT_PAGES.field = async el => {
     if (!focus && S.agent) { const last = [...D.days].reverse().find(d => view.rows.some(r => r.day === d)); if (last) focus = { device: S.agent, day: last }; }
     const body = $('#fdBody', el), keep = soft ? window.scrollY : null;
     const empty = !view.agents.length ? UI.empty('Агентов не видно', FIELD.isMgr() ? 'Выберите выше, чьих агентов показать, или другой период.' : 'За этот период данных нет, или за вами пока не закреплены агенты с GPS.') : '';
-    body.innerHTML = empty || `${FIELD.kpis(view)}${FIELD.nowCards(view)}${focus ? FIELD.dayView(D, focus.device, focus.day) : ''}${FIELD.table(view)}${FIELD.heat(view)}${FIELD.feed(view)}
+    body.innerHTML = empty || `${FIELD.nowCards(view)}${focus ? FIELD.dayView(D, focus.device, focus.day) : ''}${FIELD.table(view)}${FIELD.mileage(view)}${FIELD.heat(view)}${FIELD.feed(view)}
       ${D.noHistory ? '<p class="mut fd-note">История по дням (вчера, неделя, месяц) ещё не подключена — видно только сегодня.</p>' : ''}`;
     FIELD.paintTimers(body);
     if (focus) FIELD.drawMap(D, focus.device, focus.day);
@@ -395,6 +486,13 @@ EXT_PAGES.field = async el => {
     const c = e.target.closest('[data-fda]');
     if (c && D) { openDay(c.dataset.fda, c.dataset.day); return; }
     if (e.target.closest('#fdClose')) { S.focus = null; S.agent = ''; draw(); }
+  });
+  el.addEventListener('change', e => {
+    const f = e.target.closest('[data-fuel]'); if (!f) return;
+    const id = f.dataset.fuel, cur = FIELD.fuelOf(id);
+    cur[f.dataset.k] = f.dataset.k === 'type' ? f.value : (f.value === '' ? null : +f.value);
+    try { localStorage.setItem('fd_fuel_' + id, JSON.stringify(cur)); } catch { /* private mode */ }
+    draw(true);
   });
   $('#fdFrom', el).onchange = e => { S.from = e.target.value; S.focus = null; draw(); };
   $('#fdTo', el).onchange = e => { S.to = e.target.value; S.focus = null; draw(); };
