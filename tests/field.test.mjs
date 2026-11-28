@@ -117,6 +117,36 @@ test('LINKO route stops and the outcome of a visit (Tashkent times)', () => {
   assert.match(F.msgExit('A', v, [], true, false), /ничего не отмечено/);
 });
 
+test('a day from the GPS track history: client stops, other stops, km, first and last move', () => {
+  const pt = (lat, lon) => ({ latitude: lat, longitude: lon });
+  const h = { distance_sum: '60.95 Км', move_duration: '2ч 27мин 26с', stop_duration: '10ч 37мин 0с', items: [
+    { status: 3, raw_time: '2026-11-27 07:21:59' },
+    { status: 2, raw_time: '2026-11-27 07:21:59', time_seconds: 4987, items: [pt(40.30, 71.70)] },               // home: no client
+    { status: 1, raw_time: '2026-11-27 08:45:06', time_seconds: 1819, items: [] },
+    { status: 2, raw_time: '2026-11-27 09:15:25', time_seconds: 1724, items: [pt(40.38001, 71.78001), pt(40.38003, 71.78002), pt(40.5, 71.5)] },
+    { status: 1, raw_time: '2026-11-27 09:44:09', time_seconds: 730, items: [] },
+    { status: 2, raw_time: '2026-11-27 09:56:19', time_seconds: 60, items: [pt(40.39, 71.79)] },                // too short
+    { status: 1, raw_time: '2026-11-27 18:22:18', time_seconds: 162, items: [] },
+  ] };
+  const d = F.dayFromHistory(h, places, 100, 120);
+  assert.equal(d.km, 60.95);
+  assert.equal(d.move_s, 2 * 3600 + 27 * 60 + 26);
+  assert.equal(d.first_at, '2026-11-27T03:45:06.000Z');
+  assert.equal(d.last_at, '2026-11-27T13:25:00.000Z');
+  assert.equal(d.stops.length, 2);
+  assert.deepEqual([d.stops[0].key, d.stops[1].key, d.stops[1].planned], ['', 'm1', true]);
+  assert.equal(d.stops[1].a, '2026-11-27T04:15:25.000Z');
+  assert.equal(d.stops[1].b, '2026-11-27T04:44:09.000Z');
+});
+
+test('a LINKO mark goes to the visit nearest in time, not to both visits of the same client', () => {
+  const t = { type: 'order', text: 'Оформили заказ №1: 10 USD', status: 'done', at: Date.parse('2026-11-27T10:20:00Z') };
+  const s1 = { a: '2026-11-27T10:00:00Z', b: '2026-11-27T10:25:00Z', lat: 0, lon: 0, key: 'm1', name: 'A', planned: true, out: [t] };
+  const s2 = { ...s1, a: '2026-11-27T11:00:00Z', b: '2026-11-27T11:10:00Z', out: [t] };
+  const r = F.assignOutcomes([s1, s2]);
+  assert.equal(r[0].out.length, 1); assert.equal(r[1].out.length, 0);
+});
+
 test('messages escape names', () => {
   const v = openV({ place_name: '<b>x</b> & y' });
   assert.match(F.msgEnter('A', v, T0 + 5 * 60000), /&lt;b&gt;x&lt;\/b&gt; &amp; y/);

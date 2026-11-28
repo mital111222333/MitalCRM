@@ -151,6 +151,42 @@ export function outcomeOf(v: Visit, stops: Stop[]): Task[] {
   return out.sort((x, y) => (x.at || 0) - (y.at || 0));
 }
 
+// ---------- a past (or today's) day from the GPS track history ----------
+// GPSWOX get_history: {distance_sum: "60.95 Км", move_duration, stop_duration, items: [{status: 1 drive | 2 stop | 3 start | 4 end,
+// raw_time: "2026-11-27 13:56:11" (Tashkent), time_seconds, items: [{latitude, longitude}…]}]}
+export type DayStop = { a: string; b: string; lat: number; lon: number; key: string; name: string; planned: boolean; out: Task[] };
+export type GpsDay = { km: number; move_s: number; stop_s: number; first_at: string | null; last_at: string | null; stops: DayStop[] };
+const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : NaN; };
+export function dayFromHistory(h: any, places: Place[], radius: number, minStopS: number): GpsDay {
+  const items: any[] = Array.isArray(h?.items) ? h.items : [];
+  const at = (x: any) => tashMs(String(x?.raw_time || '').replace(' ', 'T'));
+  let first: number | null = null, last: number | null = null;
+  const stops: DayStop[] = [];
+  for (const g of items) {
+    const a = at(g), dur = +g.time_seconds || 0;
+    if (a == null) continue;
+    if (g.status === 1 && dur > 0) { if (first == null || a < first) first = a; if (last == null || a + dur * 1000 > last) last = a + dur * 1000; }
+    if (g.status !== 2 || dur < minStopS) continue;
+    const pts = (g.items || []).map((p: any) => [+(p.latitude ?? p.lat), +(p.longitude ?? p.lng)]).filter((p: number[]) => isFinite(p[0]) && isFinite(p[1]) && p[0] && p[1]);
+    if (!pts.length) continue;
+    const lat = median(pts.map((p: number[]) => p[0])), lon = median(pts.map((p: number[]) => p[1]));
+    const n = nearest(places, lat, lon, radius);
+    stops.push({ a: new Date(a).toISOString(), b: new Date(a + dur * 1000).toISOString(), lat, lon, key: n?.place.key || '', name: n?.place.name || '', planned: !!n?.place.planned, out: [] });
+  }
+  return { km: parseFloat(String(h?.distance_sum ?? '0').replace(',', '.')) || 0, move_s: parseStop(h?.move_duration), stop_s: parseStop(h?.stop_duration), first_at: first == null ? null : new Date(first).toISOString(), last_at: last == null ? null : new Date(last).toISOString(), stops };
+}
+
+// one LINKO mark belongs to one stop: the one nearest in time (two visits to the same client in a day must not both show it)
+export function assignOutcomes(stops: DayStop[]): DayStop[] {
+  const gap = (s: DayStop, at: number) => { const a = Date.parse(s.a), b = Date.parse(s.b); return at < a ? a - at : at > b ? at - b : 0; };
+  const best = new Map<string, { i: number; g: number }>();
+  stops.forEach((s, i) => s.out.forEach(t => {
+    const id = `${t.type}|${t.text}|${t.at}`, g = gap(s, t.at || 0), cur = best.get(id);
+    if (!cur || g < cur.g) best.set(id, { i, g });
+  }));
+  return stops.map((s, i) => ({ ...s, out: s.out.filter(t => best.get(`${t.type}|${t.text}|${t.at}`)?.i === i) }));
+}
+
 // ---------- texts of the Telegram messages ----------
 export const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 export const hm = (ms: number) => new Date(ms).toLocaleTimeString('ru-RU', { timeZone: 'Asia/Tashkent', hour: '2-digit', minute: '2-digit' });

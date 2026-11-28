@@ -229,6 +229,61 @@ async function tick(cfg: any, now: number) {
   return { owner: cfg.owner_id, gps: src, devices: devices.length, agents: agentList.length, places: mPlaces.length + poiPlaces.length, open: visits.filter(v => !v.ended_at).length, log };
 }
 
+// ---------- history: a whole day per device from the GPS track (field_days) ----------
+async function ghGz(path: string): Promise<any | null> {
+  const g = GH(); if (!g.token) return null;
+  const r = await fetch(`https://api.github.com/repos/${g.owner}/${g.repo}/contents/${path}`, {
+    headers: { Authorization: 'Bearer ' + g.token, Accept: 'application/vnd.github.raw', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'field-watch' }, signal: AbortSignal.timeout(20000),
+  });
+  if (r.status !== 200) { await r.body?.cancel(); return null; }
+  const buf = new Uint8Array(await r.arrayBuffer());
+  const gz = buf[0] === 0x1f && buf[1] === 0x8b;
+  const text = gz ? await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text() : new TextDecoder().decode(buf);
+  try { return JSON.parse(text); } catch { return null; }
+}
+const linkoStats = (stops: F.Stop[], s: any) => ({
+  plan: stops.length, done: stops.filter(x => x.tasks.some(t => t.status === 'done')).length, orders: +s?.order_total_price || 0,
+  paid: +s?.client_transaction_total_price || 0, returns: +s?.order_return_total_price || 0, rejections: stops.flatMap(x => x.tasks).filter(t => t.type === 'rejection').length,
+});
+
+async function history(cfg: any, day: string, now: number) {
+  const { data: srow } = await SB.from('field_state').select('data').eq('owner_id', cfg.owner_id).maybeSingle();
+  const st: any = srow?.data || {};
+  if (!st.gps?.url) await gpsNow(st, now);
+  if (!st.gps?.url) throw new Error('GPS address unknown');
+  await poisNow(st, now);
+  // LINKO of that day: today — linko-visits.json, a past day — the archive the auto-loader keeps
+  const src = day === localDay(now) ? await ghRead('linko-visits.json').then(r => r.json) : await ghGz(`archive/${day.slice(0, 4)}/${day.slice(5, 7)}/${day}/visits.json.gz`);
+  const lv: Record<string, { name: string; stops: F.Stop[]; stats: any }> = {};
+  if (src?.day === day) for (const [id, a] of Object.entries<any>(src.agents || {})) lv[id] = { name: String(a.name || id), stops: F.stopsOf(a.plan).filter(s => !F.SELF_RE.test(s.name)), stats: a.stats || {} };
+  const allStops = Object.values(lv).flatMap(a => a.stops);
+  const mPlaces: F.Place[] = [...new Map(allStops.map(s => ['m' + s.id, { key: 'm' + s.id, name: s.name, address: s.address, lat: s.lat, lon: s.lon, planned: false }])).values()];
+  const poiPlaces: F.Place[] = (st.pois || []).filter((p: any[]) => !F.SELF_RE.test(p[0]) && !mPlaces.some(m => F.dist(m.lat, m.lon, p[1], p[2]) < 40)).map((p: any[]) => ({ key: 'p' + p[0], name: p[0], address: '', lat: p[1], lon: p[2], planned: false }));
+  const { data: devs } = await SB.from('field_live').select('device_id,device_name,agent_id,agent_name,agent_user,supervisor_id').eq('owner_id', cfg.owner_id);
+  const hide = new Set<string>((cfg.hide || []).map(String));
+  const rows: any[] = [], errors: string[] = [];
+  for (const d of (devs || []).filter((x: any) => !hide.has(String(x.device_id)))) {
+    try {
+      const r = await fetch(`${st.gps.url}/api/get_history?lang=ru&user_api_hash=${encodeURIComponent(st.gps.hash)}&device_id=${encodeURIComponent(d.device_id)}&from_date=${day}&from_time=00:00&to_date=${day}&to_time=23:59`, { signal: AbortSignal.timeout(30000) });
+      if (!r.ok) { await r.body?.cancel(); errors.push(`${d.device_name}: GPS ${r.status}`); continue; }
+      const h = await r.json();
+      const route: F.Stop[] = (d.agent_id && lv[d.agent_id]?.stops) || [];
+      const places = [...route.map(s => ({ key: 'm' + s.id, name: s.name, address: s.address, lat: s.lat, lon: s.lon, planned: true })), ...mPlaces.filter(m => !route.some(s => 'm' + s.id === m.key)), ...poiPlaces];
+      const g = F.dayFromHistory(h, places, cfg.radius_m, cfg.min_stop_s);
+      if (!g.stops.length && !g.km) continue; // the device did not work that day
+      for (const s of g.stops) s.out = F.outcomeOf({ device_id: d.device_id, place_key: s.key || 'x', place_name: s.name, planned: s.planned, lat: s.lat, lon: s.lon, started_at: s.a, last_seen_at: s.b, ended_at: s.b, alerts: [] }, allStops);
+      g.stops = F.assignOutcomes(g.stops);
+      rows.push({
+        owner_id: cfg.owner_id, day, device_id: d.device_id, device_name: d.device_name, agent_id: d.agent_id, agent_name: d.agent_id ? lv[d.agent_id]?.name || d.agent_name : d.agent_name,
+        agent_user: d.agent_user, supervisor_id: d.supervisor_id, km: g.km, move_s: g.move_s, stop_s: g.stop_s, first_at: g.first_at, last_at: g.last_at, stops: g.stops,
+        linko: d.agent_id && lv[d.agent_id] ? linkoStats(lv[d.agent_id].stops, lv[d.agent_id].stats) : {}, updated_at: new Date(now).toISOString(),
+      });
+    } catch (e) { errors.push(`${d.device_name}: ${mask((e as Error).message)}`); }
+  }
+  if (rows.length) { const { error } = await SB.from('field_days').upsert(rows); if (error) throw new Error('days: ' + error.message); }
+  return { owner: cfg.owner_id, day, devices: rows.length, linko: Object.keys(lv).length, errors };
+}
+
 // after the watched hours: open visits end at their last GPS point, without messages
 async function closeAll() {
   const { data } = await SB.from('field_visits').select('id,last_seen_at').is('ended_at', null);
@@ -242,6 +297,16 @@ Deno.serve(async req => {
   const { data: ok } = await SB.rpc('field_cron_check', { p: req.headers.get('x-field-cron') || '' });
   if (!ok) return json({ ok: false, error: 'forbidden' }, 403);
   const now = Date.now(), h = localHour(now);
+  const hd = u.searchParams.get('history');
+  if (hd) { // ?history=today | YYYY-MM-DD — rebuild that day from the GPS track (field_days)
+    const day = hd === 'today' ? localDay(now) : hd;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day > localDay(now)) return json({ ok: false, error: 'bad day' }, 400);
+    const { data: cfgs } = await SB.from('field_config').select('*').eq('enabled', true);
+    const res: any[] = [];
+    for (const cfg of cfgs || []) { try { res.push(await history(cfg, day, now)); } catch (e) { res.push({ owner: cfg.owner_id, day, error: mask((e as Error).message) }); } }
+    console.log('field history', JSON.stringify(res));
+    return json({ ok: true, res });
+  }
   if (h < HOURS.from || h >= HOURS.to) return json({ ok: true, idle: true, closed: await closeAll() });
   const { data: cfgs, error } = await SB.from('field_config').select('*').eq('enabled', true);
   if (error) return json({ ok: false, error: error.message }, 500);
