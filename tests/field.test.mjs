@@ -139,6 +139,24 @@ test('a day from the GPS track history: client stops, other stops, km, first and
   assert.equal(d.stops[1].b, '2026-11-27T04:44:09.000Z');
 });
 
+test('working mileage 07–22 from home and back home; a drive across the edge counts by its part inside', () => {
+  const pt = (lat, lon) => ({ latitude: lat, longitude: lon });
+  const home = pt(40.30, 71.70);
+  const h = { items: [
+    { status: 2, raw_time: '2026-11-27 00:00:00', time_seconds: 6 * 3600 + 30 * 60, items: [home] },      // night at home
+    { status: 1, raw_time: '2026-11-27 06:30:00', time_seconds: 3600, distance: '20' },                    // 06:30–07:30: half inside
+    { status: 2, raw_time: '2026-11-27 07:30:00', time_seconds: 3600, items: [pt(40.38, 71.78)] },
+    { status: 1, raw_time: '2026-11-27 08:30:00', time_seconds: 1800, distance: '15.5' },
+    { status: 2, raw_time: '2026-11-27 18:00:00', time_seconds: 3600, items: [pt(40.3001, 71.7001)] },     // back home
+    { status: 1, raw_time: '2026-11-27 21:30:00', time_seconds: 3600, distance: '40' },                    // 21:30–22:30: half inside
+    { status: 1, raw_time: '2026-11-27 23:00:00', time_seconds: 1800, distance: '30' },                    // after 22: not work
+  ] };
+  const w = F.workFromHistory(h, '2026-11-27');
+  assert.equal(w.work_km, 10 + 15.5 + 20);
+  assert.equal(w.home_out, '2026-11-27T01:30:00.000Z');
+  assert.equal(w.home_in, '2026-11-27T13:00:00.000Z');
+});
+
 test('a LINKO mark goes to the visit nearest in time, not to both visits of the same client', () => {
   const t = { type: 'order', text: 'Оформили заказ №1: 10 USD', status: 'done', at: Date.parse('2026-11-27T10:20:00Z') };
   const s1 = { a: '2026-11-27T10:00:00Z', b: '2026-11-27T10:25:00Z', lat: 0, lon: 0, key: 'm1', name: 'A', planned: true, out: [t] };

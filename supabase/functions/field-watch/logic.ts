@@ -176,6 +176,35 @@ export function dayFromHistory(h: any, places: Place[], radius: number, minStopS
   return { km: parseFloat(String(h?.distance_sum ?? '0').replace(',', '.')) || 0, move_s: parseStop(h?.move_duration), stop_s: parseStop(h?.stop_duration), first_at: first == null ? null : new Date(first).toISOString(), last_at: last == null ? null : new Date(last).toISOString(), stops };
 }
 
+// working mileage: the drives between 07:00 and 22:00 (a drive across the edge counts by the part inside), and the home —
+// where the agent stood before his first drive (the night) — with the time he left it and came back to it before 22:00
+export type WorkDay = { work_km: number; home_out: string | null; home_in: string | null };
+export function workFromHistory(h: any, day: string, from = 7, to = 22): WorkDay {
+  const items: any[] = Array.isArray(h?.items) ? h.items : [];
+  const at = (x: any) => tashMs(String(x?.raw_time || '').replace(' ', 'T'));
+  const w0 = Date.parse(`${day}T${String(from).padStart(2, '0')}:00:00+05:00`), w1 = Date.parse(`${day}T${String(to).padStart(2, '0')}:00:00+05:00`);
+  const center = (g: any) => {
+    const pts = (g.items || []).map((p: any) => [+(p.latitude ?? p.lat), +(p.longitude ?? p.lng)]).filter((p: number[]) => isFinite(p[0]) && isFinite(p[1]) && p[0] && p[1]);
+    return pts.length ? [median(pts.map((p: number[]) => p[0])), median(pts.map((p: number[]) => p[1]))] : null;
+  };
+  const drives = items.filter(g => g.status === 1 && +g.time_seconds > 0 && at(g) != null);
+  const stops = items.filter(g => g.status === 2 && at(g) != null);
+  let km = 0;
+  for (const d of drives) {
+    const a = at(d) as number, b = a + (+d.time_seconds) * 1000, ov = Math.min(b, w1) - Math.max(a, w0);
+    if (ov > 0) km += (parseFloat(String(d.distance ?? '0').replace(',', '.')) || 0) * ov / (b - a);
+  }
+  const first = drives.find(d => (at(d) as number) + (+d.time_seconds) * 1000 > w0) || null;
+  const night = first ? [...stops].reverse().find(s => (at(s) as number) <= (at(first) as number)) : null;
+  const home = night ? center(night) : null;
+  let back: number | null = null;
+  if (home && first) for (const s of stops) {
+    const a = at(s) as number, c = center(s);
+    if (a > (at(first) as number) && a < w1 && c && dist(c[0], c[1], home[0], home[1]) <= 300) back = a;
+  }
+  return { work_km: Math.round(km * 100) / 100, home_out: first ? new Date(at(first) as number).toISOString() : null, home_in: back == null ? null : new Date(back).toISOString() };
+}
+
 // one LINKO mark belongs to one stop: the one nearest in time (two visits to the same client in a day must not both show it)
 export function assignOutcomes(stops: DayStop[]): DayStop[] {
   const gap = (s: DayStop, at: number) => { const a = Date.parse(s.a), b = Date.parse(s.b); return at < a ? a - at : at > b ? at - b : 0; };

@@ -270,12 +270,13 @@ async function history(cfg: any, day: string, now: number) {
       const route: F.Stop[] = (d.agent_id && lv[d.agent_id]?.stops) || [];
       const places = [...route.map(s => ({ key: 'm' + s.id, name: s.name, address: s.address, lat: s.lat, lon: s.lon, planned: true })), ...mPlaces.filter(m => !route.some(s => 'm' + s.id === m.key)), ...poiPlaces];
       const g = F.dayFromHistory(h, places, cfg.radius_m, cfg.min_stop_s);
+      const w = F.workFromHistory(h, day);
       if (!g.stops.length && !g.km) continue; // the device did not work that day
       for (const s of g.stops) s.out = F.outcomeOf({ device_id: d.device_id, place_key: s.key || 'x', place_name: s.name, planned: s.planned, lat: s.lat, lon: s.lon, started_at: s.a, last_seen_at: s.b, ended_at: s.b, alerts: [] }, allStops);
       g.stops = F.assignOutcomes(g.stops);
       rows.push({
         owner_id: cfg.owner_id, day, device_id: d.device_id, device_name: d.device_name, agent_id: d.agent_id, agent_name: d.agent_id ? lv[d.agent_id]?.name || d.agent_name : d.agent_name,
-        agent_user: d.agent_user, supervisor_id: d.supervisor_id, km: g.km, move_s: g.move_s, stop_s: g.stop_s, first_at: g.first_at, last_at: g.last_at, stops: g.stops,
+        agent_user: d.agent_user, supervisor_id: d.supervisor_id, km: g.km, work_km: w.work_km, home_out: w.home_out, home_in: w.home_in, move_s: g.move_s, stop_s: g.stop_s, first_at: g.first_at, last_at: g.last_at, stops: g.stops,
         linko: d.agent_id && lv[d.agent_id] ? linkoStats(lv[d.agent_id].stops, lv[d.agent_id].stats) : {}, updated_at: new Date(now).toISOString(),
       });
     } catch (e) { errors.push(`${d.device_name}: ${mask((e as Error).message)}`); }

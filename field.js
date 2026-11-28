@@ -100,6 +100,8 @@ const FIELD = {
   // ---------- numbers ----------
   stopMs: s => Math.max(0, Date.parse(s.b) - Date.parse(s.a)),
   isClient: s => !!s.key,
+  // working mileage (07:00–22:00, from home and back); rows rebuilt before it existed have only the whole day
+  wkm: r => (r?.work_km != null ? +r.work_km : r?.km != null ? +r.km : null),
   minOfDay: t => { const [h, m] = FIELD.hm(t).split(':').map(Number); return h * 60 + m; },
   hhmm: m => (m == null ? '—' : `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.round(m % 60)).padStart(2, '0')}`),
   // a stop outside 07:00–21:00 or longer than 6 h (night at home) is not «стоял не у клиента»
@@ -109,7 +111,7 @@ const FIELD = {
     const k = { visits: 0, clients: new Set(), at: 0, other: 0, otherN: 0, km: 0, kmKnown: false, orders: 0, paid: 0, rej: 0, long: 0, out: 0, noRes: 0, days: new Set(), firsts: [], lasts: [] };
     for (const r of rows) {
       k.days.add(r.day);
-      if (r.km != null) { k.km += +r.km || 0; k.kmKnown = true; }
+      if (FIELD.wkm(r) != null) { k.km += FIELD.wkm(r) || 0; k.kmKnown = true; }
       if (r.first_at) k.firsts.push(FIELD.minOfDay(r.first_at));
       if (r.last_at) k.lasts.push(FIELD.minOfDay(r.last_at));
       const L = r.linko || {};
@@ -140,7 +142,7 @@ const FIELD = {
       ${tile('Время у клиентов', FIELD.mins(k.at), k.visits ? `средний визит ${FIELD.mins(k.avg)}` : '')}
       ${tile('Визитов дольше 30 мин', k.long, '', k.long ? 'warn' : '')}
       ${tile('Стоял не у клиентов', FIELD.mins(k.other), k.otherN ? `${k.otherN} остановок` : '', k.other > 2 * 3600000 * n ? 'bad' : '')}
-      ${tile('Пробег', k.kmKnown ? Math.round(k.km) + ' км' : '—', k.kmKnown && multi ? `${Math.round(k.km / n)} км в день` : '')}
+      ${tile('Рабочий пробег', k.kmKnown ? Math.round(k.km) + ' км' : '—', k.kmKnown && multi ? `${Math.round(k.km / n)} км в день` : '')}
       ${tile('Заказы (LINKO)', FIELD.money(k.orders), k.rej ? `отказов: ${k.rej}` : '', 'ok')}
       ${tile('Оплаты (LINKO)', FIELD.money(k.paid), k.noRes ? `визитов без итога: ${k.noRes}` : '', 'ok')}
     </div>`;
@@ -179,7 +181,7 @@ const FIELD = {
         <span class="fd-ac-stats">${L.plan ? FIELD.ring(L.done || 0, L.plan) : ''}
           <span class="fd-st"><b>${g.visits}</b><small>визитов</small></span>
           <span class="fd-st"><b>${FIELD.mins(g.at)}</b><small>у клиентов</small></span>
-          <span class="fd-st"><b>${r?.km != null ? Math.round(r.km) : '—'}</b><small>км сегодня</small></span></span>
+          <span class="fd-st"><b>${FIELD.wkm(r) != null ? Math.round(FIELD.wkm(r)) : '—'}</b><small>рабочих км</small></span></span>
         <span class="fd-ac-money"><span class="${L.orders ? 'ok' : ''}">заказы <b>${FIELD.money(L.orders)}</b></span><span class="${L.paid ? 'ok' : ''}">оплаты <b>${FIELD.money(L.paid)}</b></span>${L.rejections ? `<span class="bad">отказы <b>${L.rejections}</b></span>` : ''}${g.otherN ? `<span>стоял не у клиентов <b>${FIELD.mins(g.other)}</b></span>` : ''}</span>
         ${last.length ? `<span class="fd-ac-last">${last.map(s => `<span><i class="${FIELD.kind(s)}"></i>${FIELD.hm(s.a)} ${esc(s.name)} · ${FIELD.mins(FIELD.stopMs(s))}</span>`).join('')}</span>` : '<span class="fd-ac-last mut">визитов к клиентам сегодня ещё нет</span>'}
         <span class="fd-ac-more">Подробнее →</span></button>` };
@@ -192,23 +194,23 @@ const FIELD = {
   fuelOf: id => { try { return JSON.parse(localStorage.getItem('fd_fuel_' + id) || '{}'); } catch { return {}; } },
   mileage(D) {
     const rows = D.agents.map(a => {
-      const rs = D.rows.filter(r => r.device_id === a.id && r.km != null);
-      const km = rs.reduce((s, r) => s + (+r.km || 0), 0), max = rs.reduce((m, r) => Math.max(m, +r.km || 0), 0);
+      const rs = D.rows.filter(r => r.device_id === a.id && FIELD.wkm(r) != null);
+      const km = rs.reduce((s, r) => s + (FIELD.wkm(r) || 0), 0), max = rs.reduce((m, r) => Math.max(m, FIELD.wkm(r) || 0), 0), all = rs.reduce((s, r) => s + (+r.km || 0), 0);
       const f = FIELD.fuelOf(a.id), cost = f.rate > 0 && f.price > 0 ? km * f.rate / 100 * f.price : null;
-      return { a, rs, km, max, f, cost };
+      return { a, rs, km, all, max, f, cost };
     }).filter(x => x.rs.length);
     if (!rows.length) return '';
-    const tot = rows.reduce((s, x) => s + x.km, 0), totCost = rows.reduce((s, x) => s + (x.cost || 0), 0);
+    const tot = rows.reduce((s, x) => s + x.km, 0), totAll = rows.reduce((s, x) => s + x.all, 0), totCost = rows.reduce((s, x) => s + (x.cost || 0), 0);
     const [a, b] = D.range;
-    return `<section class="fd-sec"><h3>Пробег и топливо <small>${a === b ? FIELD.dlabel(a, true) : FIELD.dlabel(a) + ' – ' + FIELD.dlabel(b)} · весь день по GPS: из дома, по клиентам и обратно домой</small></h3>
-      <div class="tscroll"><table class="fd-tab fd-km"><thead><tr><th scope="col">Агент</th><th scope="col">Дней с движением</th><th scope="col">Км за период</th><th scope="col">В среднем за день</th><th scope="col">Самый длинный день</th><th scope="col">Топливо</th><th scope="col">Расход на 100 км</th><th scope="col">Цена, сум</th><th scope="col">Расходы, сум</th></tr></thead><tbody>
-      ${rows.map(x => `<tr><th scope="row"><button type="button" class="fd-link" data-fda="${esc(x.a.id)}">${esc(x.a.name)}</button></th><td>${x.rs.length}</td><td><b>${UI.fmt0(Math.round(x.km))}</b> км</td><td>${Math.round(x.km / x.rs.length)} км</td><td>${Math.round(x.max)} км</td>
+    return `<section class="fd-sec"><h3>Пробег и топливо <small>${a === b ? FIELD.dlabel(a, true) : FIELD.dlabel(a) + ' – ' + FIELD.dlabel(b)} · рабочий пробег: поездки с 07:00 до 22:00 — из дома, по клиентам и обратно домой</small></h3>
+      <div class="tscroll"><table class="fd-tab fd-km"><thead><tr><th scope="col">Агент</th><th scope="col">Дней с движением</th><th scope="col">Рабочие км</th><th scope="col">Всего за сутки</th><th scope="col">В среднем за день</th><th scope="col">Самый длинный день</th><th scope="col">Топливо</th><th scope="col">Расход на 100 км</th><th scope="col">Цена, сум</th><th scope="col">Расходы, сум</th></tr></thead><tbody>
+      ${rows.map(x => `<tr><th scope="row"><button type="button" class="fd-link" data-fda="${esc(x.a.id)}">${esc(x.a.name)}</button></th><td>${x.rs.length}</td><td><b>${UI.fmt0(Math.round(x.km))}</b> км</td><td>${UI.fmt0(Math.round(x.all))} км</td><td>${Math.round(x.km / x.rs.length)} км</td><td>${Math.round(x.max)} км</td>
         <td><select data-fuel="${esc(x.a.id)}" data-k="type" aria-label="Топливо: ${esc(x.a.name)}">${Object.entries(FIELD.FUEL).map(([v, [n]]) => `<option value="${v}" ${(x.f.type || 'petrol') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></td>
         <td><input type="number" min="0" step="0.1" inputmode="decimal" data-fuel="${esc(x.a.id)}" data-k="rate" value="${x.f.rate ?? ''}" placeholder="${FIELD.FUEL[x.f.type || 'petrol'][1]}" aria-label="Расход на 100 км: ${esc(x.a.name)}"></td>
         <td><input type="number" min="0" step="100" inputmode="numeric" data-fuel="${esc(x.a.id)}" data-k="price" value="${x.f.price ?? ''}" placeholder="за ${FIELD.FUEL[x.f.type || 'petrol'][1]}" aria-label="Цена топлива: ${esc(x.a.name)}"></td>
         <td><b>${x.cost != null ? UI.fmt0(Math.round(x.cost)) : '—'}</b></td></tr>`).join('')}
-      </tbody><tfoot><tr><th scope="row">Итого</th><td></td><td><b>${UI.fmt0(Math.round(tot))}</b> км</td><td colspan="5"></td><td><b>${totCost ? UI.fmt0(Math.round(totCost)) : '—'}</b></td></tr></tfoot></table></div>
-      <p class="mut fd-note">Пробег — по GPS-трекеру за весь день (00:00–24:00), включая дорогу из дома и домой. Для периода плана нажмите «План 16–15». Расход и цену впишите один раз — они запомнятся на этом устройстве для каждого агента. Сегодняшний пробег обновляется каждые 15 минут.</p></section>`;
+      </tbody><tfoot><tr><th scope="row">Итого</th><td></td><td><b>${UI.fmt0(Math.round(tot))}</b> км</td><td>${UI.fmt0(Math.round(totAll))} км</td><td colspan="5"></td><td><b>${totCost ? UI.fmt0(Math.round(totCost)) : '—'}</b></td></tr></tfoot></table></div>
+      <p class="mut fd-note">Рабочий пробег — поездки по GPS с 07:00 до 22:00: от выхода из дома до возвращения домой; поездка через границу 07:00 или 22:00 считается только своей частью внутри. «Всего за сутки» — весь пробег трекера за 00:00–24:00, вместе с личными поездками. Расходы считаются по рабочему пробегу. Для периода плана нажмите «План 16–15». Расход и цену впишите один раз — они запомнятся на этом устройстве для каждого агента. Сегодняшний пробег обновляется каждые 15 минут.</p></section>`;
   },
 
   // the agent opened: his numbers over the period and, over several days, km and visits by day
@@ -217,9 +219,9 @@ const FIELD = {
     let html = FIELD.kpis({ rows, days: D.days });
     const days = D.days.filter(d => rows.some(r => r.day === d));
     if (days.length > 1) {
-      const by = d => rows.find(r => r.day === d), mk = Math.max(1, ...days.map(d => +by(d)?.km || 0)), mv = Math.max(1, ...days.map(d => FIELD.agg([by(d)]).visits));
+      const by = d => rows.find(r => r.day === d), mk = Math.max(1, ...days.map(d => FIELD.wkm(by(d)) || 0)), mv = Math.max(1, ...days.map(d => FIELD.agg([by(d)]).visits));
       const bars = (label, val, max) => `<div class="fd-chart"><h4>${label}</h4><div class="fd-bars">${days.map(d => { const v = val(by(d)); return `<button type="button" class="fd-bar1" data-fda="${esc(devId)}" data-day="${d}" title="${FIELD.dlabel(d, true)}: ${v}"><span class="v">${v}</span><span class="b" style="height:${Math.max(2, v / max * 100).toFixed(0)}%"></span><span class="d">${d.slice(8)}</span></button>`; }).join('')}</div></div>`;
-      html += `<div class="fd-charts">${bars('Пробег по дням, км', r => Math.round(+r?.km || 0), mk)}${bars('Визиты к клиентам по дням', r => FIELD.agg([r]).visits, mv)}</div>`;
+      html += `<div class="fd-charts">${bars('Рабочий пробег по дням, км', r => Math.round(FIELD.wkm(r) || 0), mk)}${bars('Визиты к клиентам по дням', r => FIELD.agg([r]).visits, mv)}</div>`;
     }
     return html;
   },
@@ -267,7 +269,7 @@ const FIELD = {
       return `<li class="${FIELD.kind(s)}"><span class="fd-n">${i + 1}</span><span class="fd-t">${FIELD.hm(s.a)}–${FIELD.hm(s.b)}</span><span class="fd-c">${FIELD.isClient(s) ? `<b>${esc(s.name)}</b>${s.planned ? ' <em class="fd-tag">маршрут</em>' : ' <em class="fd-tag out">вне маршрута</em>'}` : `<span class="mut">${r.first_at && Date.parse(s.a) < Date.parse(r.first_at) - 60000 ? 'до первой поездки' : r.last_at && Date.parse(s.b) > Date.parse(r.last_at) + 60000 ? 'после последней поездки' : 'стоял не у клиента'}</span>`}</span><span class="fd-d ${FIELD.isClient(s) && ms >= 45 * 60000 ? 'neg' : ''}">${FIELD.mins(ms)}</span>${outs ? `<span class="fd-outs">${outs}</span>` : FIELD.isClient(s) ? `<span class="fd-outs mut">${Date.now() - Date.parse(s.b) > 2 * 3600000 ? 'в LINKO ничего не отмечено' : 'ждём, что отметят в LINKO'}</span>` : ''}</li>`;
     }).join('');
     return `<section class="fd-sec fd-day" id="fdDay">${head}${agentBox}<h4 class="fd-h4">День: ${FIELD.dlabel(day, true)}</h4>${nav}
-      <div class="fd-dstats"><span>визитов <b>${k.visits}</b></span><span>у клиентов <b>${FIELD.mins(k.at)}</b></span><span>не у клиентов <b>${FIELD.mins(k.other)}</b></span><span>в пути <b>${r.move_s ? FIELD.mins(r.move_s * 1000) : '—'}</b></span><span>пробег <b>${r.km != null ? Math.round(r.km) + ' км' : '—'}</b></span><span>движение <b>${FIELD.hm(r.first_at)}–${FIELD.hm(r.last_at)}</b></span>${L.plan ? `<span>маршрут LINKO <b>${L.done || 0}/${L.plan}</b></span><span>заказы <b>${FIELD.money(L.orders)}</b></span><span>оплаты <b>${FIELD.money(L.paid)}</b></span>${L.rejections ? `<span>отказы <b>${L.rejections}</b></span>` : ''}` : ''}</div>
+      <div class="fd-dstats"><span>визитов <b>${k.visits}</b></span><span>у клиентов <b>${FIELD.mins(k.at)}</b></span><span>не у клиентов <b>${FIELD.mins(k.other)}</b></span><span>в пути <b>${r.move_s ? FIELD.mins(r.move_s * 1000) : '—'}</b></span><span>рабочий пробег <b>${FIELD.wkm(r) != null ? Math.round(FIELD.wkm(r)) + ' км' : '—'}</b>${r.km != null && r.work_km != null ? ` <small class="mut">(за сутки ${Math.round(r.km)})</small>` : ''}</span>${r.home_out ? `<span>вышел из дома <b>${FIELD.hm(r.home_out)}</b></span><span>${r.home_in ? `вернулся домой <b>${FIELD.hm(r.home_in)}</b>` : '<b>домой до 22:00 не вернулся</b>'}</span>` : `<span>движение <b>${FIELD.hm(r.first_at)}–${FIELD.hm(r.last_at)}</b></span>`}${L.plan ? `<span>маршрут LINKO <b>${L.done || 0}/${L.plan}</b></span><span>заказы <b>${FIELD.money(L.orders)}</b></span><span>оплаты <b>${FIELD.money(L.paid)}</b></span>${L.rejections ? `<span>отказы <b>${L.rejections}</b></span>` : ''}` : ''}</div>
       ${bar}
       <div class="fd-dgrid"><ol class="fd-stops">${list || '<li class="mut">Остановок нет.</li>'}</ol><div class="fd-map" id="fdMap" role="region" aria-label="Карта остановок"></div></div>
       ${r.live ? '<p class="mut fd-note">Пока показаны визиты, найденные в течение дня; полная картина по GPS-истории (пробег, остановки не у клиентов) обновляется каждые 15 минут.</p>' : ''}
