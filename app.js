@@ -32,10 +32,10 @@ async function api(url, opts = {}) {
 const PAGE_PERM = { country: 'team', audit: 'team', wh: 'stock', whstock: 'stock', whlow: 'stock', whmove: 'stock', whup: 'stock', agents: 'agents', leaders: 'agents', aclients: 'agents', atasks: 'agents', aup: 'agents' };
 const DEMO_ROUTES = [];
 const canOpen = r => (!DEMO_ROUTES.includes(r) || me?.demo !== false) && (!PAGE_PERM[r] || can(PAGE_PERM[r] + '.view'));
-// РОП runs the whole country: he starts on its overview; everyone else on his own day
-const landing = () => (me?.crmRole === 'rop' ? ['country'] : []).concat(['my', 'rday', 'agents', 'wh']).find(canOpen);
+// РОП runs the whole country: he starts on its overview; everyone else on «Поле» (his agents in the field now), else his own day
+const landing = () => (me?.crmRole === 'rop' ? ['country'] : []).concat(['field', 'my', 'rday', 'agents', 'wh']).find(canOpen);
 // pages that read only the shared database (not the CRM data of this browser): open even when this device holds another account's data
-const GATE_FREE = ['country', 'audit', 'users'];
+const GATE_FREE = ['country', 'audit', 'users', 'field'];
 
 // Menu: your own data first (warehouse stock, agents), then the demo sections that mirror the old LINKO menu. top item -> groups -> [title, route]
 const MENU = {};
